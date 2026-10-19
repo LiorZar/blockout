@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -7,15 +7,35 @@
  * does is undoable, autosaved, and visible live.
  */
 
-import { useStore } from '../store'
+import { useStore, currentProjectJson } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { createActorMark, createCameraMark } from '@engine/schema'
 import { newId } from '@engine/ids'
-import { renderStillPngForTest } from '../export/exporter'
+import { nextLabelColor, resolveColor, LABEL_COLOR_NAMES } from '@engine/palette'
+import { RIGS } from '@engine/rigs'
+import { GAITS } from '@engine/gaits'
+import {
+  renderStillPngForTest,
+  exportShot,
+  exportStillAtPlayhead,
+  exportContactSheet,
+  exportAnimatic,
+  type ExportResolution
+} from '../export/exporter'
+import { BUILTIN_PROFILES } from '@engine/profiles'
+import { generatePrompt } from '@engine/prompt'
 import { getSceneManager } from '../export/scene-access'
-import type { AspectId, GaitId } from '@engine/types'
+import type { ActorMark, AspectId, CameraMark, Entity, GaitId, LightingPresetId, RigId, Scene, Shot } from '@engine/types'
 import type { ChoreoKind, FormationId, RoutineSpec } from '@engine/choreography'
 import type { FramingKind } from '../bus'
+import { SHOT_SIZES } from '@engine/camera'
+import { ShotEvaluator } from '@engine/evaluate'
+import { parseShotWords } from '@engine/shot-words'
+import type { ShotAngle, ShotSide, ShotSpec } from '@engine/shot'
+import { MOVE_ALIASES, STRIKE_IDS, listFightMoves } from '@engine/fight/moves'
+import { defaultTarget, formatFightScript, parseFightScript, randomFightScript } from '@engine/fight/script'
+import { solveFight, type FightSolution } from '@engine/fight/solve'
+import type { FightBeat, FightDoc, FightOutcome } from '@engine/types'
 
 type Params = Record<string, unknown>
 type ControlResult = { ok: boolean; data?: unknown; error?: string }
@@ -31,6 +51,20 @@ const strList = (p: Params, k: string): string[] =>
 
 const toRad = (deg: number): number => (deg * Math.PI) / 180
 const toDeg = (rad: number): number => Math.round((rad * 180) / Math.PI)
+const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v))
+
+const LIGHTING_PRESETS: LightingPresetId[] = [
+  'day',
+  'goldenHour',
+  'night',
+  'interiorWarm',
+  'interiorCool',
+  'club',
+  'middaySky',
+  'goldenHourSky',
+  'blueHourSky'
+]
+const COLOR_HINT = `a name (${Object.keys(LABEL_COLOR_NAMES).join(', ')}) or a hex value like #e5484d`
 
 function requireManager(): NonNullable<ReturnType<typeof getSceneManager>> {
   const m = getSceneManager()
@@ -44,11 +78,242 @@ function requireDoc(): void {
   }
 }
 
+type Take = Scene['blocking'][number]
+
+function activeTake(scene: Scene | null | undefined, shot: Shot | null | undefined): Take | undefined {
+  return scene?.blocking.find((b) => b.id === shot?.blockingTakeId)
+}
+
+function entitySummary(e: Entity, take: Take | undefined): unknown {
+  return {
+    id: e.id,
+    name: e.name,
+    assetId: e.assetId,
+    x: e.transform.position.x,
+    y: e.transform.position.y,
+    z: e.transform.position.z,
+    rotationDeg: toDeg(e.transform.rotationY),
+    label: e.label?.text,
+    color: e.label?.color,
+    heightScale: typeof e.params?.height === 'number' ? e.params.height : undefined,
+    build: typeof e.params?.build === 'number' ? e.params.build : undefined,
+    hideInExports: e.excludeFromExport === true || undefined,
+    attachedTo: e.attachedTo,
+    markCount: take?.tracks.find((t) => t.entityId === e.id)?.marks.length ?? 0
+  }
+}
+
+function environmentSummary(scene: Scene): unknown {
+  return {
+    lighting: scene.environment.lighting,
+    sunAzimuthDeg: toDeg(scene.environment.sunAzimuth),
+    sunElevationDeg: toDeg(scene.environment.sunElevation),
+    fog: scene.environment.fog
+  }
+}
+
+/** Run `fn` on the active scene/shot inside one undoable mutation. */
+function mutateActive(label: string, fn: (scene: Scene, shot: Shot | undefined) => void): void {
+  const st = useStore.getState()
+  st.mutate(label, (doc) => {
+    const scene = doc.scenes.find((sc) => sc.id === st.sceneId)
+    if (scene) fn(scene, scene.shots.find((sh) => sh.id === st.shotId))
+  })
+}
+
+/** A timeline lane: the shot camera, or one entity's track in the active take. */
+type Lane = { kind: 'camera'; marks: CameraMark[] } | { kind: 'actor'; marks: ActorMark[] }
+
+function resolveLane(scene: Scene, shot: Shot | undefined, lane: string): Lane {
+  if (lane === 'camera') {
+    if (!shot) throw new Error('No active shot.')
+    return { kind: 'camera', marks: shot.camera.marks }
+  }
+  if (!scene.entities.some((e) => e.id === lane)) {
+    throw new Error(`No lane "${lane}" — use "camera" or an entity id from get_state.`)
+  }
+  const track = activeTake(scene, shot)?.tracks.find((t) => t.entityId === lane)
+  return { kind: 'actor', marks: track?.marks ?? [] }
+}
+
+function markSummary(m: CameraMark | ActorMark): unknown {
+  const base = {
+    id: m.id,
+    time: m.time,
+    x: m.position.x,
+    y: m.position.y,
+    z: m.position.z,
+    hold: m.hold,
+    easeIn: m.easeIn,
+    easeOut: m.easeOut
+  }
+  if ('pan' in m) {
+    return {
+      ...base,
+      panDeg: toDeg(m.pan),
+      tiltDeg: toDeg(m.tilt),
+      rollDeg: toDeg(m.roll ?? 0),
+      focalLength: m.focalLength,
+      focusDistance: m.focusDistance,
+      shot: m.shot
+    }
+  }
+  return { ...base, gait: m.gait }
+}
+
+const SHOT_SIDES: ShotSide[] = ['front', 'frontLeft', 'left', 'backLeft', 'back', 'backRight', 'right', 'frontRight', 'line']
+const SHOT_ANGLES: ShotAngle[] = ['eye', 'low', 'high', 'overhead', 'ground']
+
+const FIGHT_OUTCOMES: FightOutcome[] = ['hit', 'block', 'parry', 'slip', 'duck', 'miss', 'ko']
+const FIGHT_COVERAGE = ['master', 'punch-in', 'over-shoulder', 'follow'] as const
+const FIGHT_STYLES = ['brawl', 'martial-arts', 'sparring'] as const
+
+/** Fighter labels for a script: the entities' label texts, else A / B. */
+function fightLabels(scene: Scene, ids: string[]): [string, string] {
+  const name = (id: string | undefined, fallback: string): string =>
+    scene.entities.find((e) => e.id === id)?.label?.text || fallback
+  return [name(ids[0], 'A'), name(ids[1], 'B')]
+}
+
+/** Beats from `script` (text), `beats` (array) or `random` ({seed, style, ending}). */
+function fightBeatsFromParams(params: Params, tool: string, labels: [string, string], duration: number): FightBeat[] | undefined {
+  const script = str(params, 'script')
+  if (script !== undefined) {
+    const parsed = parseFightScript(script, labels)
+    if ('error' in parsed) throw new Error(`${tool}: ${parsed.error}`)
+    return parsed.beats
+  }
+  if (Array.isArray(params.beats)) {
+    return (params.beats as unknown[]).map((raw, k) => {
+      const b = (raw ?? {}) as Record<string, unknown>
+      const where = `${tool}: beats[${k}]`
+      const attacker = b.attacker === 1 || b.attacker === 'B' ? 1 : b.attacker === 0 || b.attacker === 'A' ? 0 : null
+      if (attacker === null) throw new Error(`${where}.attacker must be 0 or 1 (A or B).`)
+      const move = typeof b.move === 'string' ? (MOVE_ALIASES[b.move.toLowerCase()] ?? b.move) : ''
+      if (!STRIKE_IDS.includes(move)) throw new Error(`${where}.move "${String(b.move)}" is not a strike: list_fight_moves shows the moves.`)
+      const target = b.target ?? defaultTarget(move)
+      if (target !== 'head' && target !== 'body' && target !== 'legs') throw new Error(`${where}.target must be head, body or legs.`)
+      const outcomes = Array.isArray(b.outcomes) ? (b.outcomes as unknown[]) : ['hit']
+      for (const o of outcomes) if (!FIGHT_OUTCOMES.includes(o as FightOutcome)) throw new Error(`${where}.outcomes: unknown "${String(o)}" (use ${FIGHT_OUTCOMES.join(', ')}).`)
+      const beat: FightBeat = {
+        attacker,
+        move,
+        target,
+        outcomes: outcomes.length > 0 ? (outcomes as FightOutcome[]) : ['hit'],
+        power: typeof b.power === 'number' ? clamp(b.power, 0.2, 1) : 0.7
+      }
+      if (typeof b.at === 'number') beat.at = Math.max(0, b.at)
+      return beat
+    })
+  }
+  const random = params.random as { seed?: unknown; style?: unknown; ending?: unknown } | undefined
+  if (random && typeof random === 'object') {
+    const style = typeof random.style === 'string' ? random.style : 'sparring'
+    if (!(FIGHT_STYLES as readonly string[]).includes(style)) throw new Error(`${tool}: random.style must be ${FIGHT_STYLES.join(', ')}.`)
+    const seed = typeof random.seed === 'number' ? Math.round(random.seed) : Math.floor(Math.random() * 1e9)
+    const ending = random.ending === 'standing' ? 'standing' : 'ko'
+    return randomFightScript(seed, style as (typeof FIGHT_STYLES)[number], duration, { ending })
+  }
+  return undefined
+}
+
+function fightCoverage(params: Params, tool: string): FightDoc['coverage'] | undefined {
+  const c = str(params, 'coverage')
+  if (c === undefined) return undefined
+  if (!(FIGHT_COVERAGE as readonly string[]).includes(c)) throw new Error(`${tool}: coverage must be one of ${FIGHT_COVERAGE.join(', ')}.`)
+  return c as FightDoc['coverage']
+}
+
+/** A fight as the fight tools return it: id, editable script text, solver report. */
+function fightResult(fightId: string, report?: FightSolution['report']): unknown {
+  const st = useStore.getState()
+  const scene = st.scene()
+  const shot = st.shot()
+  const fight = scene?.fights?.find((f) => f.id === fightId)
+  if (!scene || !shot || !fight) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
+  let rep = report
+  if (!rep) {
+    const ents = fight.fighterIds.map((id) => scene.entities.find((e) => e.id === id))
+    if (!ents[0] || !ents[1]) throw new Error(`A fighter of "${fightId}" was deleted: get_state lists the scene's entities.`)
+    const input = ents.map((e) => ({ entityId: e!.id, assetId: e!.assetId, params: e!.params, scale: e!.transform.scale, start: { ...e!.transform.position } }))
+    rep = solveFight(fight, [input[0]!, input[1]!], { duration: shot.duration, fps: shot.fps }).report
+  }
+  return { fightId, name: fight.name, script: formatFightScript(fight.beats, fightLabels(scene, fight.fighterIds)), report: rep }
+}
+
+/** A ShotSpec from frame_shot's structured fields, validated against the scene. */
+function shotSpecFromParams(params: Params, scene: Scene): ShotSpec {
+  const size = str(params, 'size')
+  if (!size || !(size in SHOT_SIZES)) {
+    throw new Error(`frame_shot: give words, or size (${Object.keys(SHOT_SIZES).join(', ')}) and subjectIds.`)
+  }
+  const known = (id: string): void => {
+    if (!scene.entities.some((e) => e.id === id)) throw new Error(`frame_shot: no entity "${id}" — use an entity id from get_state.`)
+  }
+  const subjectIds = strList(params, 'subjectIds')
+  if (subjectIds.length === 0) throw new Error('frame_shot: subjectIds must list at least one entity id from get_state.')
+  subjectIds.forEach(known)
+  const spec: ShotSpec = { size: size as ShotSpec['size'], subjectIds }
+  const over = params.over as { entityId?: unknown; shoulder?: unknown } | undefined
+  if (over && typeof over === 'object') {
+    if (typeof over.entityId !== 'string') throw new Error('frame_shot: over.entityId must be an entity id from get_state.')
+    known(over.entityId)
+    if (subjectIds.includes(over.entityId)) throw new Error("frame_shot: the over-the-shoulder entity can't also be the subject.")
+    spec.over = { entityId: over.entityId, shoulder: over.shoulder === 'left' ? 'left' : 'right' }
+  }
+  const side = str(params, 'side')
+  if (side !== undefined) {
+    if (!SHOT_SIDES.includes(side as ShotSide)) throw new Error(`frame_shot: side must be one of ${SHOT_SIDES.join(', ')}.`)
+    spec.side = side as ShotSide
+  }
+  const angle = str(params, 'angle')
+  if (angle !== undefined) {
+    if (!SHOT_ANGLES.includes(angle as ShotAngle)) throw new Error(`frame_shot: angle must be one of ${SHOT_ANGLES.join(', ')}.`)
+    spec.angle = angle as ShotAngle
+  }
+  const lens = flt(params, 'lens')
+  if (lens !== undefined) spec.lens = clamp(lens, 8, 300)
+  const dutchDeg = flt(params, 'dutchDeg')
+  if (dutchDeg !== undefined) spec.dutchDeg = clamp(dutchDeg, -45, 45)
+  return spec
+}
+
+const CAMERA_ONLY = ['panDeg', 'tiltDeg', 'rollDeg', 'focalLength', 'focusDistance']
+
+function exportProfileId(params: Params, tool: string): string {
+  const id = str(params, 'profileId') ?? 'seedance-2'
+  if (!BUILTIN_PROFILES.some((p) => p.id === id)) {
+    throw new Error(`${tool}: unknown profileId "${id}" — call list_export_profiles for ids.`)
+  }
+  return id
+}
+
+function exportResolution(params: Params, tool: string): ExportResolution {
+  const r = str(params, 'resolution') ?? 'auto'
+  if (r !== 'auto' && r !== '720p' && r !== '1080p') {
+    throw new Error(`${tool}: resolution must be auto, 720p or 1080p (got "${r}").`)
+  }
+  return r
+}
+
+/** An export's path relative to the project folder, with forward slashes. */
+function projectRelative(path: string): string {
+  const folder = (useStore.getState().projectFolder ?? '').replace(/\\/g, '/').replace(/\/+$/, '')
+  const p = path.replace(/\\/g, '/')
+  return folder && p.startsWith(folder + '/') ? p.slice(folder.length + 1) : p
+}
+
+function requireIdle(): void {
+  if (useStore.getState().exportProgress.running) {
+    throw new Error('An export is already running. Try again when it finishes.')
+  }
+}
+
 function summary(): unknown {
   const s = useStore.getState()
   const scene = s.scene()
   const shot = s.shot()
-  const take = scene?.blocking.find((b) => b.id === shot?.blockingTakeId)
+  const take = activeTake(scene, shot)
   return {
     project: s.doc?.name ?? null,
     mode: s.mode,
@@ -58,18 +323,9 @@ function summary(): unknown {
           id: scene.id,
           name: scene.name,
           lighting: scene.environment.lighting,
-          entities: scene.entities.map((e) => ({
-            id: e.id,
-            name: e.name,
-            assetId: e.assetId,
-            x: e.transform.position.x,
-            y: e.transform.position.y,
-            z: e.transform.position.z,
-            rotationDeg: toDeg(e.transform.rotationY),
-            label: e.label?.text,
-            attachedTo: e.attachedTo,
-            markCount: take?.tracks.find((t) => t.entityId === e.id)?.marks.length ?? 0
-          })),
+          environment: environmentSummary(scene),
+          entities: scene.entities.map((e) => entitySummary(e, take)),
+          fights: (scene.fights ?? []).map((f) => ({ id: f.id, name: f.name, fighterIds: f.fighterIds, beats: f.beats.length })),
           scans: (scene.scans ?? []).map((sc) => ({
             id: sc.id,
             name: sc.name,
@@ -90,19 +346,33 @@ function summary(): unknown {
           fps: shot.fps,
           aspect: shot.aspect,
           camera: shot.cameraName ?? 'A',
+          rig: shot.camera.rig,
+          rigIntensity: shot.camera.rigIntensity,
+          trackEntityId: shot.camera.trackEntityId ?? null,
           cameraMarks: shot.camera.marks.map((m, i) => ({
             index: i + 1,
+            id: m.id,
             time: m.time,
             x: m.position.x,
             y: m.position.y,
             z: m.position.z,
             panDeg: toDeg(m.pan),
             tiltDeg: toDeg(m.tilt),
-            focalLength: m.focalLength
+            rollDeg: toDeg(m.roll ?? 0),
+            focalLength: m.focalLength,
+            hold: m.hold,
+            easeIn: m.easeIn,
+            easeOut: m.easeOut
           }))
         }
       : null,
     allShots: scene?.shots.map((sh) => ({ id: sh.id, name: sh.name })) ?? [],
+    allScenes:
+      s.doc?.scenes.map((sc) => ({
+        id: sc.id,
+        name: sc.name,
+        shots: sc.shots.map((sh) => ({ id: sh.id, name: sh.name }))
+      })) ?? [],
     conventions:
       'meters; +X right, -Z forward; heading/pan 0 faces -Z; rotationDeg/panDeg clockwise from above'
   }
@@ -141,8 +411,18 @@ function routineSpecFromParams(params: Params): RoutineSpec {
   return spec
 }
 
+/**
+ * While an export renders, store.mutate refuses edits (toast only), so an edit
+ * tool would report success for a change that never happened. Refuse every
+ * action except reads and exports (which answer for themselves).
+ */
+const ALLOWED_DURING_EXPORT = /^(get_|list_|export_)|^screenshot$/
+
 async function execute(action: string, params: Params): Promise<unknown> {
   const s = useStore.getState()
+  if (s.exportProgress.running && !ALLOWED_DURING_EXPORT.test(action)) {
+    throw new Error('An export is already running.')
+  }
   switch (action) {
     case 'get_state':
       requireDoc()
@@ -163,22 +443,28 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (!ASSET_CATALOG.some((a) => a.id === assetId)) {
         throw new Error(`Unknown assetId "${assetId}" — call list_assets for valid ids.`)
       }
+      const rawColor = str(params, 'color')
+      const color = rawColor === undefined ? undefined : resolveColor(rawColor)
+      if (color === null) throw new Error(`add_entity: unknown color "${rawColor}". Use ${COLOR_HINT}.`)
       const x = flt(params, 'x') ?? 0
       const z = flt(params, 'z') ?? 0
+      // Distinct colours for labelled entities, so the video model can tell them apart.
+      const used = (s.scene()?.entities ?? []).filter((e) => e.label?.text).map((e) => e.label!.color)
       const entityId = s.addEntity(assetId, { x, y: 0, z })
       const rotationDeg = flt(params, 'rotationDeg')
       const label = str(params, 'label')
-      if (rotationDeg !== undefined || label) {
+      if (rotationDeg !== undefined || label || color) {
         s.mutate('agent: place entity', (doc) => {
           for (const scene of doc.scenes) {
             const e = scene.entities.find((en) => en.id === entityId)
             if (!e) continue
             if (rotationDeg !== undefined) e.transform.rotationY = toRad(rotationDeg)
-            if (label) e.label = { text: label, color: e.label?.color ?? '#3b82f6' }
+            if (label || color) e.label = { text: label ?? '', color: color ?? nextLabelColor(used) }
           }
         })
       }
-      return { entityId, name: assetSpec(assetId)?.name }
+      const placed = useStore.getState().scene()?.entities.find((e) => e.id === entityId)
+      return { entityId, name: assetSpec(assetId)?.name, color: placed?.label?.color }
     }
 
     case 'move_entity': {
@@ -274,6 +560,106 @@ async function execute(action: string, params: Params): Promise<unknown> {
       s.clearCameraMarks()
       return { cleared: true }
 
+    case 'list_fight_moves': {
+      const aliases = Object.entries(MOVE_ALIASES)
+      return listFightMoves().map((m) => ({
+        id: m.id,
+        name: m.name,
+        aliases: aliases.filter(([, id]) => id === m.id).map(([a]) => a),
+        defaultTarget: defaultTarget(m.id),
+        impacts: m.impacts.map((i) => ({ effector: i.effector, t: i.t, speed: Math.round(i.speed * 100) / 100 }))
+      }))
+    }
+
+    case 'stage_fight': {
+      requireDoc()
+      const scene = s.scene()
+      const shot = s.shot()
+      if (!scene || !shot) throw new Error('No active shot.')
+      const fighterIds = strList(params, 'fighterIds')
+      if (fighterIds.length !== 0 && fighterIds.length !== 2) throw new Error('stage_fight: fighterIds must name exactly 2 people from get_state (or leave it out to spawn A and B).')
+      const beats = fightBeatsFromParams(params, 'stage_fight', fightLabels(scene, fighterIds), shot.duration)
+      if (!beats || beats.length === 0) throw new Error('stage_fight: give a script, beats, or random.')
+      const exaggeration = flt(params, 'exaggeration')
+      const coverage = fightCoverage(params, 'stage_fight')
+      const { fightId, report } = s.stageFight({
+        beats,
+        at: { x: flt(params, 'x') ?? 0, z: flt(params, 'z') ?? 0, heading: toRad(flt(params, 'headingDeg') ?? 0) },
+        ...(fighterIds.length === 2 ? { fighters: [fighterIds[0]!, fighterIds[1]!] as [string, string] } : {}),
+        ...(exaggeration !== undefined ? { exaggeration } : {}),
+        ...(coverage ? { coverage } : {})
+      })
+      return fightResult(fightId, report)
+    }
+
+    case 'update_fight': {
+      requireDoc()
+      const scene = s.scene()
+      const shot = s.shot()
+      const fightId = str(params, 'fightId') ?? ''
+      const fight = scene?.fights?.find((f) => f.id === fightId)
+      if (!scene || !shot || !fight) throw new Error(`update_fight: no fight "${fightId}": get_state lists the scene's fights.`)
+      const beats = fightBeatsFromParams(params, 'update_fight', fightLabels(scene, fight.fighterIds), shot.duration)
+      const exaggeration = flt(params, 'exaggeration')
+      const coverage = fightCoverage(params, 'update_fight')
+      const report = s.updateFight(fightId, {
+        ...(beats ? { beats } : {}),
+        ...(exaggeration !== undefined ? { exaggeration } : {}),
+        ...(coverage ? { coverage } : {})
+      })
+      return fightResult(fightId, report)
+    }
+
+    case 'fight_coverage': {
+      requireDoc()
+      const fightId = str(params, 'fightId') ?? ''
+      const mode = str(params, 'mode')
+      if (!mode || !(FIGHT_COVERAGE as readonly string[]).includes(mode)) {
+        throw new Error(`fight_coverage: mode must be one of ${FIGHT_COVERAGE.join(', ')}.`)
+      }
+      const side = str(params, 'side')
+      if (side !== undefined && side !== 'left' && side !== 'right') throw new Error('fight_coverage: side must be left or right.')
+      const r = s.coverFight(fightId, mode as NonNullable<FightDoc['coverage']>, side)
+      return { fightId, mode, lineSide: r.lineSide, cameraMarks: r.cameraMarks }
+    }
+
+    case 'get_fight': {
+      requireDoc()
+      return fightResult(str(params, 'fightId') ?? '')
+    }
+
+    case 'delete_fight': {
+      requireDoc()
+      s.deleteFight(str(params, 'fightId') ?? '')
+      return { deleted: true }
+    }
+
+    case 'frame_shot': {
+      requireDoc()
+      const scene = s.scene()
+      if (!scene || !s.shot()) throw new Error('No active shot.')
+      let spec: ShotSpec
+      let time = flt(params, 'time')
+      const words = str(params, 'words')
+      if (words !== undefined) {
+        const parsed = parseShotWords(
+          words,
+          scene.entities.map((e) => ({ id: e.id, name: e.name, label: e.label?.text }))
+        )
+        if ('error' in parsed) throw new Error(`frame_shot: ${parsed.error}`)
+        spec = parsed.spec
+        if (parsed.time !== undefined) time = parsed.time
+      }
+      else spec = shotSpecFromParams(params, scene)
+      const markId = s.setShotAtTime(spec, time ?? useStore.getState().time)
+      if (!markId) throw new Error('frame_shot: the shot could not be solved — check the subject ids with get_state.')
+      const st = useStore.getState()
+      const shot = st.shot()!
+      const mark = shot.camera.marks.find((m) => m.id === markId)!
+      const solved = new ShotEvaluator(st.scene()!, shot).solveShotAt(spec, mark.time, mark.focalLength)
+      return { markId, time: mark.time, ...(solved?.achievedSize ? { achievedSize: solved.achievedSize } : {}) }
+    }
+
     case 'set_shot': {
       requireDoc()
       s.mutate('agent: set shot', (doc) => {
@@ -318,7 +704,16 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (!kind || !['2S', 'OTS', 'REV', 'TOP', 'LOW', 'DUTCH'].includes(kind)) {
         throw new Error('kind must be one of 2S, OTS, REV, TOP, LOW, DUTCH.')
       }
-      requireManager().applyFraming(kind)
+      const entityIds = Array.isArray(params.entityIds) ? strList(params, 'entityIds') : undefined
+      if (entityIds) {
+        const sceneIds = new Set((s.scene()?.entities ?? []).map((e) => e.id))
+        const missing = entityIds.filter((id) => !sceneIds.has(id))
+        if (entityIds.length === 0) throw new Error('entityIds must list at least one entity id from get_state.')
+        if (missing.length > 0) {
+          throw new Error(`No entity "${missing[0]}" in the current scene — call get_state for ids.`)
+        }
+      }
+      requireManager().applyFraming(kind, entityIds)
       return { applied: kind }
     }
 
@@ -326,11 +721,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
       requireDoc()
       const presetId = str(params, 'presetId') ?? ''
       const subjectId = str(params, 'entityId')
-      if (subjectId) {
-        if (!s.scene()?.entities.some((e) => e.id === subjectId)) {
-          throw new Error(`No entity "${subjectId}".`)
-        }
-        s.setSelection({ kind: 'entity', entityId: subjectId })
+      if (subjectId && !s.scene()?.entities.some((e) => e.id === subjectId)) {
+        throw new Error(`No entity "${subjectId}" in the current scene — call get_state for ids.`)
       }
       const { CAMERA_MOVE_PRESETS } = await import('@engine/camera-moves')
       if (!CAMERA_MOVE_PRESETS.some((p) => p.id === presetId)) {
@@ -338,7 +730,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
           `Unknown presetId "${presetId}". Valid: ${CAMERA_MOVE_PRESETS.map((p) => p.id).join(', ')}`
         )
       }
-      requireManager().applyCameraMove(presetId)
+      requireManager().applyCameraMove(presetId, subjectId)
       return { applied: presetId }
     }
 
@@ -628,6 +1020,321 @@ async function execute(action: string, params: Params): Promise<unknown> {
       })
       if (!attached) throw new Error('No active shot to attach the reference to.')
       return { attached: true, handoffVersion: 1, path: imported.relativePath, mode, opacity }
+    }
+
+    case 'new_scene': {
+      requireDoc()
+      requireIdle()
+      s.addSceneAfter()
+      const name = str(params, 'name')?.trim()
+      const st = useStore.getState()
+      if (name) {
+        st.mutate('agent: name scene', (doc) => {
+          const scene = doc.scenes.find((sc) => sc.id === st.sceneId)
+          if (scene) scene.name = name
+        })
+      }
+      return { sceneId: st.sceneId, shotId: st.shotId }
+    }
+
+    case 'select_scene': {
+      requireDoc()
+      requireIdle()
+      const sceneId = str(params, 'sceneId') ?? ''
+      if (!s.doc?.scenes.some((sc) => sc.id === sceneId)) {
+        throw new Error(`No scene "${sceneId}" — call get_state for scene ids (allScenes).`)
+      }
+      s.selectScene(sceneId)
+      const st = useStore.getState()
+      return { sceneId: st.sceneId, shotId: st.shotId }
+    }
+
+    case 'select_shot': {
+      requireDoc()
+      requireIdle()
+      const shotId = str(params, 'shotId') ?? ''
+      const owner = s.doc?.scenes.find((sc) => sc.shots.some((sh) => sh.id === shotId))
+      if (!owner) throw new Error(`No shot "${shotId}" — call get_state for shot ids (allScenes).`)
+      if (owner.id !== s.sceneId) s.selectScene(owner.id)
+      useStore.getState().selectShot(shotId)
+      return { shotId: useStore.getState().shotId }
+    }
+
+    case 'set_lighting': {
+      requireDoc()
+      const preset = str(params, 'preset') as LightingPresetId | undefined
+      if (!preset || !LIGHTING_PRESETS.includes(preset)) {
+        throw new Error(`set_lighting: unknown preset "${preset ?? ''}". Valid: ${LIGHTING_PRESETS.join(', ')}.`)
+      }
+      const az = flt(params, 'sunAzimuthDeg')
+      const el = flt(params, 'sunElevationDeg')
+      const fog = flt(params, 'fog')
+      mutateActive('agent: lighting', (scene) => {
+        scene.environment.lighting = preset
+        if (az !== undefined) scene.environment.sunAzimuth = toRad(((az % 360) + 360) % 360)
+        if (el !== undefined) scene.environment.sunElevation = clamp(toRad(el), 0.1, 1.5)
+        if (fog !== undefined) scene.environment.fog = clamp(fog, 0, 1)
+      })
+      const scene = useStore.getState().scene()
+      return scene ? environmentSummary(scene) : null
+    }
+
+    case 'set_entity_style': {
+      requireDoc()
+      const entityId = str(params, 'entityId') ?? ''
+      if (!s.scene()?.entities.some((e) => e.id === entityId)) {
+        throw new Error(`No entity "${entityId}" in the current scene — call get_state for ids.`)
+      }
+      const rawColor = str(params, 'color')
+      const color = rawColor === undefined ? undefined : resolveColor(rawColor)
+      if (color === null) throw new Error(`set_entity_style: unknown color "${rawColor}". Use ${COLOR_HINT}.`)
+      const label = str(params, 'label')
+      const name = str(params, 'name')?.trim()
+      const heightScale = flt(params, 'heightScale')
+      const build = flt(params, 'build')
+      const hide = bool(params, 'hideInExports')
+      const used = (s.scene()?.entities ?? [])
+        .filter((e) => e.id !== entityId && e.label?.text)
+        .map((e) => e.label!.color)
+      mutateActive('agent: entity style', (scene) => {
+        const e = scene.entities.find((en) => en.id === entityId)
+        if (!e) return
+        if (label !== undefined || color) {
+          const text = (label ?? e.label?.text ?? '').trim()
+          if (!text && !color) delete e.label
+          else e.label = { text, color: color ?? e.label?.color ?? nextLabelColor(used) }
+        }
+        if (name) e.name = name
+        if (heightScale !== undefined || build !== undefined) {
+          e.params = { ...(e.params ?? {}) }
+          if (heightScale !== undefined) e.params.height = clamp(heightScale, 0.5, 1.5)
+          if (build !== undefined) e.params.build = clamp(build, 0.5, 1.5)
+        }
+        if (hide === true) e.excludeFromExport = true
+        else if (hide === false) delete e.excludeFromExport
+      })
+      const st = useStore.getState()
+      const e = st.scene()?.entities.find((en) => en.id === entityId)
+      return e ? entitySummary(e, activeTake(st.scene(), st.shot())) : null
+    }
+
+    case 'set_camera_rig': {
+      requireDoc()
+      const rig = str(params, 'rig') as RigId | undefined
+      const rigIds = Object.keys(RIGS) as RigId[]
+      if (!rig || !rigIds.includes(rig)) {
+        throw new Error(`set_camera_rig: unknown rig "${rig ?? ''}". Valid: ${rigIds.join(', ')}.`)
+      }
+      const intensity = flt(params, 'intensity')
+      mutateActive('agent: camera rig', (_scene, shot) => {
+        if (!shot) return
+        shot.camera.rig = rig
+        if (intensity !== undefined) shot.camera.rigIntensity = clamp(intensity, 0, 1)
+      })
+      const cam = useStore.getState().shot()?.camera
+      return { rig: cam?.rig, intensity: cam?.rigIntensity }
+    }
+
+    case 'list_marks': {
+      requireDoc()
+      const scene = s.scene()
+      if (!scene) throw new Error('No scene selected.')
+      const lane = resolveLane(scene, s.shot() ?? undefined, str(params, 'lane') ?? '')
+      return [...lane.marks].sort((a, b) => a.time - b.time).map(markSummary)
+    }
+
+    case 'update_mark': {
+      requireDoc()
+      requireIdle()
+      const laneId = str(params, 'lane') ?? ''
+      const markId = str(params, 'markId') ?? ''
+      const gait = str(params, 'gait') as GaitId | undefined
+      if (gait !== undefined && !(gait in GAITS)) {
+        throw new Error(`update_mark: unknown gait "${gait}". Valid: ${Object.keys(GAITS).join(', ')}.`)
+      }
+      const scene0 = s.scene()
+      if (!scene0) throw new Error('No scene selected.')
+      const lane0 = resolveLane(scene0, s.shot() ?? undefined, laneId)
+      if (!lane0.marks.some((x) => x.id === markId)) {
+        throw new Error(`No mark "${markId}" on lane "${laneId}" — call list_marks for mark ids.`)
+      }
+      if (lane0.kind === 'camera' && gait !== undefined) throw new Error('update_mark: gait only applies to actor lanes.')
+      const cameraOnly = CAMERA_ONLY.find((k) => params[k] !== undefined)
+      if (lane0.kind === 'actor' && cameraOnly) {
+        throw new Error(`update_mark: ${cameraOnly} only applies to the camera lane.`)
+      }
+      let result: unknown
+      mutateActive('agent: update mark', (scene, shot) => {
+        const lane = resolveLane(scene, shot, laneId)
+        const m = lane.marks.find((x) => x.id === markId)
+        if (!m) return
+        const time = flt(params, 'time')
+        if (time !== undefined) m.time = clamp(time, 0, shot?.duration ?? time)
+        for (const axis of ['x', 'y', 'z'] as const) {
+          const v = flt(params, axis)
+          if (v !== undefined) m.position = { ...m.position, [axis]: v }
+        }
+        const hold = flt(params, 'hold')
+        if (hold !== undefined) m.hold = Math.max(0, hold)
+        const easeIn = flt(params, 'easeIn')
+        if (easeIn !== undefined) m.easeIn = clamp(easeIn, 0, 1)
+        const easeOut = flt(params, 'easeOut')
+        if (easeOut !== undefined) m.easeOut = clamp(easeOut, 0, 1)
+        if (lane.kind === 'actor' && gait !== undefined) (m as ActorMark).gait = gait
+        if (lane.kind === 'camera') {
+          const cm = m as CameraMark
+          const pan = flt(params, 'panDeg')
+          if (pan !== undefined) cm.pan = toRad(pan)
+          const tilt = flt(params, 'tiltDeg')
+          if (tilt !== undefined) cm.tilt = toRad(clamp(tilt, -89.9, 89.9))
+          const roll = flt(params, 'rollDeg')
+          if (roll !== undefined) cm.roll = toRad(roll)
+          const focal = flt(params, 'focalLength')
+          if (focal !== undefined) cm.focalLength = clamp(focal, 8, 400)
+          const focus = flt(params, 'focusDistance')
+          if (focus !== undefined) cm.focusDistance = Math.max(0.1, focus)
+        }
+        lane.marks.sort((a, b) => a.time - b.time)
+        result = markSummary(m)
+      })
+      if (result === undefined) throw new Error('update_mark: the edit did not apply — try again.')
+      return result
+    }
+
+    case 'delete_marks': {
+      requireDoc()
+      requireIdle()
+      const laneId = str(params, 'lane') ?? ''
+      const markIds = strList(params, 'markIds')
+      if (markIds.length === 0) throw new Error('markIds must list at least one mark id from list_marks.')
+      const scene = s.scene()
+      if (!scene) throw new Error('No scene selected.')
+      const lane = resolveLane(scene, s.shot() ?? undefined, laneId)
+      const missing = markIds.find((id) => !lane.marks.some((m) => m.id === id))
+      if (missing) throw new Error(`No mark "${missing}" on lane "${laneId}" — call list_marks for mark ids.`)
+      mutateActive('agent: delete marks', (sc, shot) => {
+        const live = resolveLane(sc, shot, laneId)
+        for (let i = live.marks.length - 1; i >= 0; i--) {
+          if (markIds.includes(live.marks[i]!.id)) live.marks.splice(i, 1)
+        }
+      })
+      return { deleted: markIds.length }
+    }
+
+    case 'apply_motion': {
+      requireDoc()
+      requireIdle()
+      const entityIds = strList(params, 'entityIds')
+      const presetId = str(params, 'presetId') ?? ''
+      const { MOTION_PRESETS } = await import('@engine/motions')
+      if (!MOTION_PRESETS.some((m) => m.id === presetId)) {
+        throw new Error(`apply_motion: unknown presetId "${presetId}" — call list_motion_presets for ids.`)
+      }
+      const people = (s.scene()?.entities ?? []).filter(
+        (e) => entityIds.includes(e.id) && e.assetId.startsWith('person.')
+      )
+      if (people.length === 0) {
+        throw new Error('apply_motion: applied 0 — motions apply to people (person.* entity ids from get_state).')
+      }
+      s.applyMotionToEntities(people.map((e) => e.id), presetId)
+      return { applied: people.length }
+    }
+
+    case 'undo':
+    case 'redo': {
+      requireDoc()
+      requireIdle()
+      const before = useStore.getState()
+      if ((action === 'undo' ? before.undoStack : before.redoStack).length === 0) {
+        throw new Error(`Nothing to ${action}.`)
+      }
+      if (action === 'undo') before.undo()
+      else before.redo()
+      const after = useStore.getState()
+      return {
+        [action === 'undo' ? 'undone' : 'redone']: true,
+        canUndo: after.undoStack.length > 0,
+        canRedo: after.redoStack.length > 0
+      }
+    }
+
+    case 'save_project': {
+      requireDoc()
+      const folder = useStore.getState().projectFolder
+      if (!folder) throw new Error('save_project: this project has no folder yet — save it once from the app first.')
+      const json = currentProjectJson()
+      if (!json) throw new Error('No project open — create or open a project in the app first.')
+      await window.blockout.saveProject(folder, json)
+      useStore.getState().markSaved()
+      return { saved: true }
+    }
+
+    case 'list_export_profiles':
+      return BUILTIN_PROFILES.map((p) => ({
+        id: p.id,
+        name: p.name,
+        kind: p.kind,
+        maxDuration: p.maxDuration,
+        recommendedDuration: p.recommendedDuration,
+        aspects: p.aspects,
+        fps: p.fps
+      }))
+
+    case 'export_shot': {
+      requireDoc()
+      const profileId = exportProfileId(params, 'export_shot')
+      const resolution = exportResolution(params, 'export_shot')
+      const labels = str(params, 'labels') ?? 'stillsOnly'
+      if (labels !== 'on' && labels !== 'stillsOnly' && labels !== 'off') {
+        throw new Error(`export_shot: labels must be on, stillsOnly or off (got "${labels}").`)
+      }
+      const p = params.passes && typeof params.passes === 'object' ? (params.passes as Params) : {}
+      const passes = {
+        clean: bool(p, 'clean') ?? true,
+        depth: bool(p, 'depth') ?? true,
+        normal: bool(p, 'normal') ?? false
+      }
+      if (!passes.clean && !passes.depth && !passes.normal) {
+        throw new Error('export_shot: passes must turn on at least one of clean, depth, normal.')
+      }
+      const scene = s.scene()
+      const shot = s.shot()
+      const res = await exportShot({ profileId, passes, labels, resolution })
+      if (!res.ok || !res.packagePath) throw new Error(res.error ?? 'export_shot failed.')
+      const profile = BUILTIN_PROFILES.find((pr) => pr.id === profileId)!
+      return {
+        packagePath: res.packagePath,
+        relativePath: projectRelative(res.packagePath),
+        prompt: scene && shot ? generatePrompt(scene, shot, profile) : ''
+      }
+    }
+
+    case 'export_frame': {
+      requireDoc()
+      requireIdle()
+      const profileId = exportProfileId(params, 'export_frame')
+      const resolution = exportResolution(params, 'export_frame')
+      const res = await exportStillAtPlayhead(profileId, resolution, bool(params, 'labels') ?? true)
+      if (!res.ok || !res.packagePath) throw new Error(res.error ?? 'export_frame failed.')
+      return { path: res.packagePath }
+    }
+
+    case 'export_contact_sheet': {
+      requireDoc()
+      requireIdle()
+      const res = await exportContactSheet()
+      if (!res.ok || !res.packagePath) throw new Error(res.error ?? 'export_contact_sheet failed.')
+      return { path: res.packagePath }
+    }
+
+    case 'export_scene_animatic': {
+      requireDoc()
+      requireIdle()
+      const profileId = exportProfileId(params, 'export_scene_animatic')
+      const resolution = exportResolution(params, 'export_scene_animatic')
+      const res = await exportAnimatic(profileId, resolution)
+      if (!res.ok || !res.packagePath) throw new Error(res.error ?? 'export_scene_animatic failed.')
+      return { path: res.packagePath }
     }
 
     case 'list_presets':

@@ -1,3 +1,4 @@
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -14,6 +15,8 @@ import { easedProgress, lerp, lerpAngle, smoothstep } from './easing'
 import { GAITS, checkSpeed, type SpeedVerdict } from './gaits'
 import { Path, headingOf } from './path'
 import { RigNoise } from './rigs'
+import { solveShot, type ShotSpec, type ShotSubject, type SolvedShot } from './shot'
+import { evaluateShotTrack, shotTrackSegment } from './shot-track'
 import type {
   ActorMark,
   CameraMark,
@@ -280,8 +283,19 @@ export class ShotEvaluator {
     for (const { entity, marks, legs } of this.entityLegs.values()) {
       const r = evaluateTrack(marks, legs, time)
       const arriveHeading = r.atMark?.arriveHeading
-      const heading =
-        r.travelHeading ?? arriveHeading ?? this.lastTravelHeading(legs, time) ?? entity.transform.rotationY
+      // Fork: a lockFacing destination keeps the marks' facing (and its own
+      // gait) while travelling — fighters back off facing the opponent.
+      const locked =
+        r.leg?.to.lockFacing && (r.leg.from.arriveHeading !== undefined || r.leg.to.arriveHeading !== undefined)
+          ? r.leg
+          : null
+      const heading = locked
+        ? lerpAngle(
+            locked.from.arriveHeading ?? locked.to.arriveHeading!,
+            locked.to.arriveHeading ?? locked.from.arriveHeading!,
+            easedProgress(r.legProgress, locked.from.easeOut, locked.to.easeIn)
+          )
+        : (r.travelHeading ?? arriveHeading ?? this.lastTravelHeading(legs, time) ?? entity.transform.rotationY)
       // Gait: while travelling, the gait of the mark we travel toward;
       // while holding, the gait of the mark we're at.
       const gait: GaitId = r.leg ? r.leg.to.gait : (r.atMark?.gait ?? 'stand')
@@ -302,7 +316,7 @@ export class ShotEvaluator {
         entityId: entity.id,
         position: r.position,
         heading,
-        gait: r.leg && spec.travels ? gait : r.leg ? 'walk' : gait,
+        gait: locked ? locked.to.gait : r.leg && spec.travels ? gait : r.leg ? 'walk' : gait,
         distanceTravelled: r.distanceTravelled,
         speed: r.speed,
         joints
@@ -392,8 +406,19 @@ export class ShotEvaluator {
     let roll: number
     let focalLength: number
     let focusDistance: number | undefined
+    // Live shot marks (fork): re-solved from the subjects every frame.
+    const shotTrack = marks.some((m) => m.shot)
+    const activeShot = shotTrack && !!shotTrackSegment(marks, time).active.shot
 
-    if (marks.length === 0) {
+    if (shotTrack) {
+      const pose = evaluateShotTrack(marks, time, (m) => this.solveShotMark(m, entities))
+      position = pose.position
+      pan = pose.pan
+      tilt = pose.tilt
+      roll = pose.roll
+      focalLength = pose.focalLength
+      focusDistance = pose.focusDistance
+    } else if (marks.length === 0) {
       // Sane default: eye-height, pulled back, aimed at origin.
       position = { x: 5, y: 1.6, z: 5 }
       pan = headingOf({ x: -5, y: 0, z: -5 })
@@ -432,7 +457,7 @@ export class ShotEvaluator {
     }
 
     // Car mount: marks are in the mount entity's local frame.
-    if (cam.rig === 'carMount' && cam.mountEntityId) {
+    if (cam.rig === 'carMount' && cam.mountEntityId && !shotTrack) {
       const mount = entities.find((e) => e.entityId === cam.mountEntityId)
       if (mount) {
         // Rotate the camera's local offset by the mount's heading
@@ -456,7 +481,7 @@ export class ShotEvaluator {
     // before rig noise so handheld/steadicam texture still layers on top.
     // If marks set a focusDistance, focus is pulled to the subject's live
     // distance; deep focus (undefined) stays deep.
-    if (cam.trackEntityId) {
+    if (cam.trackEntityId && !activeShot) {
       const subject = entities.find((e) => e.entityId === cam.trackEntityId)
       const docEntity = this.scene.entities.find((e) => e.id === cam.trackEntityId)
       if (subject && docEntity) {
@@ -488,6 +513,49 @@ export class ShotEvaluator {
       focalLength,
       focusDistance,
       vfov: verticalFov(cam.sensorId, focalLength, this.shot.aspect)
+    }
+  }
+
+  /** Solve one shot mark from the live entity states; null when it can't (deleted subject …). */
+  private solveShotMark(m: CameraMark, entities: EntityState[]): SolvedShot | null {
+    return m.shot ? this.solveShotSpec(m.shot, m.focalLength, entities) : null
+  }
+
+  /** Solve shot words against the blocking at time t (null when a subject is missing). */
+  solveShotAt(spec: ShotSpec, t: number, focalLength: number): SolvedShot | null {
+    return this.solveShotSpec(spec, focalLength, this.evaluate(t).entities)
+  }
+
+  private solveShotSpec(spec: ShotSpec, focalLength: number, entities: EntityState[]): SolvedShot | null {
+    const subjects: ShotSubject[] = []
+    for (const es of entities) {
+      const e = this.scene.entities.find((x) => x.id === es.entityId)
+      if (!e) continue
+      // Static joint_* params layer under mark joints, as in the renderer.
+      let joints = es.joints
+      for (const [key, v] of Object.entries(e.params ?? {})) {
+        if (key.startsWith('joint_') && typeof v === 'number' && v !== 0) {
+          joints = { ...joints, [key.slice(6)]: (joints?.[key.slice(6)] ?? 0) + v }
+        }
+      }
+      subjects.push({
+        id: e.id,
+        assetId: e.assetId,
+        params: e.params,
+        scale: e.transform.scale,
+        position: es.position,
+        heading: es.heading,
+        joints
+      })
+    }
+    try {
+      return solveShot(spec, subjects, {
+        sensorId: this.shot.camera.sensorId,
+        aspect: this.shot.aspect,
+        focalLength
+      })
+    } catch {
+      return null
     }
   }
 

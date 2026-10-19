@@ -1,3 +1,4 @@
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override signs fixed; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -11,6 +12,7 @@
 import * as THREE from 'three'
 import type { GaitId } from '@engine/types'
 import { assetSpec } from '@engine/assets'
+import { personDims } from '@engine/skeleton'
 
 export interface AnimInput {
   gait: GaitId
@@ -174,17 +176,11 @@ interface PersonJoints {
 }
 
 function buildPerson(assetId: string, params?: Record<string, number | string>): BuiltAsset {
-  const spec = assetSpec(assetId)
-  const hMul = Math.min(1.2, Math.max(0.8, numParam(params, 'height', 1)))
-  const buildMul = Math.min(1.3, Math.max(0.8, numParam(params, 'build', 1)))
-  const H = spec.height * hMul
-  const s = H / 1.78 // normalize proportions to a 1.78m reference
-  const w = buildMul
-
-  const legLen = H * 0.47
-  const headR = H * 0.13 * 0.5
-  const torsoLen = H - legLen - headR * 2
-  const bodyW = 0.34 * s * w
+  // Every length comes from the engine's personDims so FK (skeleton.ts) and
+  // the rendered rig can't drift.
+  const dims = personDims(assetId, params)
+  const { H, s, legLen, headR, torsoLen, bodyW } = dims
+  const w = Math.min(1.3, Math.max(0.8, numParam(params, 'build', 1)))
 
   const group = new THREE.Group()
   group.name = assetId
@@ -195,6 +191,7 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
   // Pelvis sits at top of legs.
   const pelvisY = legLen
   const pelvis = grp(0, pelvisY, 0)
+  pelvis.name = 'pelvis'
   root.add(pelvis)
 
   const pelvisMesh = box(bodyW, 0.18 * s, 0.2 * s, 0x83838b)
@@ -203,6 +200,7 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
 
   // Torso pivots at pelvis, extends up.
   const torso = grp(0, 0.08 * s, 0)
+  torso.name = 'torso'
   pelvis.add(torso)
   const torsoMesh = capsule(bodyW * 0.5, torsoLen * 0.7, 0x8f8f97)
   torsoMesh.position.y = torsoLen * 0.5
@@ -210,6 +208,7 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
 
   // Neck + head.
   const head = grp(0, torsoLen, 0)
+  head.name = 'head'
   torso.add(head)
   const neck = cyl(0.05 * s, 0.05 * s, 0.08 * s, 0x83838b)
   neck.position.y = 0.04 * s
@@ -219,18 +218,18 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
   head.add(headMesh)
 
   // Arms — shoulders at top of torso.
-  const shoulderY = torsoLen * 0.92
+  const { shoulderY, upperArmLen, lowerArmLen } = dims
   const armR = 0.055 * s * w
-  const upperArmLen = torsoLen * 0.5
-  const lowerArmLen = torsoLen * 0.48
 
   const mkArm = (side: number) => {
     const shoulder = grp(side * bodyW * 0.55, shoulderY, 0)
+    shoulder.name = side < 0 ? 'shoulderL' : 'shoulderR'
     torso.add(shoulder)
     const upper = capsule(armR, upperArmLen * 0.7, 0x88888f)
     upper.position.y = -upperArmLen * 0.5
     shoulder.add(upper)
     const elbow = grp(0, -upperArmLen, 0)
+    elbow.name = side < 0 ? 'elbowL' : 'elbowR'
     shoulder.add(elbow)
     const lower = capsule(armR * 0.9, lowerArmLen * 0.7, 0x8c8c94)
     lower.position.y = -lowerArmLen * 0.5
@@ -242,16 +241,17 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
 
   // Legs — hips at pelvis.
   const legR = 0.075 * s * w
-  const upperLegLen = legLen * 0.52
-  const lowerLegLen = legLen * 0.48
+  const { upperLegLen, lowerLegLen } = dims
 
   const mkLeg = (side: number) => {
     const hip = grp(side * bodyW * 0.28, 0, 0)
+    hip.name = side < 0 ? 'hipL' : 'hipR'
     pelvis.add(hip)
     const upper = capsule(legR, upperLegLen * 0.7, 0x86868e)
     upper.position.y = -upperLegLen * 0.5
     hip.add(upper)
     const knee = grp(0, -upperLegLen, 0)
+    knee.name = side < 0 ? 'kneeL' : 'kneeR'
     hip.add(knee)
     const lower = capsule(legR * 0.85, lowerLegLen * 0.7, 0x8a8a92)
     lower.position.y = -lowerLegLen * 0.5
@@ -265,7 +265,7 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
   const legL = mkLeg(-1)
   const legR3 = mkLeg(1)
 
-  const baseLean = assetId === 'person.elderly' ? 0.18 : 0
+  const baseLean = dims.baseLean
 
   const j: PersonJoints = {
     root,
@@ -393,28 +393,31 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
     }
   }
 
-  // Manual pose offsets on top of the gait (fight/dance blocking).
+  // Manual pose offsets on top of the gait (fight/dance blocking). Signs
+  // follow the motions.ts conventions on a body facing −Z (fork fix: the
+  // X and abduction channels used to play mirrored — blows went backward,
+  // "out" went inward). skeleton.ts poseEffectors mirrors this block.
   const ov = input.overrides
   if (ov) {
-    j.shoulderL.rotation.x += ov.shoulderLX ?? 0
-    j.shoulderR.rotation.x += ov.shoulderRX ?? 0
-    j.shoulderL.rotation.z += ov.shoulderLZ ?? 0
-    j.shoulderR.rotation.z -= ov.shoulderRZ ?? 0
-    j.elbowL.rotation.x -= ov.elbowL ?? 0
-    j.elbowR.rotation.x -= ov.elbowR ?? 0
-    j.hipL.rotation.x += ov.hipLX ?? 0
-    j.hipR.rotation.x += ov.hipRX ?? 0
+    j.shoulderL.rotation.x -= ov.shoulderLX ?? 0
+    j.shoulderR.rotation.x -= ov.shoulderRX ?? 0
+    j.shoulderL.rotation.z -= ov.shoulderLZ ?? 0
+    j.shoulderR.rotation.z += ov.shoulderRZ ?? 0
+    j.elbowL.rotation.x += ov.elbowL ?? 0
+    j.elbowR.rotation.x += ov.elbowR ?? 0
+    j.hipL.rotation.x -= ov.hipLX ?? 0
+    j.hipR.rotation.x -= ov.hipRX ?? 0
     // Leg abduction (out to the side); mirrored on the right like the arms so
     // positive reads as "outward" on both legs.
-    j.hipL.rotation.z += ov.hipLZ ?? 0
-    j.hipR.rotation.z -= ov.hipRZ ?? 0
+    j.hipL.rotation.z -= ov.hipLZ ?? 0
+    j.hipR.rotation.z += ov.hipRZ ?? 0
     j.kneeL.rotation.x -= ov.kneeL ?? 0
     j.kneeR.rotation.x -= ov.kneeR ?? 0
-    j.torso.rotation.x += ov.torsoX ?? 0
+    j.torso.rotation.x -= ov.torsoX ?? 0
     j.torso.rotation.y += ov.torsoY ?? 0
     // Lateral lean/tilt (positive = right); sign matches the arm-mirror frame.
     j.torso.rotation.z -= ov.torsoZ ?? 0
-    j.head.rotation.x += ov.headX ?? 0
+    j.head.rotation.x -= ov.headX ?? 0
     j.head.rotation.y += ov.headY ?? 0
     j.head.rotation.z -= ov.headZ ?? 0
   }

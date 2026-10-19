@@ -1,3 +1,4 @@
+// Modified for the fork (shared label palette, shot words box, pose-slider directions) in 2026; see MODIFICATIONS.md.
 /**
  * Context-sensitive right panel. Content is driven by store.selection and the
  * current mode: nothing selected → scene/lighting/shot; an entity, the shot
@@ -32,12 +33,12 @@ import type {
   Scene,
   Shot
 } from '@engine/types'
+import { LABEL_SWATCHES } from '@engine/palette'
+import { ShotLockNote, ShotPanel } from './ShotPanel'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi)
 const toDeg = (rad: number): number => Math.round((rad * 180) / Math.PI)
 const toRad = (deg: number): number => (deg * Math.PI) / 180
-
-const SWATCHES = ['#e5484d', '#f5a524', '#46a758', '#3b82f6', '#a855f7', '#ec4899', '#14b8a6', '#f97316']
 
 const LIGHTING: { id: LightingPresetId; label: string }[] = [
   { id: 'day', label: 'Day' },
@@ -766,7 +767,7 @@ function EntityInspector({
           />
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {SWATCHES.map((c) => (
+          {LABEL_SWATCHES.map((c) => (
             <button
               key={c}
               className="swatch"
@@ -1378,16 +1379,22 @@ function CameraPoseSection({ scene, shot }: { scene: Scene; shot: Shot }): JSX.E
       <div className="panel-title">
         Position &amp; aim — mark {markIndex}/{ordered.length}
       </div>
-      <div className="field-row">
-        {numField('X', active.position.x, 0.1, (m, v) => (m.position.x = v))}
-        {numField('Height', active.position.y, 0.1, (m, v) => (m.position.y = Math.max(0, v)))}
-        {numField('Z', active.position.z, 0.1, (m, v) => (m.position.z = v))}
-      </div>
-      <div className="field-row">
-        {numField('Pan', toDeg(active.pan), 1, (m, v) => (m.pan = toRad(v)), '°')}
-        {numField('Tilt', toDeg(active.tilt), 1, (m, v) => (m.tilt = toRad(clamp(v, -89, 89))), '°')}
-        {numField('Roll', toDeg(active.roll), 1, (m, v) => (m.roll = toRad(clamp(v, -180, 180))), '°')}
-      </div>
+      {active.shot ? (
+        <ShotLockNote scene={scene} mark={active} />
+      ) : (
+        <>
+          <div className="field-row">
+            {numField('X', active.position.x, 0.1, (m, v) => (m.position.x = v))}
+            {numField('Height', active.position.y, 0.1, (m, v) => (m.position.y = Math.max(0, v)))}
+            {numField('Z', active.position.z, 0.1, (m, v) => (m.position.z = v))}
+          </div>
+          <div className="field-row">
+            {numField('Pan', toDeg(active.pan), 1, (m, v) => (m.pan = toRad(v)), '°')}
+            {numField('Tilt', toDeg(active.tilt), 1, (m, v) => (m.tilt = toRad(clamp(v, -89, 89))), '°')}
+            {numField('Roll', toDeg(active.roll), 1, (m, v) => (m.roll = toRad(clamp(v, -180, 180))), '°')}
+          </div>
+        </>
+      )}
       <div className="field-row">
         {numField('Lens', active.focalLength, 1, (m, v) => (m.focalLength = clamp(v, 8, 300)), 'mm')}
         {numField('At time', active.time, 0.1, (m, v) => (m.time = clamp(v, 0, shot.duration)), 's')}
@@ -1547,6 +1554,8 @@ function CameraInspector({ scene, shot }: { scene: Scene; shot: Shot }): JSX.Ele
       </div>
 
       <CameraPoseSection scene={scene} shot={shot} />
+
+      <ShotPanel scene={scene} shot={shot} />
 
       <div className="panel-section">
         <div className="panel-title">Track subject</div>
@@ -1958,25 +1967,28 @@ const POSES: { id: GaitId; label: string }[] = [
   { id: 'fall', label: 'Fallen' }
 ]
 
-const JOINTS: { key: string; label: string; range: number }[] = [
-  { key: 'shoulderLX', label: 'L arm fwd', range: 180 },
-  { key: 'shoulderRX', label: 'R arm fwd', range: 180 },
+// Fork: labels say which way positive goes; `sign: -1` flips the slider for
+// channels where the motions.ts convention raises forward with a NEGATIVE
+// value, so dragging right always means forward / out / bend / right.
+const JOINTS: { key: string; label: string; range: number; sign?: -1 }[] = [
+  { key: 'shoulderLX', label: 'L arm forward', range: 180, sign: -1 },
+  { key: 'shoulderRX', label: 'R arm forward', range: 180, sign: -1 },
   { key: 'shoulderLZ', label: 'L arm out', range: 150 },
   { key: 'shoulderRZ', label: 'R arm out', range: 150 },
-  { key: 'elbowL', label: 'L elbow', range: 150 },
-  { key: 'elbowR', label: 'R elbow', range: 150 },
-  { key: 'hipLX', label: 'L leg', range: 120 },
-  { key: 'hipRX', label: 'R leg', range: 120 },
+  { key: 'elbowL', label: 'L elbow bend', range: 150 },
+  { key: 'elbowR', label: 'R elbow bend', range: 150 },
+  { key: 'hipLX', label: 'L leg forward', range: 120, sign: -1 },
+  { key: 'hipRX', label: 'R leg forward', range: 120, sign: -1 },
   { key: 'hipLZ', label: 'L leg out', range: 90 },
   { key: 'hipRZ', label: 'R leg out', range: 90 },
-  { key: 'kneeL', label: 'L knee', range: 150 },
-  { key: 'kneeR', label: 'R knee', range: 150 },
-  { key: 'torsoX', label: 'Torso lean', range: 60 },
-  { key: 'torsoY', label: 'Torso twist', range: 80 },
-  { key: 'torsoZ', label: 'Torso tilt', range: 50 },
-  { key: 'headY', label: 'Head turn', range: 80 },
-  { key: 'headX', label: 'Head nod', range: 45 },
-  { key: 'headZ', label: 'Head tilt', range: 45 }
+  { key: 'kneeL', label: 'L knee bend', range: 150 },
+  { key: 'kneeR', label: 'R knee bend', range: 150 },
+  { key: 'torsoX', label: 'Torso lean forward', range: 60 },
+  { key: 'torsoY', label: 'Torso twist left', range: 80 },
+  { key: 'torsoZ', label: 'Torso tilt right', range: 50 },
+  { key: 'headY', label: 'Head turn left', range: 80 },
+  { key: 'headX', label: 'Head nod down', range: 45 },
+  { key: 'headZ', label: 'Head tilt right', range: 45 }
 ]
 
 const DEG = 180 / Math.PI
@@ -2023,7 +2035,7 @@ function PoseSection({
         {JOINTS.map((j) => {
           const raw = entity.params?.[`joint_${j.key}`]
           const rad = typeof raw === 'number' ? raw : 0
-          const deg = Math.round(rad * DEG)
+          const deg = Math.round(rad * DEG * (j.sign ?? 1))
           return (
             <div className="field" key={j.key} style={{ marginBottom: 6 }}>
               <label>
@@ -2039,7 +2051,7 @@ function PoseSection({
                   const v = Number(e.target.value)
                   if (Number.isNaN(v)) return
                   editEntity('pose joint', (en) => {
-                    en.params = { ...en.params, [`joint_${j.key}`]: v / DEG }
+                    en.params = { ...en.params, [`joint_${j.key}`]: (v * (j.sign ?? 1)) / DEG }
                   })
                 }}
               />
@@ -2094,7 +2106,7 @@ function MarkPoseSection({
         </summary>
         {JOINTS.map((j) => {
           const rad = mark.joints?.[j.key] ?? 0
-          const deg = Math.round(rad * DEG)
+          const deg = Math.round(rad * DEG * (j.sign ?? 1))
           return (
             <div className="field" key={j.key} style={{ marginBottom: 6 }}>
               <label>
@@ -2111,7 +2123,7 @@ function MarkPoseSection({
                   if (Number.isNaN(v)) return
                   editMark('mark pose', (m) => {
                     const am = m as ActorMark
-                    am.joints = { ...am.joints, [j.key]: v / DEG }
+                    am.joints = { ...am.joints, [j.key]: (v * (j.sign ?? 1)) / DEG }
                   })
                 }}
               />

@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools in 2026; see MODIFICATIONS.md.
 /**
  * Localhost-only HTTP control server. External agents (MCP clients, Codex,
  * Hermes, …) drive a running Blockout by POSTing actions here; each action
@@ -15,6 +15,7 @@ import crypto from 'crypto'
 import { mkdir, writeFile, rm } from 'fs/promises'
 import { resolveConfigDir, resolveConfigPath } from '../shared/config-paths'
 import { version as APP_VERSION } from '../../package.json'
+import type { InvokeFn } from './mcp-http'
 
 interface Pending {
   resolve: (result: { ok: boolean; data?: unknown; error?: string }) => void
@@ -29,12 +30,12 @@ const CONTROL_CAPABILITIES = ['health', 'rpc', 'set_reference', 'motion-handoff-
 
 // Per-action timeouts: rendering/exporting legitimately take longer.
 function timeoutForAction(action: string): number {
-  if (action === 'export_shot') return 600_000
+  if (action.startsWith('export_')) return 600_000
   if (action === 'screenshot') return 120_000
   return 30_000
 }
 
-export async function startControlServer(getWindow: () => BrowserWindow | null): Promise<void> {
+export async function startControlServer(getWindow: () => BrowserWindow | null): Promise<{ invoke: InvokeFn }> {
   const token = crypto.randomBytes(24).toString('hex')
   const pending = new Map<string, Pending>()
 
@@ -156,4 +157,5 @@ export async function startControlServer(getWindow: () => BrowserWindow | null):
   })
 
   console.log(`[blockout] control server on 127.0.0.1:${port}`)
+  return { invoke }
 }

@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's Clara button in 2026; see MODIFICATIONS.md.
 /**
  * App shell: welcome screen, titlebar with the three-mode switch, the
  * Stage/Shoot/Deliver layouts, global keyboard map, and autosave.
@@ -14,6 +14,7 @@ import { Timeline } from './panels/Timeline'
 import { DeliverPanel } from './panels/DeliverPanel'
 import { Toasts } from './panels/Toasts'
 import { HelpOverlay, BlockingCoach } from './panels/Help'
+import { ClaraButton } from './panels/ClaraButton'
 import logoUrl from './assets/logo.png'
 import { DISTRIBUTION } from '../shared/distribution'
 
@@ -266,6 +267,7 @@ export function App(): JSX.Element {
         >
           ? Help
         </button>
+        <ClaraButton />
       </div>
 
       {mode === 'deliver' ? (

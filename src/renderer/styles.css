@@ -1,4 +1,4 @@
-/* Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md. */
+/* Modified for cross-platform Windows support and the fork's Clara button in 2026; see MODIFICATIONS.md. */
 
 /* Blockout design system — dark, quiet chrome; the viewport is the star. */
 
@@ -686,4 +686,18 @@ input[type='color'] {
 
 @media (max-width: 620px) {
   .help-kbd-grid { grid-template-columns: 1fr; }
+}
+
+/* Clara button (fork): pulses while Clara is opening. */
+.clara-pulse {
+  animation: clara-pulse 1.1s ease-in-out infinite;
+}
+@keyframes clara-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
 }

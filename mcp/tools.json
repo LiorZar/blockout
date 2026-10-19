@@ -1,0 +1,1787 @@
+[
+  {
+    "name": "get_state",
+    "title": "See the current scene",
+    "description": "Call FIRST. Returns a summary of the current project, scene, and active shot: the placed entities (id, asset, label, position) and the choreography marks on the timeline (actor + camera). Coordinates are in meters, +X is right, -Z is forward/away from the default camera; heading 0 faces -Z; rotationDeg is clockwise seen from above.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_assets",
+    "title": "List things to place",
+    "description": "List the placeable asset catalog (people, animals, vehicles, furniture, environment kits, primitives). Use an assetId from here with add_entity. Optionally filter by category.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "Optional category filter, e.g. \"people\", \"vehicles\", \"environment\"."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "add_entity",
+    "title": "Place something",
+    "description": "Place a new entity on the ground. x/z in meters (+X right, -Z away); rotationDeg is clockwise from above with 0 facing -Z. A labelled entity gets its own colour automatically so the video model can tell people apart. Returns the new entity id and its colour.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "assetId": {
+          "type": "string",
+          "description": "An id from list_assets, e.g. \"person.man\"."
+        },
+        "x": {
+          "type": "number",
+          "description": "X position in meters (+X right)."
+        },
+        "z": {
+          "type": "number",
+          "description": "Z position in meters (-Z forward/away)."
+        },
+        "label": {
+          "type": "string",
+          "description": "Optional short uppercase label, e.g. \"HERO\"."
+        },
+        "rotationDeg": {
+          "type": "number",
+          "description": "Optional heading in degrees, clockwise from above; 0 faces -Z."
+        },
+        "color": {
+          "type": "string",
+          "description": "Optional colour: red, amber, green, blue, purple, pink, teal, orange, or a hex value like \"#e5484d\"."
+        }
+      },
+      "required": [
+        "assetId",
+        "x",
+        "z"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "move_entity",
+    "title": "Move something",
+    "description": "Reposition an existing entity. Omitted fields are left unchanged.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "Entity id from get_state."
+        },
+        "x": {
+          "type": "number",
+          "description": "X in meters (+X right)."
+        },
+        "z": {
+          "type": "number",
+          "description": "Z in meters (-Z away)."
+        },
+        "y": {
+          "type": "number",
+          "description": "Optional height in meters above ground."
+        },
+        "rotationDeg": {
+          "type": "number",
+          "description": "Optional heading, clockwise from above; 0 faces -Z."
+        }
+      },
+      "required": [
+        "entityId",
+        "x",
+        "z"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_entity",
+    "title": "Delete something",
+    "description": "Remove an entity from the scene.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "Entity id from get_state."
+        }
+      },
+      "required": [
+        "entityId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "add_actor_mark",
+    "title": "Add an actor mark",
+    "description": "Drop a timeline mark for an actor entity: at time t (seconds) the actor is at x,z. Chain marks to choreograph a walk. gait sets the movement style between marks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "The actor entity id."
+        },
+        "x": {
+          "type": "number",
+          "description": "X in meters (+X right)."
+        },
+        "z": {
+          "type": "number",
+          "description": "Z in meters (-Z away)."
+        },
+        "time": {
+          "type": "number",
+          "description": "Time of the mark in seconds."
+        },
+        "gait": {
+          "type": "string",
+          "enum": [
+            "walk",
+            "jog",
+            "run",
+            "stand"
+          ],
+          "description": "Movement style approaching this mark."
+        }
+      },
+      "required": [
+        "entityId",
+        "x",
+        "z",
+        "time"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "add_camera_mark",
+    "title": "Add a camera mark",
+    "description": "Drop a camera mark at time t: camera at x,y,z (meters, y is height) looking with panDeg (clockwise from above, 0 faces -Z) and tiltDeg (positive looks up, negative down). focalLength in mm on Super 35 (24 wide, 35 normal, 50-85 tight).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "x": {
+          "type": "number",
+          "description": "Camera X in meters (+X right)."
+        },
+        "y": {
+          "type": "number",
+          "description": "Camera height in meters above ground."
+        },
+        "z": {
+          "type": "number",
+          "description": "Camera Z in meters (-Z away)."
+        },
+        "panDeg": {
+          "type": "number",
+          "description": "Pan in degrees, clockwise from above; 0 faces -Z."
+        },
+        "tiltDeg": {
+          "type": "number",
+          "description": "Tilt in degrees; positive up, negative down."
+        },
+        "time": {
+          "type": "number",
+          "description": "Time of the mark in seconds."
+        },
+        "focalLength": {
+          "type": "number",
+          "description": "Optional focal length in mm (Super 35)."
+        }
+      },
+      "required": [
+        "x",
+        "y",
+        "z",
+        "panDeg",
+        "tiltDeg",
+        "time"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "clear_camera_marks",
+    "title": "Clear the camera marks",
+    "description": "Remove all camera marks from the active shot (keeps actor marks).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "frame_shot",
+    "title": "Frame the shot",
+    "description": "Frame the camera with shot words, e.g. \"MCU on B, over A's right shoulder, 50mm\" or \"two-shot of A and B, low angle, from the left at 2.5s\" — or the same fields structured. The camera mark is re-solved every frame from the subjects' live positions, so the framing holds while they move. Updates the camera mark at that time (±1 frame) or adds one. Names are entity labels or names from get_state.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "words": {
+          "type": "string",
+          "description": "Shot words: size (EWS WS FS MS MCU CU ECU, wide, close-up…), on <name>, two-shot of <a> and <b>, over <name>'s left|right shoulder, <n>mm, eye level / low angle / high angle / overhead / ground level, from the front|behind|left|right, 3/4 left|right, profile, dutch <deg>, at <t>s."
+        },
+        "size": {
+          "type": "string",
+          "enum": [
+            "EWS",
+            "WS",
+            "FS",
+            "MS",
+            "MCU",
+            "CU",
+            "ECU"
+          ],
+          "description": "Shot size (with subjectIds, instead of words)."
+        },
+        "subjectIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Entity ids from get_state to frame; two or more make a group shot."
+        },
+        "over": {
+          "type": "object",
+          "properties": {
+            "entityId": {
+              "type": "string",
+              "description": "Entity whose shoulder the camera looks over."
+            },
+            "shoulder": {
+              "type": "string",
+              "enum": [
+                "left",
+                "right"
+              ],
+              "description": "Which shoulder (default right)."
+            }
+          },
+          "required": [
+            "entityId"
+          ],
+          "additionalProperties": false,
+          "description": "Over-the-shoulder framing."
+        },
+        "side": {
+          "type": "string",
+          "enum": [
+            "front",
+            "frontLeft",
+            "left",
+            "backLeft",
+            "back",
+            "backRight",
+            "right",
+            "frontRight",
+            "line"
+          ],
+          "description": "Where the camera sits relative to the first subject's facing (its own right is right); line = side-on to the two subjects."
+        },
+        "angle": {
+          "type": "string",
+          "enum": [
+            "eye",
+            "low",
+            "high",
+            "overhead",
+            "ground"
+          ],
+          "description": "Camera height (default eye level)."
+        },
+        "lens": {
+          "type": "number",
+          "description": "Focal length in mm (default: the mark's lens)."
+        },
+        "dutchDeg": {
+          "type": "number",
+          "description": "Dutch tilt in degrees."
+        },
+        "time": {
+          "type": "number",
+          "description": "Mark time in seconds (default: the playhead)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_fight_moves",
+    "title": "List fight moves",
+    "description": "The strikes a fight script can use, with their aliases, default target and impacts (which hand/foot/elbow/knee lands, and when).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "stage_fight",
+    "title": "Stage a fight",
+    "description": "Stage a scripted two-person fight blow by blow: every hit lands on its frame, defenses are up in time, knockback follows the physics, and the report gives each blow's contact error (warnings flag blows the bodies can't reach). Spawns fighters A and B at x/z (facing each other across headingDeg) unless fighterIds names two people. Returns the fight id, its script text and the report.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "script": {
+          "type": "string",
+          "description": "Fight script, one blow per line (or ';'): <who> <move> [to head|body|legs] [-> outcome, ...] [power 0.2-1] [at <t>s]. who = A / B or a fighter label; outcomes hit, block, parry, slip, duck, miss, ko (one per impact). Example: \"A jab cross to head -> block, hit\\nB hook to body -> hit power 0.9\"."
+        },
+        "beats": {
+          "type": "array",
+          "description": "Beats as objects instead of a script.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attacker": {
+                "type": "number",
+                "description": "0 = fighter A, 1 = fighter B."
+              },
+              "move": {
+                "type": "string",
+                "description": "Strike id or alias from list_fight_moves."
+              },
+              "target": {
+                "type": "string",
+                "enum": [
+                  "head",
+                  "body",
+                  "legs"
+                ],
+                "description": "Target zone (default by move)."
+              },
+              "outcomes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "hit",
+                    "block",
+                    "parry",
+                    "slip",
+                    "duck",
+                    "miss",
+                    "ko"
+                  ]
+                },
+                "description": "One per impact; shorter lists are padded with block for earlier impacts."
+              },
+              "power": {
+                "type": "number",
+                "description": "0.2-1 (default 0.7)."
+              },
+              "at": {
+                "type": "number",
+                "description": "Explicit start time in seconds."
+              }
+            },
+            "required": [
+              "attacker",
+              "move"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "random": {
+          "type": "object",
+          "properties": {
+            "seed": {
+              "type": "number",
+              "description": "Seed (same seed, same fight)."
+            },
+            "style": {
+              "type": "string",
+              "enum": [
+                "brawl",
+                "martial-arts",
+                "sparring"
+              ],
+              "description": "Move pool."
+            },
+            "ending": {
+              "type": "string",
+              "enum": [
+                "ko",
+                "standing"
+              ],
+              "description": "End on a KO (default) or with both standing."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Write a random script for the shot's length instead."
+        },
+        "x": {
+          "type": "number",
+          "description": "Where to stage it (meters)."
+        },
+        "z": {
+          "type": "number",
+          "description": "Where to stage it (meters)."
+        },
+        "headingDeg": {
+          "type": "number",
+          "description": "Facing of the staging, degrees clockwise from above; the fighters stand side by side across it."
+        },
+        "fighterIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Two person entity ids from get_state to fight (keeps their look and spots)."
+        },
+        "exaggeration": {
+          "type": "number",
+          "description": "Knockback exaggeration 1-3 (default 1.5)."
+        },
+        "coverage": {
+          "type": "string",
+          "enum": [
+            "master",
+            "punch-in",
+            "over-shoulder",
+            "follow"
+          ],
+          "description": "Camera coverage built from live shot words: master (wide two-shot), punch-in (MCU on big hits), over-shoulder (per beat), follow (handheld on the attacker)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "update_fight",
+    "title": "Change a fight",
+    "description": "Re-solve a staged fight with a new script / beats, exaggeration or camera coverage. Replaces only the two fighters' marks. Returns the fight id, script and report.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fightId": {
+          "type": "string",
+          "description": "Fight id from stage_fight or get_state."
+        },
+        "script": {
+          "type": "string",
+          "description": "Fight script, one blow per line (or ';'): <who> <move> [to head|body|legs] [-> outcome, ...] [power 0.2-1] [at <t>s]. who = A / B or a fighter label; outcomes hit, block, parry, slip, duck, miss, ko (one per impact). Example: \"A jab cross to head -> block, hit\\nB hook to body -> hit power 0.9\"."
+        },
+        "beats": {
+          "type": "array",
+          "description": "Beats as objects instead of a script.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "attacker": {
+                "type": "number",
+                "description": "0 = fighter A, 1 = fighter B."
+              },
+              "move": {
+                "type": "string",
+                "description": "Strike id or alias from list_fight_moves."
+              },
+              "target": {
+                "type": "string",
+                "enum": [
+                  "head",
+                  "body",
+                  "legs"
+                ],
+                "description": "Target zone (default by move)."
+              },
+              "outcomes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "hit",
+                    "block",
+                    "parry",
+                    "slip",
+                    "duck",
+                    "miss",
+                    "ko"
+                  ]
+                },
+                "description": "One per impact; shorter lists are padded with block for earlier impacts."
+              },
+              "power": {
+                "type": "number",
+                "description": "0.2-1 (default 0.7)."
+              },
+              "at": {
+                "type": "number",
+                "description": "Explicit start time in seconds."
+              }
+            },
+            "required": [
+              "attacker",
+              "move"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "exaggeration": {
+          "type": "number",
+          "description": "Knockback exaggeration 1-3."
+        },
+        "coverage": {
+          "type": "string",
+          "enum": [
+            "master",
+            "punch-in",
+            "over-shoulder",
+            "follow"
+          ],
+          "description": "Camera coverage built from live shot words: master (wide two-shot), punch-in (MCU on big hits), over-shoulder (per beat), follow (handheld on the attacker)."
+        }
+      },
+      "required": [
+        "fightId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "fight_coverage",
+    "title": "Cover the fight with the camera",
+    "description": "Replace the active camera with beat-aware coverage of a staged fight, built from live shot words and kept on one side of the fight line: master (one wide two-shot), punch-in (medium two-shot that pushes in to an MCU on the defender at every big hit), over-shoulder (per beat, over the attacker's shoulder), follow (per beat, a medium on the attacker, handheld). Clears the camera's aim lock.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fightId": {
+          "type": "string",
+          "description": "Fight id from stage_fight or get_state."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "master",
+            "punch-in",
+            "over-shoulder",
+            "follow"
+          ],
+          "description": "Coverage style."
+        },
+        "side": {
+          "type": "string",
+          "enum": [
+            "left",
+            "right"
+          ],
+          "description": "Which side of the fight line, as fighter A sees B (default: the side the camera is on now)."
+        }
+      },
+      "required": [
+        "fightId",
+        "mode"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "get_fight",
+    "title": "Read a fight",
+    "description": "A staged fight's script text and its solver report (per beat: impact times, contact error, reactions, warnings).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fightId": {
+          "type": "string",
+          "description": "Fight id from stage_fight or get_state."
+        }
+      },
+      "required": [
+        "fightId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "delete_fight",
+    "title": "Remove a fight",
+    "description": "Forget a staged fight. The fighters and their marks stay on the timeline; the fight can no longer be re-solved.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "fightId": {
+          "type": "string",
+          "description": "Fight id from stage_fight or get_state."
+        }
+      },
+      "required": [
+        "fightId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "set_shot",
+    "title": "Change shot settings",
+    "description": "Update the active shot settings. Omitted fields are unchanged.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Shot name."
+        },
+        "duration": {
+          "type": "number",
+          "description": "Shot duration in seconds."
+        },
+        "aspect": {
+          "type": "string",
+          "description": "Aspect ratio, e.g. \"16:9\", \"9:16\", \"2.39:1\"."
+        },
+        "fps": {
+          "type": "number",
+          "description": "Frames per second."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "new_shot",
+    "title": "Add a shot",
+    "description": "Create a new shot in the current scene (same blocking, fresh camera). Returns the new shot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Optional name for the new shot."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "apply_framing",
+    "title": "Frame the shot",
+    "description": "Auto-frame the camera using a preset relative to the subjects: 2S (two-shot), OTS (over-the-shoulder), REV (reverse), TOP (top-down), LOW (low angle), DUTCH (canted). Pass entityIds to frame those entities; otherwise the selection, else the people in the scene.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "2S",
+            "OTS",
+            "REV",
+            "TOP",
+            "LOW",
+            "DUTCH"
+          ],
+          "description": "Framing preset."
+        },
+        "entityIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Optional entity ids from get_state to frame (2S and OTS need two)."
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_action_presets",
+    "title": "List vehicle and object moves",
+    "description": "List motion-path presets for non-character performers: plane takeoff/landing/flyby, helicopter orbit, bird swoop, car chase moves, falling debris, thrown objects. Call before apply_action_preset.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "apply_action_preset",
+    "title": "Give something a move",
+    "description": "Lay a full motion path (with altitude) on an entity from its current pose: plane-takeoff, heli-orbit, car-chase-weave, debris-fall… Replaces the entity's existing marks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "Entity id from get_state."
+        },
+        "presetId": {
+          "type": "string",
+          "description": "Preset id from list_action_presets."
+        }
+      },
+      "required": [
+        "entityId",
+        "presetId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_sequence_styles",
+    "title": "List crowd sequence styles",
+    "description": "List the styles available per sequence type for spawn_sequence (dance styles, fight formats, chase modes).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "spawn_sequence",
+    "title": "Stage a crowd sequence",
+    "description": "Stage a whole choreographed crowd in one call: N dancers performing together, a paired brawl or mob fight, a foot chase, or a car chase. Creates the performers AND their choreography. Position with x/z/headingDeg (heading 0 faces -Z).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "dance",
+            "fight",
+            "footChase",
+            "carChase"
+          ]
+        },
+        "count": {
+          "type": "number",
+          "description": "Number of performers (2-60)."
+        },
+        "style": {
+          "type": "string",
+          "description": "Style id from list_sequence_styles (e.g. a dance preset id, \"paired\", \"weaving\")."
+        },
+        "x": {
+          "type": "number",
+          "description": "Stage center X in meters (default 0)."
+        },
+        "z": {
+          "type": "number",
+          "description": "Stage center Z in meters (default 0)."
+        },
+        "headingDeg": {
+          "type": "number",
+          "description": "Facing/travel direction in degrees (default 0)."
+        }
+      },
+      "required": [
+        "type",
+        "count"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_choreography_options",
+    "title": "List choreography options",
+    "description": "Discover the choreography vocabulary before spawn_choreography / choreograph_entities: the kinds (dance/fight/chase), the styles per kind, the dance formations, and the endings per kind.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "spawn_choreography",
+    "title": "Stage a dance, fight or chase",
+    "description": "Stage a full choreography routine — a dance number, a paired or one-vs-many fight, or a foot chase — spawning fresh performers AND their per-beat blocking in one call. Reads as real staged choreography: dances hit on the count and change formation, fights are paired attack→reaction exchanges that stay in range, chases run a serpentine path with near-misses. Position with x/z and headingDeg (heading 0 faces -Z). Call list_choreography_options for the vocabulary.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "dance",
+            "fight",
+            "chase"
+          ],
+          "description": "Routine type."
+        },
+        "performers": {
+          "type": "number",
+          "description": "Number of performers (dance 1-40, fight 2-8, chase 2-6; clamped per kind)."
+        },
+        "durationS": {
+          "type": "number",
+          "description": "Seconds to fill (defaults to the active shot duration)."
+        },
+        "style": {
+          "type": "string",
+          "description": "Style id from list_choreography_options (dance: hiphop/party/latin/robot/mixed; fight: brawl/martial-arts/sparring)."
+        },
+        "bpm": {
+          "type": "number",
+          "description": "Dance tempo in beats/min (default 116)."
+        },
+        "formation": {
+          "type": "string",
+          "enum": [
+            "line",
+            "twoRows",
+            "vShape",
+            "circle",
+            "diamond"
+          ],
+          "description": "Dance starting formation."
+        },
+        "canon": {
+          "type": "boolean",
+          "description": "Dance: stagger performers into a wave (canon)."
+        },
+        "mirror": {
+          "type": "boolean",
+          "description": "Dance: mirror odd performers (fight: mirror stances)."
+        },
+        "formationChange": {
+          "type": "boolean",
+          "description": "Dance: walk to a fresh formation between phrases."
+        },
+        "ending": {
+          "type": "string",
+          "description": "Fight: finish | sparring. Chase: caught | escape."
+        },
+        "seed": {
+          "type": "number",
+          "description": "Optional PRNG seed for repeatable results (randomized if omitted)."
+        },
+        "x": {
+          "type": "number",
+          "description": "Stage center X in meters (default 0)."
+        },
+        "z": {
+          "type": "number",
+          "description": "Stage center Z in meters (default 0)."
+        },
+        "headingDeg": {
+          "type": "number",
+          "description": "Facing / travel direction in degrees (default 0)."
+        }
+      },
+      "required": [
+        "kind",
+        "performers"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "choreograph_entities",
+    "title": "Choreograph existing people",
+    "description": "Retarget existing PERSON entities into a choreography routine: keeps their assets and labels but replaces their timeline with a fresh dance/fight/chase built around the group. Same routine options as spawn_choreography, plus entityIds. The performer count comes from the list and the routine centers on the group, so there is no x/z.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Person entity ids from get_state."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "dance",
+            "fight",
+            "chase"
+          ],
+          "description": "Routine type."
+        },
+        "style": {
+          "type": "string",
+          "description": "Style id from list_choreography_options."
+        },
+        "durationS": {
+          "type": "number",
+          "description": "Seconds to fill (defaults to the active shot duration)."
+        },
+        "bpm": {
+          "type": "number",
+          "description": "Dance tempo in beats/min (default 116)."
+        },
+        "formation": {
+          "type": "string",
+          "enum": [
+            "line",
+            "twoRows",
+            "vShape",
+            "circle",
+            "diamond"
+          ],
+          "description": "Dance starting formation."
+        },
+        "canon": {
+          "type": "boolean",
+          "description": "Dance: stagger performers into a wave (canon)."
+        },
+        "mirror": {
+          "type": "boolean",
+          "description": "Dance: mirror odd performers (fight: mirror stances)."
+        },
+        "formationChange": {
+          "type": "boolean",
+          "description": "Dance: walk to a fresh formation between phrases."
+        },
+        "ending": {
+          "type": "string",
+          "description": "Fight: finish | sparring. Chase: caught | escape."
+        },
+        "seed": {
+          "type": "number",
+          "description": "Optional PRNG seed (randomized if omitted)."
+        }
+      },
+      "required": [
+        "entityIds",
+        "kind"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_motion_presets",
+    "title": "List performer motions",
+    "description": "List the single-performer motion-preset library (fight / dance / gesture / everyday / sport / stunt) as { id, name, category, duration }. These are the motions choreography routines are built from. Optionally filter by category.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": [
+            "fight",
+            "dance",
+            "gesture",
+            "stunt",
+            "sport",
+            "everyday"
+          ],
+          "description": "Optional category filter."
+        }
+      },
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_camera_moves",
+    "title": "List camera moves",
+    "description": "List the classic camera-move presets (orbits, cranes, drone follows, vertigo dolly-zoom, whip pan…) with ids, categories, and descriptions. Call before apply_camera_move.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "apply_camera_move",
+    "title": "Move the camera",
+    "description": "Apply a classic camera-move preset to the active shot camera: generates a full set of camera marks over the shot built around a subject, riding along if the subject moves (e.g. drone-follow a flying plane). Track-style moves also enable aim-lock. Replaces the camera's existing marks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "presetId": {
+          "type": "string",
+          "description": "Preset id from list_camera_moves (e.g. \"orbit-180\", \"follow-behind\", \"vertigo-dolly-zoom\")."
+        },
+        "entityId": {
+          "type": "string",
+          "description": "Subject to build the move around. Omit to use the selected entity, else the first person, else the first vehicle or prop (never the set)."
+        }
+      },
+      "required": [
+        "presetId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_track_subject",
+    "title": "Lock the camera on someone",
+    "description": "Aim-lock the shot camera onto an entity: the camera stays pointed at it no matter how its position moves (marks, recordings, presets). Pass no entityId to turn tracking off.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "Entity id to track; omit to disable tracking."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "snap_to_ground",
+    "title": "Put something on the ground",
+    "description": "Drop an entity so it rests on the ground plane (y = 0 at its feet).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "Entity id from get_state."
+        }
+      },
+      "required": [
+        "entityId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_time",
+    "title": "Jump to a time",
+    "description": "Scrub the timeline playhead to time t (seconds).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "t": {
+          "type": "number",
+          "description": "Time in seconds."
+        }
+      },
+      "required": [
+        "t"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "play",
+    "title": "Play",
+    "description": "Start timeline playback from the current playhead.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "stop",
+    "title": "Stop",
+    "description": "Stop timeline playback.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "screenshot",
+    "title": "Look at the shot",
+    "description": "Capture the current viewport as a PNG image and return it. Use after staging or scrubbing to see what the shot looks like.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "list_presets",
+    "title": "List saved stages",
+    "description": "List saved global stage presets (reusable staging setups) as { id, name, savedAt, entityCount }.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "save_preset",
+    "title": "Save this stage",
+    "description": "Save the current staging as a named global preset for reuse across projects.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Name for the preset."
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "apply_preset",
+    "title": "Load a saved stage",
+    "description": "Load a saved stage preset by id into the current scene.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Preset id from list_presets."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "import_scan",
+    "title": "Import a 3D scan",
+    "description": "Import a Gaussian-splat / photogrammetry scan (.ply/.splat/.spz/.ksplat) as an environment. The file is copied into the project's scans/ folder and attached to the current scene. Scans are editor-only reference geometry — visible while you block, never rendered into any export pass. Returns the created scan (id, name, transform).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sourcePath": {
+          "type": "string",
+          "description": "Absolute path to the scan file (.ply/.splat/.spz/.ksplat)."
+        }
+      },
+      "required": [
+        "sourcePath"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_scan_transform",
+    "title": "Move or scale a scan",
+    "description": "Position, rotate, scale, flip, or show/hide an imported scan. Omitted fields are left unchanged; position merges onto the current position. Set flipped:true to right an upside-down .splat export.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scanId": {
+          "type": "string",
+          "description": "Scan id from get_state or import_scan."
+        },
+        "position": {
+          "type": "object",
+          "properties": {
+            "x": {
+              "type": "number",
+              "description": "X in meters (+X right)."
+            },
+            "y": {
+              "type": "number",
+              "description": "Y in meters (height)."
+            },
+            "z": {
+              "type": "number",
+              "description": "Z in meters (-Z away)."
+            }
+          },
+          "additionalProperties": false,
+          "description": "World position (partial; merged onto the current position)."
+        },
+        "rotationDeg": {
+          "type": "number",
+          "description": "Yaw in degrees, clockwise from above."
+        },
+        "scale": {
+          "type": "number",
+          "description": "Uniform scale (min 0.01)."
+        },
+        "visible": {
+          "type": "boolean",
+          "description": "Editor-viewport visibility."
+        },
+        "flipped": {
+          "type": "boolean",
+          "description": "Pitch the scan 180° to right upside-down (Y-down) .splat exports."
+        }
+      },
+      "required": [
+        "scanId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "remove_scan",
+    "title": "Remove a scan",
+    "description": "Remove an imported scan from the current scene (the copied file is left on disk).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scanId": {
+          "type": "string",
+          "description": "Scan id from get_state or import_scan."
+        }
+      },
+      "required": [
+        "scanId"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "set_reference",
+    "title": "Attach a reference video",
+    "description": "Attach a reference video to the active shot (the Motion Previs Studio handoff v1). The clip is copied into the project’s refs/ folder and shown as a ghost underlay (or picture-in-picture) so you can match blocking against it by eye. videoPath is an absolute path to the source clip.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "handoffVersion": {
+          "type": "number",
+          "enum": [
+            1
+          ],
+          "description": "Motion Previs handoff protocol version. Omit only for legacy clients."
+        },
+        "videoPath": {
+          "type": "string",
+          "description": "Absolute path to the reference video file."
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "ghost",
+            "pip"
+          ],
+          "description": "Underlay style: ghost overlay (default) or picture-in-picture."
+        },
+        "opacity": {
+          "type": "number",
+          "description": "Underlay opacity 0..1 (default 0.5)."
+        }
+      },
+      "required": [
+        "videoPath"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "new_scene",
+    "title": "Add a scene",
+    "description": "Add a new scene (a new location or setup) after the last one and switch to it. It starts with one empty shot. Returns the new scene and shot ids.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Optional scene name, e.g. \"Rooftop\"."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "select_scene",
+    "title": "Switch scene",
+    "description": "Switch to another scene and its first shot. Scene ids are in get_state (allScenes).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sceneId": {
+          "type": "string",
+          "description": "Scene id from get_state (allScenes)."
+        }
+      },
+      "required": [
+        "sceneId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "select_shot",
+    "title": "Switch shot",
+    "description": "Switch to another shot (switching scene too if the shot is in another scene). Shot ids are in get_state (allScenes).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "shotId": {
+          "type": "string",
+          "description": "Shot id from get_state (allScenes)."
+        }
+      },
+      "required": [
+        "shotId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_lighting",
+    "title": "Change the lighting",
+    "description": "Change the current scene's lighting. Presets: day, goldenHour, night, interiorWarm, interiorCool, club, and the physical-sky presets middaySky, goldenHourSky, blueHourSky. Sun angles are in degrees. Returns the new environment.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "preset": {
+          "type": "string",
+          "enum": [
+            "day",
+            "goldenHour",
+            "night",
+            "interiorWarm",
+            "interiorCool",
+            "club",
+            "middaySky",
+            "goldenHourSky",
+            "blueHourSky"
+          ],
+          "description": "Lighting preset."
+        },
+        "sunAzimuthDeg": {
+          "type": "number",
+          "description": "Optional sun direction in degrees (0-360)."
+        },
+        "sunElevationDeg": {
+          "type": "number",
+          "description": "Optional sun height above the horizon in degrees (about 6-86)."
+        },
+        "fog": {
+          "type": "number",
+          "description": "Optional atmosphere density 0..1."
+        }
+      },
+      "required": [
+        "preset"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_entity_style",
+    "title": "Change how something looks",
+    "description": "Change an entity's label, colour, name, height or build, or hide it from exports (it stays visible in the editor). Give each character a different colour and a short label so the video model can tell them apart. Colours: red, amber, green, blue, purple, pink, teal, orange, or a hex value. Omitted fields are unchanged; an empty label removes it. Returns the entity.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "Entity id from get_state."
+        },
+        "label": {
+          "type": "string",
+          "description": "Short uppercase label, e.g. \"HERO\". Empty removes the label."
+        },
+        "color": {
+          "type": "string",
+          "description": "red, amber, green, blue, purple, pink, teal, orange, or a hex value like \"#e5484d\"."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name."
+        },
+        "heightScale": {
+          "type": "number",
+          "description": "Height scale 0.5..1.5 (1 = default)."
+        },
+        "build": {
+          "type": "number",
+          "description": "Build scale 0.5..1.5 (1 = default)."
+        },
+        "hideInExports": {
+          "type": "boolean",
+          "description": "true hides it in every export pass."
+        }
+      },
+      "required": [
+        "entityId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "set_camera_rig",
+    "title": "Change the camera rig",
+    "description": "Set what the shot camera is mounted on: sticks (tripod), dolly, steadicam, handheld, crane, drone or carMount. intensity 0..1 scales the shake or drift.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "rig": {
+          "type": "string",
+          "enum": [
+            "sticks",
+            "dolly",
+            "steadicam",
+            "handheld",
+            "crane",
+            "drone",
+            "carMount"
+          ],
+          "description": "Camera rig."
+        },
+        "intensity": {
+          "type": "number",
+          "description": "Optional shake / drift amount 0..1."
+        }
+      },
+      "required": [
+        "rig"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_marks",
+    "title": "List timeline marks",
+    "description": "List the marks on one timeline lane — the shot camera (\"camera\") or one entity — sorted by time, with the ids update_mark and delete_marks take. Angles in degrees.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "lane": {
+          "type": "string",
+          "description": "\"camera\" for the shot camera, or an entity id from get_state for that performer."
+        }
+      },
+      "required": [
+        "lane"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "update_mark",
+    "title": "Edit a timeline mark",
+    "description": "Change one mark. Omitted fields are unchanged; time is kept inside the shot. Camera marks take panDeg/tiltDeg/rollDeg/focalLength/focusDistance; actor marks take gait. Mark ids come from list_marks.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "lane": {
+          "type": "string",
+          "description": "\"camera\" for the shot camera, or an entity id from get_state for that performer."
+        },
+        "markId": {
+          "type": "string",
+          "description": "Mark id from list_marks."
+        },
+        "time": {
+          "type": "number",
+          "description": "Time in seconds."
+        },
+        "x": {
+          "type": "number",
+          "description": "X in meters (+X right)."
+        },
+        "y": {
+          "type": "number",
+          "description": "Height in meters."
+        },
+        "z": {
+          "type": "number",
+          "description": "Z in meters (-Z away)."
+        },
+        "gait": {
+          "type": "string",
+          "enum": [
+            "stand",
+            "walk",
+            "jog",
+            "run",
+            "sit",
+            "lie",
+            "crouch",
+            "gesture",
+            "fall"
+          ],
+          "description": "Actor marks: movement style approaching this mark."
+        },
+        "hold": {
+          "type": "number",
+          "description": "Seconds to stay on the mark after arriving."
+        },
+        "easeIn": {
+          "type": "number",
+          "description": "Ease leaving the previous mark, 0..1."
+        },
+        "easeOut": {
+          "type": "number",
+          "description": "Ease arriving at this mark, 0..1."
+        },
+        "panDeg": {
+          "type": "number",
+          "description": "Camera: pan in degrees, clockwise from above; 0 faces -Z."
+        },
+        "tiltDeg": {
+          "type": "number",
+          "description": "Camera: tilt in degrees; positive up."
+        },
+        "rollDeg": {
+          "type": "number",
+          "description": "Camera: roll (dutch) in degrees."
+        },
+        "focalLength": {
+          "type": "number",
+          "description": "Camera: focal length in mm (Super 35)."
+        },
+        "focusDistance": {
+          "type": "number",
+          "description": "Camera: focus distance in meters."
+        }
+      },
+      "required": [
+        "lane",
+        "markId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_marks",
+    "title": "Delete timeline marks",
+    "description": "Delete marks from one lane by id (ids from list_marks). Undo brings them back.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "lane": {
+          "type": "string",
+          "description": "\"camera\" for the shot camera, or an entity id from get_state for that performer."
+        },
+        "markIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Mark ids from list_marks."
+        }
+      },
+      "required": [
+        "lane",
+        "markIds"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "destructiveHint": true
+    }
+  },
+  {
+    "name": "apply_motion",
+    "title": "Give performers a move",
+    "description": "Give people a single-performer motion from the motion library (a punch, a dance step, a gesture…), replacing their marks. Motion ids come from list_motion_presets; only person entities move.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Person entity ids from get_state."
+        },
+        "presetId": {
+          "type": "string",
+          "description": "Motion id from list_motion_presets, e.g. \"jab-cross\"."
+        }
+      },
+      "required": [
+        "entityIds",
+        "presetId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "undo",
+    "title": "Undo",
+    "description": "Undo the last change to the project.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "redo",
+    "title": "Redo",
+    "description": "Redo the last undone change.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "save_project",
+    "title": "Save the project",
+    "description": "Save the project to its folder now (the app also autosaves).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "list_export_profiles",
+    "title": "List export targets",
+    "description": "List the AI video and image models Blockout can export for, with their maximum and recommended shot length, aspect ratios and frame rate. Use an id with export_shot.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "export_shot",
+    "title": "Export the shot",
+    "description": "Export the active shot as a clean blockout package for an AI video model: the reference video, a depth video, stills at every camera mark, and a prompt tailored to the target. Takes a while for long shots. Call screenshot first to check the framing. Returns the package folder, its path inside the project, and the prompt.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "profileId": {
+          "type": "string",
+          "description": "Export target id from list_export_profiles (default \"seedance-2\")."
+        },
+        "passes": {
+          "type": "object",
+          "properties": {
+            "clean": {
+              "type": "boolean",
+              "description": "The reference video (default on)."
+            },
+            "depth": {
+              "type": "boolean",
+              "description": "A depth video (default on)."
+            },
+            "normal": {
+              "type": "boolean",
+              "description": "A surface-normal video (default off)."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Which videos to render."
+        },
+        "labels": {
+          "type": "string",
+          "enum": [
+            "on",
+            "stillsOnly",
+            "off"
+          ],
+          "description": "Name labels over people: on (videos and stills), stillsOnly (default), or off."
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "720p",
+            "1080p"
+          ],
+          "description": "Output size: auto (the target's native size, default), or pin the short edge to 720p / 1080p."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "export_frame",
+    "title": "Export this frame",
+    "description": "Export the frame at the playhead as a full-quality PNG (a key pose or the moment of impact). Returns the file path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "profileId": {
+          "type": "string",
+          "description": "Export target id from list_export_profiles (default \"seedance-2\")."
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "720p",
+            "1080p"
+          ],
+          "description": "Output size: auto (the target's native size, default), or pin the short edge to 720p / 1080p."
+        },
+        "labels": {
+          "type": "boolean",
+          "description": "Show name labels (default true)."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "export_contact_sheet",
+    "title": "Export a contact sheet",
+    "description": "Export one PNG with the first frame of every shot in the current scene, captioned with lens, length and aspect. Returns the file path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "export_scene_animatic",
+    "title": "Export the scene animatic",
+    "description": "Export every shot in the current scene in order and join them into one animatic video. Every shot must share the same aspect ratio and frame rate. Returns the video's path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "profileId": {
+          "type": "string",
+          "description": "Export target id from list_export_profiles (default \"seedance-2\")."
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "720p",
+            "1080p"
+          ],
+          "description": "Output size: auto (the target's native size, default), or pin the short edge to 720p / 1080p."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+]

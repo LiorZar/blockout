@@ -1,3 +1,4 @@
+// Modified for the fork (explicit framing subjects, selection chrome in exports) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -28,6 +29,7 @@ import {
 import { entityHeight } from '@engine/assets'
 import { headingOf } from '@engine/path'
 import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
+import { pickFramingSubjectIds } from '@engine/framing'
 import type { Entity, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
 import { useStore, selectedEntityIds } from '../store'
 import { on } from '../bus'
@@ -1042,6 +1044,18 @@ export class SceneManager {
     }
   }
 
+  /**
+   * Hide every selection box — the primary one and the extra boxes of a
+   * multi-selection — for a render that must be chrome-free. Returns the
+   * restore.
+   */
+  private hideSelectionBoxes(): () => void {
+    const boxes = [this.selectionBox, ...this.extraSelectionBoxes]
+    const was = boxes.map((b) => b.visible)
+    for (const b of boxes) b.visible = false
+    return () => boxes.forEach((b, i) => (b.visible = was[i]!))
+  }
+
   private syncSelection(): void {
     const s = this.currentState()
     const obj = this.selectedObject()
@@ -1473,20 +1487,21 @@ export class SceneManager {
   /* --------------------------- framing presets --------------------------- */
 
   /**
-   * Subjects for framing presets: the selected entities if any are people
-   * (or anything explicitly selected), otherwise every person in the scene.
+   * Subjects for framing presets: at least `minSelected` selected entities
+   * (or `explicitIds` in place of the selection), otherwise every person,
+   * otherwise the first two non-set entities (see engine/framing.ts).
    * Evaluated at the playhead so mid-move blocking frames correctly.
    */
-  private framingSubjects(): { id: string; pos: THREE.Vector3; height: number }[] {
+  private framingSubjects(
+    minSelected = 2,
+    explicitIds?: string[]
+  ): { id: string; pos: THREE.Vector3; height: number }[] {
     if (!this.evaluator || !this.docScene) return []
     const s = this.currentState()
     const state = this.evaluator.evaluate(s.time)
-    const selected = selectedEntityIds(s.selection)
-    let entities = this.docScene.entities.filter((e) => selected.includes(e.id))
-    if (entities.length < 2) {
-      entities = this.docScene.entities.filter((e) => e.assetId.startsWith('person.'))
-    }
-    if (entities.length === 0) entities = this.docScene.entities.slice(0, 2)
+    const selected = explicitIds ?? selectedEntityIds(s.selection)
+    const ids = pickFramingSubjectIds(this.docScene.entities, selected, minSelected)
+    const entities = this.docScene.entities.filter((e) => ids.includes(e.id))
     const out: { id: string; pos: THREE.Vector3; height: number }[] = []
     for (const e of entities) {
       const es = state.entities.find((x) => x.entityId === e.id)
@@ -1550,10 +1565,10 @@ export class SceneManager {
   }
 
   /** One-click cinematography: 2-shot, OTS, reverse, overhead, low, dutch. */
-  applyFraming(kind: import('../bus').FramingKind): void {
+  applyFraming(kind: import('../bus').FramingKind, subjectIds?: string[]): void {
     const s = this.currentState()
     if (!this.shot || !this.evaluator) return
-    const subjects = this.framingSubjects()
+    const subjects = this.framingSubjects(2, subjectIds)
     const camState = this.evaluator.evaluate(s.time).camera
     const camPos = new THREE.Vector3(
       camState.position.x,
@@ -1699,13 +1714,14 @@ export class SceneManager {
    * to the active camera: generates marks over the whole shot relative to the
    * subject — sampling the subject's own motion so moves ride along with a
    * flying plane or a walking actor. Enables aim-lock tracking when the move
-   * calls for it. One undo step; adjust any mark afterwards.
+   * calls for it. One undo step; adjust any mark afterwards. `subjectId`
+   * builds the move around that entity; otherwise a single selection counts.
    */
-  applyCameraMove(presetId: string): void {
+  applyCameraMove(presetId: string, subjectId?: string): void {
     const s = this.currentState()
     const preset = CAMERA_MOVE_PRESETS.find((p) => p.id === presetId)
     if (!preset || !this.shot || !this.evaluator || !this.docScene) return
-    const subjects = this.framingSubjects()
+    const subjects = subjectId ? this.framingSubjects(1, [subjectId]) : this.framingSubjects(1)
     const subject = subjects[0]
     if (!subject) {
       s.toast('Place a subject first — camera moves are built around one.', 'info')
@@ -2257,14 +2273,13 @@ export class SceneManager {
 
         const overlayWas = this.overlay.visible
         const bodyWas = this.cameraBody.visible
-        const selWas = this.selectionBox.visible
         const gizmo = this.transform.getHelper
           ? this.transform.getHelper()
           : (this.transform as unknown as THREE.Object3D)
         const gizmoWas = gizmo.visible
         this.overlay.visible = false
         this.cameraBody.visible = false
-        this.selectionBox.visible = false
+        const restoreSelection = this.hideSelectionBoxes()
         gizmo.visible = false
 
         // The PiP mirrors the shot as it will export — selection tint is
@@ -2288,7 +2303,7 @@ export class SceneManager {
         }
         this.overlay.visible = overlayWas
         this.cameraBody.visible = bodyWas
-        this.selectionBox.visible = selWas
+        restoreSelection()
         gizmo.visible = gizmoWas
         this.onPipRect?.({ x: px, y: h - py - ph, w: pw, h: ph })
       } else {
@@ -2392,9 +2407,8 @@ export class SceneManager {
         v.root.visible = false
       }
     }
-    // Editor chrome must never reach an export: selection box + gizmo.
-    const selectionWas = this.selectionBox.visible
-    this.selectionBox.visible = false
+    // Editor chrome must never reach an export: selection boxes + gizmo.
+    const restoreSelection = this.hideSelectionBoxes()
     const gizmo = this.transform.getHelper ? this.transform.getHelper() : (this.transform as unknown as THREE.Object3D)
     const gizmoWas = gizmo.visible
     gizmo.visible = false
@@ -2460,7 +2474,7 @@ export class SceneManager {
     })
     this.scansGroup.visible = scansWas
     this.overlay.visible = overlayWas
-    this.selectionBox.visible = selectionWas
+    restoreSelection()
     gizmo.visible = gizmoWas
     for (const [sprite, was] of labelStates) sprite.visible = was
     for (const [root, was] of excludedStates) root.visible = was
@@ -2494,8 +2508,27 @@ export class SceneManager {
     // the editor HUD toggles have hidden them.
     this.marksGroup.visible = true
     this.pathsGroup.visible = true
+    // Editor chrome stays out of the diagram: selection boxes, gizmo, tint.
+    const restoreSelection = this.hideSelectionBoxes()
+    const tintWas = this.tintedMaterials.map((t) => ({ hex: t.mat.emissive.getHex(), intensity: t.mat.emissiveIntensity }))
+    for (const t of this.tintedMaterials) {
+      t.mat.emissive.setHex(t.emissive)
+      t.mat.emissiveIntensity = t.intensity
+    }
+    const gizmo = this.transform.getHelper ? this.transform.getHelper() : (this.transform as unknown as THREE.Object3D)
+    const gizmoWas = gizmo.visible
+    gizmo.visible = false
     exportRenderer.setSize(width, height, false)
     exportRenderer.render(this.scene, cam)
+    restoreSelection()
+    gizmo.visible = gizmoWas
+    this.tintedMaterials.forEach((t, i) => {
+      const w = tintWas[i]
+      if (w) {
+        t.mat.emissive.setHex(w.hex)
+        t.mat.emissiveIntensity = w.intensity
+      }
+    })
     this.overlay.visible = overlayWas
     this.cameraBody.visible = camBodyWas
     this.scansGroup.visible = scansWas

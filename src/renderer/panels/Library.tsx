@@ -1,3 +1,4 @@
+// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director; see MODIFICATIONS.md.
 /**
  * Stage-mode asset palette. Browse the built-in catalog grouped by category,
  * filter by name, and arm click-to-place (the Viewport does the drop).
@@ -18,6 +19,7 @@ import {
 } from '@engine/choreography'
 import { useStore } from '../store'
 import { populateFromReference } from '../ai/populate'
+import { FightDirector } from './FightDirector'
 
 interface PresetInfo {
   id: string
@@ -204,6 +206,9 @@ function Sequences(): JSX.Element {
 
 const randomSeed = (): number => Math.floor(Math.random() * 1_000_000_000)
 
+/** Fork: the Fight routine opens the Fight Director instead of the upstream fight options. */
+const isFightDirector = (kind: ChoreoKind): boolean => kind === 'fight'
+
 /**
  * Choreographer: author a staged routine (dance number, paired fight, chase)
  * and either spawn fresh performers (click the floor) or apply it to the
@@ -265,6 +270,26 @@ function Choreographer(): JSX.Element {
     { id: 'fight', label: '🥋 Fight' },
     { id: 'chase', label: '🏃 Chase' }
   ]
+
+  // Fork: the Fight routine is the scripted, physics-solved Fight Director.
+  if (isFightDirector(kind)) {
+    return (
+      <div className="panel-section">
+        <div className="panel-title">Choreographer</div>
+        <div className="field">
+          <label>Routine</label>
+          <select value={kind} onChange={(e) => setKind(e.target.value as ChoreoKind)}>
+            {KIND_LABELS.map((k) => (
+              <option key={k.id} value={k.id}>
+                {k.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <FightDirector />
+      </div>
+    )
+  }
 
   return (
     <div className="panel-section">

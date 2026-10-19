@@ -1,3 +1,4 @@
+// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing; see MODIFICATIONS.md.
 /**
  * Blockout document model.
  *
@@ -9,6 +10,8 @@
  * Everything here is plain serializable data. Time is in seconds, distance
  * in meters, angles in radians unless suffixed Deg.
  */
+
+import type { ShotSpec } from './shot'
 
 export interface V3 {
   x: number
@@ -139,6 +142,14 @@ export interface ActorMark extends MarkBase {
    * moment. Marks after a boarding mark are ignored while attached.
    */
   attachTo?: string
+  /**
+   * Fork (fight director): while travelling toward this mark, face the blend
+   * of the previous mark's and this mark's arriveHeading instead of turning to
+   * the travel direction, and keep this mark's own gait (a 'stand' mark
+   * slides in pose instead of walking). Lets a fighter back off facing the
+   * opponent and keeps the posed rig exact at impact frames.
+   */
+  lockFacing?: boolean
 }
 
 export interface CameraMark extends MarkBase {
@@ -149,6 +160,12 @@ export interface CameraMark extends MarkBase {
   focalLength: number
   /** Focus distance in meters; undefined = deep focus. */
   focusDistance?: number
+  /**
+   * Shot words (fork): when set, this mark's pose is re-solved from the
+   * subjects' live positions every frame (src/engine/shot-track.ts); the
+   * stored position/pan/tilt/roll/focalLength are the fallback.
+   */
+  shot?: ShotSpec
 }
 
 export interface EntityTrack {
@@ -258,6 +275,40 @@ export interface ScanRef {
   holdout?: boolean
 }
 
+/** Fight director (fork; src/engine/fight/): how one blow of a beat ends. */
+export type FightOutcome = 'hit' | 'block' | 'parry' | 'slip' | 'duck' | 'miss' | 'ko'
+
+/** One scripted blow: `<who> <move> [to head|body|legs] [-> outcome, …] [power p] [at t s]`. */
+export interface FightBeat {
+  /** Index into FightDoc.fighterIds. */
+  attacker: 0 | 1
+  /** Motion id of the strike. */
+  move: string
+  target: 'head' | 'body' | 'legs'
+  /** One per impact; shorter lists pad with 'block' for earlier impacts. */
+  outcomes: FightOutcome[]
+  /** 0.2..1, default 0.7. */
+  power: number
+  /** Explicit start time (s). */
+  at?: number
+}
+
+/** A scripted two-fighter fight, solved into ordinary actor marks. */
+export interface FightDoc {
+  id: string
+  name: string
+  fighterIds: [string, string]
+  beats: FightBeat[]
+  /** Default 0.4. */
+  startT: number
+  origin: { x: number; z: number; heading: number }
+  /** Default 0.35 s between a beat's recovery and the next step-in. */
+  beatGap: number
+  /** Default 1.5, range 1..3. */
+  exaggeration: number
+  coverage?: 'master' | 'punch-in' | 'over-shoulder' | 'follow'
+}
+
 export interface Scene {
   id: string
   name: string
@@ -266,6 +317,8 @@ export interface Scene {
   entities: Entity[]
   /** Imported Gaussian-splat / photogrammetry environments (editor-only). */
   scans?: ScanRef[]
+  /** Scripted fights (fork; the Fight Director). Their solved marks live in the blocking takes. */
+  fights?: FightDoc[]
   blocking: BlockingTake[]
   shots: Shot[]
   /**

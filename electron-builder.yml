@@ -19,6 +19,7 @@ extraResources:
     to: mcp
     filter:
       - blockout-mcp.mjs
+      - tools.json
       - README.md
   - from: LICENSE
     to: licenses/Blockout-Apache-2.0.txt

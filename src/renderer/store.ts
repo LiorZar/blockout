@@ -1,3 +1,4 @@
+// Modified in this fork (2026): shot words and Fight Director actions; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -23,6 +24,12 @@ import { newId } from '@engine/ids'
 import { generateSequence, choreographMotion } from '@engine/sequences'
 import { buildRoutine } from '@engine/choreography'
 import { ACTION_PRESETS } from '@engine/action-presets'
+import { ShotEvaluator } from '@engine/evaluate'
+import type { ShotSpec } from '@engine/shot'
+import { GUARD_DISTANCE, solveFight, type FighterInput, type FightSolution } from '@engine/fight/solve'
+import { nextLabelColor } from '@engine/palette'
+import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
+import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
 export type Mode = 'stage' | 'shoot' | 'deliver'
 
@@ -71,6 +78,8 @@ interface BlockoutState {
   placingSequence: { type: import('@engine/sequences').SequenceType; count: number; style: string } | null
   /** Armed choreography routine: next floor click stages the routine THERE. */
   placingChoreography: import('@engine/choreography').RoutineSpec | null
+  /** Fight Director (fork): the fight armed for floor placement (staged by the next fight placement click). */
+  pendingFight: Omit<StageFightInput, 'at'> | null
   /** When true, clicking the floor drops a mark for the selection. */
   droppingMarks: boolean
   lookThrough: boolean
@@ -158,6 +167,34 @@ interface BlockoutState {
   addCameraToShot(): void
   /** Delete the active camera's move (all its marks) — e.g. to re-record. */
   clearCameraMarks(): void
+  /**
+   * Shot words (fork): frame the camera mark at `time` (within ±1 frame) — or
+   * a new one — with a live ShotSpec, storing the solved pose as fallback.
+   * Returns the mark id ('' when the shot can't be solved).
+   */
+  setShotAtTime(spec: ShotSpec, time: number): string
+  /** Drop a camera mark's shot words, keeping the pose they solve to now. */
+  releaseShot(markId: string): void
+  /**
+   * Fight Director (fork): solve a scripted fight into the two fighters'
+   * tracks in the active take (one undo step). Without `fighters` it spawns
+   * `assets` (default man + woman) labelled A / B in distinct colours.
+   */
+  stageFight(input: StageFightInput): { fightId: string; report: FightSolution['report'] }
+  /** Re-solve a staged fight after a script / setting change. */
+  updateFight(
+    fightId: string,
+    patch: Partial<Pick<FightDoc, 'beats' | 'exaggeration' | 'beatGap' | 'startT' | 'coverage'>>
+  ): FightSolution['report']
+  /** Forget a fight (its marks stay on the timeline). */
+  deleteFight(fightId: string): void
+  /** Arm floor placement for a fight (the Choreographer's Stage fight). */
+  armFightPlacement(input: Omit<StageFightInput, 'at'>): void
+  /**
+   * Replace the active camera with beat-aware coverage of a fight (live shot
+   * marks on one side of the fight line; `side` defaults to the camera's).
+   */
+  coverFight(fightId: string, mode: CoverageMode, side?: 'left' | 'right'): { lineSide: 1 | -1; cameraMarks: number }
   /** Snapshot the current shot as a draft version ("1A v2"). */
   saveDraftOfShot(): void
   /**
@@ -239,6 +276,92 @@ function reconcileSelection(doc: ProjectDoc, sceneId: string | null, shotId: str
   return { sceneId: scene?.id ?? null, shotId: shot?.id ?? null }
 }
 
+/** Fight Director (fork) input for stageFight. */
+export interface StageFightInput {
+  beats: FightBeat[]
+  at: { x: number; z: number; heading: number }
+  fighters?: [string, string]
+  assets?: [string, string]
+  labels?: [string, string]
+  exaggeration?: number
+  coverage?: FightDoc['coverage']
+}
+
+/** RoutineSpec.style that marks a Fight Director placement (see spawnChoreography). */
+export const FIGHT_DIRECTOR_STYLE = 'fight-director'
+
+function fighterInput(e: Entity): FighterInput {
+  return { entityId: e.id, assetId: e.assetId, params: e.params, scale: e.transform.scale, start: { ...e.transform.position } }
+}
+
+/** Replace the two fighters' tracks in a take with a solution. */
+function writeFightTracks(take: BlockingTake, fighterIds: [string, string], sol: FightSolution): void {
+  fighterIds.forEach((id, q) => {
+    let track = take.tracks.find((t) => t.entityId === id)
+    if (!track) {
+      track = { entityId: id, marks: [] }
+      take.tracks.push(track)
+    }
+    track.marks = sol.tracks[q]!.map((m) => ({
+      id: newId('mark'),
+      time: m.time,
+      hold: m.hold,
+      easeIn: m.easeIn,
+      easeOut: m.easeOut,
+      position: { ...m.position },
+      gait: m.gait,
+      arriveHeading: m.arriveHeading,
+      joints: m.joints ? { ...m.joints } : undefined,
+      lockFacing: true
+    }))
+  })
+}
+
+/** Which side of the A→B fight line the camera is on at the fight's start (+1 = A's right). */
+function cameraLineSide(scene: Scene, shot: Shot, fight: FightDoc): 1 | -1 {
+  const st = new ShotEvaluator(scene, shot).evaluate(fight.startT)
+  const a = st.entities.find((e) => e.entityId === fight.fighterIds[0])?.position
+  const b = st.entities.find((e) => e.entityId === fight.fighterIds[1])?.position
+  if (!a || !b) return 1
+  const c = st.camera.position
+  return (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x) < 0 ? -1 : 1
+}
+
+/** Replace the shot camera's marks with coverage of a fight (solved poses stored as fallback). */
+function writeCoverage(scene: Scene, shot: Shot, fight: FightDoc, report: FightSolution['report'], mode: CoverageMode, lineSide: 1 | -1): number {
+  const cam = shot.camera
+  const focal = [...cam.marks].sort((a, b) => a.time - b.time).at(-1)?.focalLength ?? 35
+  const ev = new ShotEvaluator(scene, shot)
+  cam.marks = fightCoverage(fight, report, mode, lineSide).map((m) => {
+    const solved = ev.solveShotAt(m.shot, m.time, focal)
+    const mark = createCameraMark(solved ? { ...solved.position } : { x: 0, y: 1.6, z: 5 }, m.time, solved?.pan ?? 0, solved?.tilt ?? 0, solved?.focalLength ?? focal)
+    mark.roll = solved?.roll ?? 0
+    mark.easeIn = m.easeIn
+    mark.easeOut = m.easeOut
+    mark.hold = m.hold
+    mark.shot = m.shot
+    return mark
+  })
+  delete cam.trackEntityId
+  if (mode === 'follow') {
+    cam.rig = 'handheld'
+    cam.rigIntensity = 0.4
+  }
+  return cam.marks.length
+}
+
+/** The two fighters of a fight, or an error naming what's missing. */
+function fightersOf(scene: Scene, ids: [string, string]): [Entity, Entity] {
+  const pair = ids.map((id) => {
+    const e = scene.entities.find((x) => x.id === id)
+    if (!e) throw new Error(`No fighter "${id}" in the scene: use person entity ids from get_state.`)
+    if (!e.assetId.startsWith('person.')) throw new Error(`"${e.label?.text || e.name}" isn't a person: fights need two people.`)
+    return e
+  })
+  if (pair[0]!.id === pair[1]!.id) throw new Error('A fight needs two different people.')
+  return [pair[0]!, pair[1]!]
+}
+
 export const useStore = create<BlockoutState>((set, get) => ({
   mode: 'stage',
   projectFolder: null,
@@ -249,6 +372,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
   placingAssetId: null,
   placingSequence: null,
   placingChoreography: null,
+  pendingFight: null,
   droppingMarks: false,
   lookThrough: false,
   pipSize: 'medium',
@@ -760,6 +884,175 @@ export const useStore = create<BlockoutState>((set, get) => ({
     get().toast('Camera move cleared — record or drop new marks.', 'info')
   },
 
+  setShotAtTime(spec, time) {
+    const { sceneId, shotId } = get()
+    const scene = get().scene()
+    const shot = get().shot()
+    if (!scene || !shot) return ''
+    const t = Math.min(Math.max(0, time), shot.duration)
+    const tol = 1 / Math.max(1, shot.fps) + 1e-9
+    const existing = shot.camera.marks.find((m) => Math.abs(m.time - t) <= tol)
+    const ordered = [...shot.camera.marks].sort((a, b) => a.time - b.time)
+    const focal = spec.lens ?? existing?.focalLength ?? ordered[ordered.length - 1]?.focalLength ?? 35
+    const solved = new ShotEvaluator(scene, shot).solveShotAt(spec, t, focal)
+    if (!solved) {
+      get().toast('Could not frame that shot — a subject is missing.', 'error')
+      return ''
+    }
+    let markId = existing?.id ?? ''
+    get().mutate('frame shot', (doc) => {
+      const sc = doc.scenes.find((s) => s.id === sceneId)
+      const sh = sc?.shots.find((s) => s.id === shotId) ?? sc?.drafts?.find((s) => s.id === shotId)
+      if (!sh) return
+      let m = sh.camera.marks.find((x) => x.id === existing?.id)
+      if (!m) {
+        m = createCameraMark({ ...solved.position }, t, solved.pan, solved.tilt, solved.focalLength)
+        sh.camera.marks.push(m)
+      }
+      markId = m.id
+      m.position = { ...solved.position }
+      m.pan = solved.pan
+      m.tilt = solved.tilt
+      m.roll = solved.roll
+      m.focalLength = solved.focalLength
+      m.shot = structuredClone(spec)
+    })
+    return markId
+  },
+
+  stageFight(input) {
+    const { sceneId, shotId } = get()
+    const scene = get().scene()
+    const shot = get().shot()
+    if (!scene || !shot) throw new Error('No active shot.')
+    const spawned: Entity[] = []
+    let fighters: [Entity, Entity]
+    if (input.fighters) fighters = fightersOf(scene, input.fighters)
+    else {
+      const assets = input.assets ?? ['person.man', 'person.woman']
+      const labels = input.labels ?? ['A', 'B']
+      const used = scene.entities.map((e) => e.label?.color).filter((c): c is string => !!c)
+      const { x, z, heading } = input.at
+      const right = { x: Math.cos(heading), z: -Math.sin(heading) }
+      for (let q = 0; q < 2; q++) {
+        const side = q === 0 ? -1 : 1
+        const pos = { x: x + right.x * side * (GUARD_DISTANCE / 2), y: 0, z: z + right.z * side * (GUARD_DISTANCE / 2) }
+        const e = createEntity(assets[q]!, `Fighter ${labels[q]}`, pos)
+        const color = nextLabelColor(used)
+        used.push(color)
+        e.label = { text: labels[q]!, color }
+        // Face the other fighter (heading 0 faces -Z).
+        e.transform.rotationY = Math.atan2(right.x * side, right.z * side)
+        spawned.push(e)
+      }
+      fighters = [spawned[0]!, spawned[1]!]
+    }
+    const fight: FightDoc = {
+      id: newId('fight'),
+      name: `Fight ${(scene.fights?.length ?? 0) + 1}`,
+      fighterIds: [fighters[0].id, fighters[1].id],
+      beats: structuredClone(input.beats),
+      startT: 0.4,
+      origin: { ...input.at },
+      beatGap: 0.35,
+      exaggeration: Math.min(3, Math.max(1, input.exaggeration ?? 1.5)),
+      ...(input.coverage ? { coverage: input.coverage } : {})
+    }
+    const sol = solveFight(fight, [fighterInput(fighters[0]), fighterInput(fighters[1])], { duration: shot.duration, fps: shot.fps })
+    get().mutate('stage fight', (doc) => {
+      const sc = doc.scenes.find((x) => x.id === sceneId)
+      const sh = sc?.shots.find((x) => x.id === shotId) ?? sc?.drafts?.find((x) => x.id === shotId)
+      const take = sc?.blocking.find((b) => b.id === sh?.blockingTakeId)
+      if (!sc || !take) return
+      sc.entities.push(...spawned)
+      sc.fights = [...(sc.fights ?? []), fight]
+      writeFightTracks(take, fight.fighterIds, sol)
+      if (fight.coverage && sh) writeCoverage(sc, sh, fight, sol.report, fight.coverage, cameraLineSide(sc, sh, fight))
+    })
+    if (spawned.length > 0) set({ selection: { kind: 'entities', entityIds: spawned.map((e) => e.id) } })
+    return { fightId: fight.id, report: sol.report }
+  },
+
+  updateFight(fightId, patch) {
+    const { sceneId, shotId } = get()
+    const scene = get().scene()
+    const shot = get().shot()
+    const current = scene?.fights?.find((f) => f.id === fightId)
+    if (!scene || !shot || !current) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
+    const fight: FightDoc = { ...structuredClone(current), ...structuredClone(patch) }
+    fight.exaggeration = Math.min(3, Math.max(1, fight.exaggeration))
+    const fighters = fightersOf(scene, fight.fighterIds)
+    const sol = solveFight(fight, [fighterInput(fighters[0]), fighterInput(fighters[1])], { duration: shot.duration, fps: shot.fps })
+    get().mutate('update fight', (doc) => {
+      const sc = doc.scenes.find((x) => x.id === sceneId)
+      const sh = sc?.shots.find((x) => x.id === shotId) ?? sc?.drafts?.find((x) => x.id === shotId)
+      const take = sc?.blocking.find((b) => b.id === sh?.blockingTakeId)
+      if (!sc || !take) return
+      sc.fights = (sc.fights ?? []).map((f) => (f.id === fightId ? fight : f))
+      writeFightTracks(take, fight.fighterIds, sol)
+      if (patch.coverage && sh) writeCoverage(sc, sh, fight, sol.report, patch.coverage, cameraLineSide(sc, sh, fight))
+    })
+    return sol.report
+  },
+
+  deleteFight(fightId) {
+    const { sceneId } = get()
+    if (!get().scene()?.fights?.some((f) => f.id === fightId)) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
+    get().mutate('remove fight', (doc) => {
+      const sc = doc.scenes.find((x) => x.id === sceneId)
+      if (sc) sc.fights = (sc.fights ?? []).filter((f) => f.id !== fightId)
+    })
+  },
+
+  coverFight(fightId, mode, side) {
+    const { sceneId, shotId } = get()
+    const scene = get().scene()
+    const shot = get().shot()
+    const fight = scene?.fights?.find((f) => f.id === fightId)
+    if (!scene || !shot || !fight) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
+    const fighters = fightersOf(scene, fight.fighterIds)
+    const sol = solveFight(fight, [fighterInput(fighters[0]), fighterInput(fighters[1])], { duration: shot.duration, fps: shot.fps })
+    const lineSide: 1 | -1 = side === 'right' ? 1 : side === 'left' ? -1 : cameraLineSide(scene, shot, fight)
+    let cameraMarks = 0
+    get().mutate('fight coverage', (doc) => {
+      const sc = doc.scenes.find((x) => x.id === sceneId)
+      const sh = sc?.shots.find((x) => x.id === shotId) ?? sc?.drafts?.find((x) => x.id === shotId)
+      const f = sc?.fights?.find((x) => x.id === fightId)
+      if (!sc || !sh || !f) return
+      f.coverage = mode
+      cameraMarks = writeCoverage(sc, sh, f, sol.report, mode, lineSide)
+    })
+    return { lineSide, cameraMarks }
+  },
+
+  armFightPlacement(input) {
+    set({ pendingFight: structuredClone(input) })
+    get().setPlacingChoreography({ kind: 'fight', performers: 2, durationS: get().shot()?.duration ?? 8, seed: 0, style: FIGHT_DIRECTOR_STYLE })
+  },
+
+  releaseShot(markId) {
+    const { sceneId, shotId } = get()
+    const scene = get().scene()
+    const shot = get().shot()
+    const mark = shot?.camera.marks.find((m) => m.id === markId)
+    if (!scene || !shot || !mark?.shot) return
+    const solved = new ShotEvaluator(scene, shot).solveShotAt(mark.shot, mark.time, mark.focalLength)
+    get().mutate('release shot words', (doc) => {
+      const sc = doc.scenes.find((s) => s.id === sceneId)
+      const sh = sc?.shots.find((s) => s.id === shotId) ?? sc?.drafts?.find((s) => s.id === shotId)
+      const m = sh?.camera.marks.find((x) => x.id === markId)
+      if (!m) return
+      if (solved) {
+        m.position = { ...solved.position }
+        m.pan = solved.pan
+        m.tilt = solved.tilt
+        m.roll = solved.roll
+        m.focalLength = solved.focalLength
+      }
+      delete m.shot
+    })
+  },
+
   saveDraftOfShot() {
     const { sceneId, shotId } = get()
     let draftName = ''
@@ -877,6 +1170,19 @@ export const useStore = create<BlockoutState>((set, get) => ({
   },
 
   spawnChoreography(spec, at) {
+    // Fork: a Fight Director placement click stages the armed scripted fight.
+    const pending = get().pendingFight
+    if (spec.kind === 'fight' && spec.style === FIGHT_DIRECTOR_STYLE && pending) {
+      set({ pendingFight: null })
+      try {
+        const { report } = get().stageFight({ ...pending, at })
+        const warn = report.warnings.length ? `, ${report.warnings.length} warning${report.warnings.length > 1 ? 's' : ''}` : ''
+        get().toast(`Fight staged: ${report.beats.length} beats${warn}. Press play to watch.`, 'success')
+      } catch (e) {
+        get().toast((e as Error).message, 'error')
+      }
+      return
+    }
     const { sceneId, shotId } = get()
     const duration = get().shot()?.duration ?? spec.durationS
     const specs = buildRoutine({ ...spec, durationS: duration }, { origin: at })

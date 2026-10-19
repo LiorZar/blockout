@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's HTTP MCP server and Clara in 2026; see MODIFICATIONS.md.
 /**
  * Electron main process: window lifecycle, project folder I/O, ffmpeg
  * export orchestration. All filesystem access lives here; the renderer
@@ -11,6 +11,11 @@ import { mkdir, readFile, writeFile, copyFile, stat, rm } from 'fs/promises'
 import { join, dirname, basename, extname, resolve, sep } from 'path'
 import { registerPresetsIpc } from './presets'
 import { startControlServer } from './control'
+import { createMcpHttpServer, resolveMcpPort, type McpHttpServer, type McpHttpStatus, type McpToolDef } from './mcp-http'
+import MCP_TOOLS from '../../mcp/tools.json'
+import { createFileLog, registerWithClis } from './cli-registration'
+import { AttachClara } from '@2dl/clara-client'
+import { createClaraController } from './clara'
 import { friendlyFfmpegError, resolveFfmpeg, terminateProcessTree } from './ffmpeg'
 import { sanitizeName } from '../engine/strings'
 import { ffmpegConcatEntry, normalizeProjectRelativePath } from '../shared/portable-paths'
@@ -22,6 +27,48 @@ import { version as APP_VERSION } from '../../package.json'
 const isDev = !!process.env.ELECTRON_RENDERER_URL
 
 let mainWindow: BrowserWindow | null = null
+let mcpServer: McpHttpServer | null = null
+
+/** The HTTP MCP server's state (stopped until the control server is up). */
+function getMcpStatus(): McpHttpStatus {
+  return mcpServer?.status() ?? { state: 'stopped' }
+}
+
+/** Clara, docked from the titlebar button; the renderer hears every change. */
+const clara = createClaraController({
+  attach: AttachClara,
+  getWindow: () => mainWindow,
+  getMcp: getMcpStatus,
+  env: process.env,
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  onChange: (view) => mainWindow?.webContents.send('clara:state', view)
+})
+
+/** Control server first (the MCP server relays through it), then HTTP MCP. */
+async function startAgentServers(): Promise<void> {
+  const control = await startControlServer(() => mainWindow)
+  mcpServer = createMcpHttpServer({ invoke: control.invoke, version: APP_VERSION, tools: MCP_TOOLS as McpToolDef[] })
+  const status = await mcpServer.start(resolveMcpPort(process.env))
+  // The Clara button's tooltip says when Blockout's tools aren't available.
+  mainWindow?.webContents.send('clara:state', clara.getState())
+  if (status.state !== 'listening' || !status.url) {
+    console.warn(`[blockout] MCP server unavailable: ${getMcpStatus().message}`)
+    return
+  }
+  console.log(`[blockout] MCP server on ${status.url}`)
+  // Installed copies point the customer's claude / codex / copilot at it.
+  if (app.isPackaged) {
+    const userData = app.getPath('userData')
+    void registerWithClis({
+      name: 'blockout',
+      url: status.url,
+      version: APP_VERSION,
+      markerPath: join(userData, 'mcp-registration.json'),
+      log: createFileLog(join(userData, 'logs', 'mcp-registration.log'), 200)
+    })
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -57,10 +104,15 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') app.setAppUserModelId(DISTRIBUTION.appId)
   createWindow()
   registerPresetsIpc()
-  void startControlServer(() => mainWindow)
+  void startAgentServers()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+})
+
+app.on('before-quit', () => {
+  void mcpServer?.stop()
+  clara.dispose()
 })
 
 app.on('window-all-closed', () => {
@@ -68,6 +120,9 @@ app.on('window-all-closed', () => {
 })
 
 /* --------------------------------- IPC ---------------------------------- */
+
+ipcMain.handle('clara:getState', () => clara.getState())
+ipcMain.handle('clara:toggle', (_e, folder: unknown) => clara.toggle(typeof folder === 'string' ? folder : null))
 
 ipcMain.handle('dialog:newProject', async () => {
   // Smoke-test hook: bypass the native dialog so CI can drive the app.

@@ -48,6 +48,7 @@ assets/         (profiles as code in engine/profiles.ts; 3D assets are procedura
 - **Choreography engine** (`src/engine/choreography.ts`, PURE): `buildRoutine(spec, ctx)` turns a `RoutineSpec` (`dance`/`fight`/`chase`, performers, durationS, seed, style/options) into per-performer marks compatible with `sequences.ts`. Seeded (inline mulberry32 — the caller in the renderer randomizes the default seed, never the engine). Dances use 8-count phrases with formations/canon/mirror; fights are paired attack→reaction exchanges (reactions offset so they land mid-attack, distance re-closes after knockbacks); chases run a serpentine path with scripted near-misses. `mirrorJoints` swaps L/R pairs and flips Y/Z-symmetric channels. Store wiring: `spawnChoreography(spec, at)` (fresh cast) and `choreographSelected(spec)` (retarget selected people). UI: the Library **Choreographer** panel.
 - **3D scans** (`Scene.scans: ScanRef[]`): Gaussian-splat / photogrammetry environments imported via the `scan:import` IPC (`.ply/.splat/.spz/.ksplat` copied into the project `scans/`). Rendered by `@mkkellogg/gaussian-splats-3d` in `SceneManager` (`scansGroup`/`scanVisuals`), transformable from the Inspector Scans section. **Editor-only**: `scansGroup.visible=false` in `renderFrameAt` and `renderTopDown` — worker-based splat sorting can't guarantee byte-deterministic exports, so scans never enter any pass (they are listed in the package `metadata.json`). Schema migration defaults `scans` to `[]` and never throws.
 - **Sky & editor chrome** (`SceneManager`): the `middaySky`/`goldenHourSky`/`blueHourSky` lighting presets drive a `three/examples` `Sky` dome — a deterministic function of `sunAzimuth`/`sunElevation` with fixed turbidity/rayleigh per preset, so it renders byte-identically in the **clean** export and is hidden in the depth/normal passes. Spike-tape marks and path ribbons live in `overlay` sub-groups (`marksGroup`/`pathsGroup`, HUD eye toggles `showMarks`/`showPaths`); selection adds direction chevrons + `t=…s` labels for the picked lane only. The bottom-right `ViewHelper` gizmo and the selected-entity **emissive tint** are editor-only — the gizmo renders in its own corner viewport (never in `this.scene`), and `renderFrameAt` neutralizes the tint for the duration of every pass so selection can't affect exported pixels. The Shoot **Take bar** (Viewport) and **Set your marks** coach (Help/App) are pure compositions of existing store actions.
+- **Shot words + Fight Director** (fork; `src/engine/skeleton.ts`, `shot*.ts`, `fight/`, PURE): `skeleton.ts` is the person rig's FK (`buildPerson` takes its lengths from `personDims`; FK and renderer agree to 1e-6, and the `motions.ts` header is the joint-sign spec). A camera mark with `shot` (`ShotSpec`, from `parseShotWords`) is re-solved every frame by `solveShot` (`shot-track.ts` hooked into `evaluateCamera`). `solveFight` turns a beat script (`fight/script.ts`) into ordinary actor marks with `lockFacing` (the evaluator keeps their facing and posed gait): impacts on the frame grid, blows placed by FK within 3 cm (kicks may lift the kicker, blocks reach the blow), closed-form knockback (`fight/physics.ts`), and `fight/coverage.ts` camera modes on one side of the line. Store: `setShotAtTime`, `stageFight` / `updateFight` / `coverFight`; UI: the camera Inspector's Shot box and the Choreographer's Fight Director.
 
 ## Hard rules
 
@@ -127,6 +128,28 @@ claude mcp add blockout -- node /ABSOLUTE/PATH/TO/blockout/mcp/blockout-mcp.mjs
 | `screenshot` | — | Current viewport as a PNG (image result) |
 | `list_presets` / `save_preset` / `apply_preset` | — / `name` / `id` | Global stage presets |
 | `set_reference` | `videoPath, handoffVersion?, mode?, opacity?` | Attach a reference clip (copied into `refs/`) as a ghost/PIP underlay. Motion sends handoff v1; missing stays legacy-compatible. |
+
+Fork additions (2026; the catalog is `mcp/tools.json`, shared by both transports and kept in step with `handler.ts` by `tests/unit/mcp-catalog.test.ts`). `add_entity` takes `color?` (labelled entities get distinct colours automatically), `apply_framing` takes `entityIds?`, and `apply_camera_move` builds the move around `entityId` (never a set kit). `get_state` also reports colours, `scene.environment` in degrees, camera-mark ids, rig, and `allScenes`.
+
+| Tool | Params | Does |
+|---|---|---|
+| `new_scene` / `select_scene` / `select_shot` | `name?` / `sceneId` / `shotId` | Add a scene, switch scene or shot |
+| `set_lighting` | `preset, sunAzimuthDeg?, sunElevationDeg?, fog?` | One of the 9 lighting presets |
+| `set_entity_style` | `entityId, label?, color?, name?, heightScale?, build?, hideInExports?` | An entity's look |
+| `set_camera_rig` | `rig, intensity?` | sticks / dolly / steadicam / handheld / crane / drone / carMount |
+| `list_marks` / `update_mark` / `delete_marks` | `lane` / `lane, markId, …` / `lane, markIds` | Timeline marks; `lane` is `camera` or an entity id |
+| `apply_motion` | `entityIds, presetId` | A motion-library move on people |
+| `undo` / `redo` / `save_project` | — | History and save |
+| `list_export_profiles` | — | Export targets |
+| `export_shot` | `profileId?, passes?, labels?, resolution?` | Export the package (default `seedance-2`, clean + depth); returns `packagePath`, `relativePath`, `prompt` |
+| `export_frame` / `export_contact_sheet` / `export_scene_animatic` | `profileId?, resolution?, labels?` / — / `profileId?, resolution?` | Still, contact sheet, scene animatic |
+| `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Shot words ("MCU on B, over A's right shoulder, 50mm") → a live camera mark re-solved every frame |
+| `list_fight_moves` | — | Strikes, aliases, default targets and impacts |
+| `stage_fight` | `script` / `beats` / `random`, `x?, z?, headingDeg?, fighterIds?, exaggeration?, coverage?` | Scripted two-person fight; returns `{ fightId, script, report }` (per-beat contact error, physics, lift, warnings) |
+| `update_fight` / `get_fight` / `delete_fight` | `fightId, script?/beats?, exaggeration?, coverage?` / `fightId` / `fightId` | Re-solve, read, forget a fight |
+| `fight_coverage` | `fightId, mode, side?` | Camera coverage of a fight: `master` / `punch-in` / `over-shoulder` / `follow`, on one side of the fight line |
+
+**HTTP transport.** The main process also serves these tools over MCP Streamable HTTP (`src/main/mcp-http.ts`) at `http://127.0.0.1:17480/mcp` (`BLOCKOUT_MCP_PORT` overrides; `0` = any free port), relaying through the same `invoke` as the control server. It is localhost-only and refuses foreign `Host` and any `Origin`. `claude mcp add --transport http --scope user blockout http://127.0.0.1:17480/mcp`. e2e specs must set `BLOCKOUT_MCP_PORT` to a free port.
 
 **Example (Claude Code):**
 

@@ -1,10 +1,11 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's Clara button in 2026; see MODIFICATIONS.md.
 /**
  * Typed IPC bridge. The renderer sees exactly this surface as
  * window.blockout — nothing else from Node.
  */
 
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ClaraView } from '../shared/clara-types'
 
 export interface PlatformInfo {
   platform: 'macos' | 'windows' | 'linux'
@@ -61,6 +62,12 @@ export interface BlockoutAPI {
     cb: (id: string, action: string, params: unknown) => void
   ): () => void
   controlResult(id: string, result: { ok: boolean; data?: unknown; error?: string }): void
+  /** Clara, the separately installed assistant, docked from the titlebar. */
+  clara: {
+    getState(): Promise<ClaraView>
+    toggle(folder: string | null): Promise<ClaraView>
+    onState(cb: (view: ClaraView) => void): () => void
+  }
   /** Analyze a reference image/video with Claude and return a scene layout. */
   analyzeReference(filePath: string): Promise<
     | {
@@ -129,6 +136,15 @@ const api: BlockoutAPI = {
     return () => ipcRenderer.removeListener('control:invoke', listener)
   },
   controlResult: (id, result) => ipcRenderer.send('control:result', id, result),
+  clara: {
+    getState: () => ipcRenderer.invoke('clara:getState'),
+    toggle: (folder) => ipcRenderer.invoke('clara:toggle', folder),
+    onState: (cb) => {
+      const listener = (_e: unknown, view: ClaraView): void => cb(view)
+      ipcRenderer.on('clara:state', listener)
+      return () => ipcRenderer.removeListener('clara:state', listener)
+    }
+  },
   versions: () => ipcRenderer.invoke('app:versions'),
   analyzeReference: (filePath) => ipcRenderer.invoke('ai:analyzeReference', filePath)
 }

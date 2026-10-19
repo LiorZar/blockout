@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support in 2026, and in this fork (scene.fights migration); see MODIFICATIONS.md.
 /**
  * Document creation, validation, and git-friendly serialization.
  * Projects are folders; this module owns the JSON shape. Serialization is
@@ -11,6 +11,7 @@ import type {
   BlockingTake,
   CameraMark,
   Entity,
+  FightDoc,
   GaitId,
   ProjectDoc,
   Scene,
@@ -44,7 +45,8 @@ export function createScene(number: number): Scene {
     entities: [],
     blocking: [take],
     shots: [],
-    scans: []
+    scans: [],
+    fights: []
   }
   scene.shots.push(createShot(scene, `${number}A`))
   return scene
@@ -248,6 +250,11 @@ export function serializeProject(doc: ProjectDoc): string {
  */
 function migrateProject(doc: ProjectDoc): ProjectDoc {
   for (const scene of doc.scenes) {
+    // Fork: scripted fights (src/engine/fight/) — missing or malformed → [].
+    const fights = (scene as { fights?: unknown }).fights
+    scene.fights = Array.isArray(fights)
+      ? fights.filter((f): f is FightDoc => typeof f === 'object' && f !== null && !Array.isArray(f))
+      : []
     const raw = (scene as { scans?: unknown }).scans
     if (!Array.isArray(raw)) {
       scene.scans = []

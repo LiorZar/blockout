@@ -80,6 +80,52 @@ Any client that takes the standard stdio server list accepts this JSON block:
 
 No `env`, no headers, no URL — the bridge discovers the running app on its own.
 
+### HTTP transport (no Node needed)
+
+The running app also serves the same tools itself, over MCP Streamable HTTP at
+`http://127.0.0.1:17480/mcp` (`GET /health` answers `{ ok: true, app: "blockout" }`).
+Both transports read one catalog, `mcp/tools.json`, and relay through the same
+control path, so every edit is undoable and shows live.
+
+```bash
+claude mcp add --transport http --scope user blockout http://127.0.0.1:17480/mcp
+codex mcp add blockout --url http://127.0.0.1:17480/mcp
+copilot mcp add --transport http blockout http://127.0.0.1:17480/mcp
+```
+
+- Set `BLOCKOUT_MCP_PORT` to move it: an integer `1024`–`65535`, or `0` for any
+  free port (the app logs the URL). Anything else falls back to `17480`.
+- It binds `127.0.0.1` only, answers 403 when the `Host` header isn't
+  `127.0.0.1:<port>` / `localhost:<port>`, and 403 to any request carrying an
+  `Origin` header, so web pages can't reach it.
+- If the port is taken (say, by a second copy of Blockout), that copy runs without
+  the HTTP tools; the first copy's server is untouched. The stdio bridge keeps
+  working either way.
+- **Installed copies register themselves.** On launch, a packaged Blockout
+  adds this URL as `blockout` to each of `claude`, `codex` and `copilot` that
+  is installed (user scope), and remembers it in `mcp-registration.json` in
+  its user-data folder so later launches skip the work; problems go to
+  `logs/mcp-registration.log` there. An earlier stdio registration named
+  `blockout` is replaced by the HTTP one, which has the same tools.
+
+### Clara (Windows)
+
+Clara is 2DLogic's assistant, installed separately (Blockout never bundles
+it). With a project open, the **Clara** button in the titlebar docks Clara
+beside Blockout (Blockout 75 %, Clara 25 %); click it again, or Clara's close
+button, to undock and get the window's old size back. Clara works through the
+customer's own signed-in `claude` or `codex`, uses this HTTP server's tools,
+and may read files inside the project folder only (`read-files`). Deletes
+(`destructiveHint` tools) show an approval card first. The button's tooltip
+says when Clara isn't installed, why it couldn't open (it retries once), and
+when Blockout's tools aren't available (for example, port 17480 is taken).
+
+- Clara writes a `.clara\` folder into the project folder.
+- Development: with `BLOCKOUT_CLARA_DEV` set to a Maestro checkout and an
+  unpackaged Blockout, the button launches that checkout's Clara build on its
+  own pipe (`CLARA_PIPE_SUFFIX`, default `blockout-dev`). Set `CLARA_DATA_DIR`
+  to keep its data out of your real profile.
+
 ---
 
 ## Tools
@@ -121,6 +167,12 @@ No `env`, no headers, no URL — the bridge discovers the running app on its own
 | `set_scan_transform` | `scanId, position?, rotationDeg?, scale?, visible?, flipped?` | Position / rotate / scale / show-hide an imported scan; `flipped` rights upside-down .splat exports. Omitted fields unchanged. |
 | `remove_scan` | `scanId` | Remove an imported scan from the current scene. |
 | `set_reference` | `videoPath, handoffVersion?, mode?, opacity?` | Attach a reference clip (copied into `refs/`) as a ghost/PIP underlay. Motion Previs sends independent handoff protocol version `1`; missing version remains accepted for legacy clients. |
+| `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Frame the camera with shot words — "MCU on B, over A's right shoulder, 50mm" — or the same fields. The mark is re-solved every frame from the subjects, so the framing holds while they move. |
+| `list_fight_moves` | — | Strikes a fight script can use, with aliases, default targets and impacts. |
+| `stage_fight` | `script` / `beats` / `random`, `x?, z?, headingDeg?, fighterIds?, exaggeration?, coverage?` | Stage a scripted two-person fight blow by blow ("A jab cross to head -> block, hit"); hits land on their frame. Returns `{ fightId, script, report }`. |
+| `update_fight` | `fightId, script?, beats?, exaggeration?, coverage?` | Re-solve a staged fight. |
+| `get_fight` / `delete_fight` | `fightId` | Read a fight's script and report / forget a fight (its marks stay). |
+| `fight_coverage` | `fightId, mode, side?` | Replace the camera with fight coverage: `master`, `punch-in`, `over-shoulder` or `follow`, never crossing the fight line. |
 
 ---
 
