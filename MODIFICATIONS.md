@@ -206,6 +206,33 @@ Changes in this fork (2026):
   height. The Fight Director gains a Bodies select (Classic / Mannequin) that
   stages a fight with a male A and a female B (`FightDirector.tsx`). Tests:
   `tests/unit/mannequin.test.ts`, `tests/e2e/mannequin.spec.ts`.
+- Hit power (`fight/physics.ts`, `fight/moves.ts`, `fight/solve.ts`,
+  `weapons.ts`): each strike's impacts carry a nominal peak speed
+  (`STRIKE_SPEED`: jab 5.5 m/s, cross 9, hook 10, roundhouse 12, …) instead
+  of the keyframe average; the limb's effective mass scales with the
+  attacker's body mass; a held weapon adds its mass (`WeaponSpec.mass`), half
+  a hand for a two-hander's off hand, and a swing's leverage
+  `(arm + reach) / arm` (`weaponHeft`); a guard takes half the blow (was
+  0.35×); `grapple-shove` and `takedown-lunge` are whole-body moves; a stagger
+  stumbles `0.25 + 2·(capture − foot)` m, and a guarded stagger rocks the
+  defender back behind its guard. Jabs absorb, power punches and front kicks
+  stagger, roundhouses and bat / axe / staff hits knock down, so punch-in
+  coverage pushes in on the hits that matter. Tests:
+  `tests/unit/fight-tune.test.ts`.
+- Shouldered rifle aim: `src/engine/motions-fork.ts` holds fork motion
+  presets, joined onto `MOTION_PRESETS` by one spread at the end of
+  `motions.ts`; its `rifle-aim-fire` is low ready → mount (stock in the
+  shoulder, elbow down, head down on the stock, support hand on the
+  fore-end) → aim hold → shot → recoil → back on target → low ready. Long
+  guns gain a `stock` point (`weapons.ts`) and the shoulder mount turns the
+  gun so the stock, not the grip line, points at the shoulder, keeping it
+  upright (world up leads, the thumb breaks ties); the rifle's and shotgun's
+  support points moved back along the fore-end / pump (−0.24 → −0.17 /
+  −0.18) so the support arm reaches without twisting the body. Gun beats
+  play the gun's own aim (`gunAimMove` in `fight/moves.ts`): rifle and
+  shotgun shoulder it, the pistol keeps `pistol-aim-fire`, a left-hand gun
+  plays it mirrored; `list_fight_moves` lists each shot's `guns`
+  (`handler.ts`, `mcp/tools.json`). Tests: `tests/unit/rifle-aim.test.ts`.
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

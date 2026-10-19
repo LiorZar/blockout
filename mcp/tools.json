@@ -393,7 +393,7 @@
   {
     "name": "list_fight_moves",
     "title": "List fight moves",
-    "description": "The moves a fight script can use, with their aliases, default target and impacts (which hand/foot/elbow/knee lands, and when), then the gun shots (pistol-aim-fire: \"shoot\", \"fire\"), which need a gun in hand.",
+    "description": "The moves a fight script can use, with their aliases, default target and impacts (which hand/foot/elbow/knee lands, when, and its peak speed in m/s), then the gun shots, which need a gun in hand: \"shoot\" / \"fire\" play the gun's own aim, rifle-aim-fire (shouldered) for the rifle and shotgun and pistol-aim-fire for the pistol (each lists its guns).",
     "inputSchema": {
       "type": "object",
       "properties": {},

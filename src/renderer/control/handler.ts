@@ -651,7 +651,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
         name: m.name,
         aliases: aliases.filter(([, id]) => id === m.id).map(([a]) => a),
         defaultTarget: defaultTarget(m.id),
-        impacts: m.impacts.map((i) => ({ effector: i.effector, t: i.t, speed: Math.round(i.speed * 100) / 100 }))
+        impacts: m.impacts.map((i) => ({ effector: i.effector, t: i.t, speed: Math.round(i.speed * 100) / 100 })),
+        ...('guns' in m ? { guns: m.guns } : {})
       }))
     }
 

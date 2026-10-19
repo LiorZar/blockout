@@ -102,7 +102,7 @@ describe('fightCoverage', () => {
   })
 
   it('punch-in arrives at MCU on the defender at each big impact', () => {
-    // At the motion data's speeds most blows are absorbed; a spinning back kick at ×3 staggers.
+    // At ×3 the cross, the spinning back kick and the KO roundhouse are all big hits.
     const script = `A jab cross to head -> block, hit
 A spinning back kick to body -> hit power 1
 B roundhouse to head -> ko power 1`

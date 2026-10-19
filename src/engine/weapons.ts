@@ -37,10 +37,10 @@ export interface WeaponSpec {
   assetId: string
   kind: WeaponKind
   /**
-   * 'hand': rigid in the fist (`rot`). 'shoulder': a long gun whose stock sits
-   * at the same side's shoulder, so the barrel runs from the shoulder through
-   * the grip, top toward the thumb (`rot` is the fallback when the hand is at
-   * the shoulder).
+   * 'hand': rigid in the fist (`rot`). 'shoulder': a long gun whose stock
+   * points at the same side's shoulder (it sits in it when the arm brings the
+   * grip a stock's length from the shoulder), upright (`rot` is the fallback
+   * when the hand is at the shoulder).
    */
   mount: 'hand' | 'shoulder'
   strike: WeaponStrike
@@ -55,6 +55,8 @@ export interface WeaponSpec {
   aim: V3
   /** Model-frame point for the off hand of a two-handed weapon. */
   support?: V3
+  /** A shouldered long gun's butt (model frame, on the YZ plane): the point that sits in the shoulder. */
+  stock?: V3
   /**
    * A one-handed carry at rest (spear, staff): the off hand only takes the
    * support point as the holding arm leaves its idle pose. At rest it can't
@@ -66,6 +68,8 @@ export interface WeaponSpec {
   rot: M3
   /** Idle hold pose for the holding arm (right-arm channels; mirrored for L). */
   idle: Record<string, number>
+  /** Mass the weapon adds to a blow at its strike point (kg; fight physics). */
+  mass: number
 }
 
 /* --------------------------- tiny 3×3 rigid math -------------------------- */
@@ -190,6 +194,22 @@ const SHIELD_HOLD: M3 = columns(v(0, 1, 0), v(0, 0, -1))
 /** Blade angle off the thumb axis: a thrust ends level, a slash follows through, the point hangs low at rest. */
 const BLADE = 1.2
 
+/** Effective mass at the strike point (kg): a blade's or club's swinging weight, a gun or shield whole. */
+const MASS: Record<string, number> = {
+  'prop.sword': 1.2,
+  'prop.katana': 1.1,
+  'prop.knife': 0.25,
+  'prop.axe': 2.0,
+  'prop.baseballBat': 1.0,
+  'prop.spear': 1.5,
+  'prop.staff': 1.5,
+  'prop.pistol': 0.9,
+  'prop.rifle': 3.5,
+  'prop.shotgun': 3.4,
+  'prop.bow': 1.0,
+  'prop.shield': 3.0
+}
+
 const W = (
   assetId: string,
   kind: WeaponKind,
@@ -214,6 +234,7 @@ const W = (
   aim,
   rot,
   idle,
+  mass: MASS[assetId] ?? 1,
   ...(support ? { support } : {})
 })
 
@@ -240,8 +261,8 @@ export const WEAPON_SPECS: WeaponSpec[] = [
     shoulderRZ: 0.05,
     elbowR: 0.6
   }),
-  W('prop.rifle', 'gun', 'shot', true, 'R', v(0, 0.07, 0.13), v(0, 0.165, -0.58), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.12, -0.24)),
-  W('prop.shotgun', 'gun', 'shot', true, 'R', v(0, 0.075, 0.14), v(0, 0.165, -0.6), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.115, -0.24)),
+  { ...W('prop.rifle', 'gun', 'shot', true, 'R', v(0, 0.07, 0.13), v(0, 0.165, -0.58), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.12, -0.17)), stock: v(0, 0.14, 0.46) },
+  { ...W('prop.shotgun', 'gun', 'shot', true, 'R', v(0, 0.075, 0.14), v(0, 0.165, -0.6), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.115, -0.18)), stock: v(0, 0.142, 0.455) },
   // Bow ready at the waist: forearm level, limbs upright, arrow forward.
   W('prop.bow', 'bow', 'shot', true, 'L', v(0, 0.75, 0), v(0, 0.78, -0.03), FWD, LEVEL_HOLD, {
     shoulderRX: 0.05,
@@ -308,6 +329,10 @@ const perp = (a: V3, axis: V3): V3 => sub(a, scale(axis, dotv(a, axis)))
  * Weapon model → holder space rotation for a hand pose, in whatever space
  * the inputs are (entity-local from FK, or world from the rendered rig).
  * The grip sits on `hand`; a model point lands at `hand + R · (s · (p − grip))`.
+ *
+ * Shoulder mount (fork): the gun stays upright (world up leads, the thumb
+ * breaks ties) and turns about its grip so the stock points at the shoulder:
+ * the barrel tilts up from the shoulder→grip line by the stock's rise.
  */
 export function weaponRotation(spec: WeaponSpec, side: Hand, frame: { hand: V3; handRot: M3; shoulder: V3 }): M3 {
   const rigid = mul(frame.handRot, holdTransform(spec, side, 1).r)
@@ -317,11 +342,16 @@ export function weaponRotation(spec: WeaponSpec, side: Hand, frame: { hand: V3; 
   const n = len(d)
   // Hand at the shoulder: ease back to the rigid hold instead of a degenerate line.
   const w = clamp((n - 0.05) / 0.05, 0, 1)
-  const dir = unit(n > 1e-9 ? add(scale(d, w / n), scale(rigidBarrel, 1 - w)) : rigidBarrel)
+  const line = unit(n > 1e-9 ? add(scale(d, w / n), scale(rigidBarrel, 1 - w)) : rigidBarrel)
   const thumb = apply(frame.handRot, v(0, 0, -1))
-  let up = add(perp(thumb, dir), scale(perp(v(0, 1, 0), dir), 0.25))
-  if (len(up) < 1e-6) up = perp(apply(rigid, v(0, 1, 0)), dir)
-  return columns(unit(up), scale(dir, -1))
+  let up0 = add(perp(v(0, 1, 0), line), scale(perp(thumb, line), 0.1))
+  if (len(up0) < 1e-6) up0 = perp(apply(rigid, v(0, 1, 0)), line)
+  up0 = unit(up0)
+  // The stock rises above the grip's barrel-parallel line: turn up by that angle and it lies on the line.
+  const rise = spec.stock ? Math.atan2(spec.stock.y - spec.grip.y, spec.stock.z - spec.grip.z) : 0
+  const dir = add(scale(line, Math.cos(rise)), scale(up0, Math.sin(rise)))
+  const up = add(scale(line, -Math.sin(rise)), scale(up0, Math.cos(rise)))
+  return columns(up, scale(dir, -1))
 }
 
 /** A weapon model point held in `hand`, entity-local to the holder (unscaled by the holder). */

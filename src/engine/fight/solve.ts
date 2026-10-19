@@ -10,7 +10,8 @@
  * so it meets the target point exactly; a kick that still falls short lifts
  * the kicker (onto the toes / a small hop, ramped in and landed) and a
  * blocking arm reaches to meet the blow. Reactions follow the closed-form
- * physics (stagger, knockdown slide, head snap). All marks carry lockFacing,
+ * physics (stagger, knockdown slide, head snap; a guarded stagger rocks the
+ * defender back behind its guard). All marks carry lockFacing,
  * so the evaluator keeps each fighter's facing and posed gait. The report's
  * contact errors are measured through the real ShotEvaluator.
  *
@@ -28,8 +29,8 @@ import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, toWorld, type Effector, type PersonDims } from '../skeleton'
 import type { EntityState, FightBeat, FightDoc, FightOutcome, GaitId, Scene, Shot, V3 } from '../types'
 import { heldPointLocal, holdJoints, weaponContact, weaponSpec, type HeldWeapon } from '../weapons'
-import { DEFENSES, REACTIONS, SHOT_MOVES, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
-import { impact, snapAmplitude, snapCurve, type ImpactResult } from './physics'
+import { DEFENSES, REACTIONS, SHOT_MOVES, gunAimMove, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
+import { impact, snapAmplitude, snapCurve, weaponHeft, type ImpactResult } from './physics'
 
 export interface FighterInput {
   entityId: string
@@ -91,6 +92,8 @@ export const MAX_KICK_LIFT = 0.5
 const BLOCK_ELBOW = 0.8
 /** An armed blow that can't reach the target height by pitch alone bends the elbow by up to this. */
 const WEAPON_ELBOW = 0.8
+/** A guarded blow that staggers rocks the defender's torso back by up to this (rad). */
+const GUARD_ROCK = 0.35
 const SNAP_HZ = 15
 const SNAP_S = 0.6
 
@@ -474,16 +477,17 @@ export function solveFight(
       warnings.push(`${name} dropped: a fighter is down`)
       continue
     }
-    // Weapons: a gun beat fires from the gun hand; a one-hand strike mirrors onto the weapon hand when
-    // only the other hand is armed; a blow from a hand on a two-hander comes from its holding hand.
+    // Weapons: a gun beat plays its gun's aim (shouldered for long guns), fired from the gun hand and
+    // mirrored onto a left-hand gun; a one-hand strike mirrors onto the weapon hand when only the
+    // other hand is armed; a blow from a hand on a two-hander comes from its holding hand.
     const shotBeat = SHOT_MOVES.has(beat.move)
     const gun = shotBeat ? atk.held.find((h) => h.spec.kind === 'gun') : undefined
-    const raw = shotBeat ? (gun ? shotImpacts(beat.move, gun.hand) : []) : strikeImpacts(beat.move)
-    const mirror =
-      !shotBeat &&
-      raw.length > 0 &&
-      raw.every((imp) => !weaponOf(atk, imp.effector) && !!weaponOf(atk, MIRROR_EFFECTOR[imp.effector]))
-    const preset0 = BY_ID.get(beat.move)
+    const move = gun ? gunAimMove(gun.spec) : beat.move
+    const raw = shotBeat ? (gun ? shotImpacts(move, 'R') : []) : strikeImpacts(beat.move)
+    const mirror = shotBeat
+      ? gun?.hand === 'L'
+      : raw.length > 0 && raw.every((imp) => !weaponOf(atk, imp.effector) && !!weaponOf(atk, MIRROR_EFFECTOR[imp.effector]))
+    const preset0 = BY_ID.get(move)
     const preset = preset0 && mirror ? mirroredMove(preset0) : preset0
     const impacts: StrikeImpact[] = !preset
       ? []
@@ -521,8 +525,11 @@ export function solveFight(
       const muzzle = contactLocal(atk, aim, impacts[0]!.effector)
       atk.shotRange = Math.max(0.3, flat(sub(D, A0)) - Math.hypot(muzzle.x, muzzle.z) * atk.scale - 0.15)
     }
-    const physics = impacts.map((imp, i) =>
-      impact({
+    const physics = impacts.map((imp, i) => {
+      // A bullet doesn't care who fires it; a melee blow carries the attacker's body and weapon.
+      const w = shotBeat ? null : weaponOf(atk, imp.effector)
+      const bothHands = !!w?.spec.support && !atk.held.some((h) => h.hand !== w.hand)
+      return impact({
         moveId: beat.move,
         effector: imp.effector,
         speed: imp.speed,
@@ -530,9 +537,11 @@ export function solveFight(
         outcome: outcomes[i]!,
         defender: def.dims,
         defenderBuild: def.build,
-        exaggeration
+        exaggeration,
+        ...(shotBeat ? {} : { attacker: atk.dims, attackerBuild: atk.build }),
+        ...(w ? { weapon: weaponHeft(w.spec, w.scale, atk.dims, atk.scale, beat.move, bothHands) } : {})
       })
-    )
+    })
 
     const plan = (desiredStart: number, ceil: boolean) => {
       const tf0 = desiredStart + last.t
@@ -570,7 +579,15 @@ export function solveFight(
             const back = ph.result === 'stagger' ? ph.stepBack : Math.min(0.6, ph.slide * 0.5)
             const dur = ph.result === 'stagger' ? ph.stepDuration : 0.4
             ev.root = (t) => ({ off: { x: away.x * back * clamp((t - T) / dur, 0, 1), z: away.z * back * clamp((t - T) / dur, 0, 1) }, up: 0 })
-            ev.times = [T + dur]
+            // The guard holds while the blow rocks the body back (torso, then head) and the feet give ground.
+            const rock = GUARD_ROCK * clamp(ph.capture / (0.6 * def.dims.legLen), 0.6, 1)
+            const span = dur + 0.25
+            ev.extra = (t) => {
+              if (t <= T || t >= T + span) return null
+              const b = Math.sin((Math.PI * (t - T)) / span)
+              return { torsoX: -rock * b, headX: -0.6 * rock * b }
+            }
+            ev.times = [T + dur, ...[1, 2, 3, 4, 5].map((k) => T + (span * k) / 6), T + span]
             base = add(base, away, back)
           }
           events.push(ev)
@@ -745,13 +762,14 @@ export function solveFight(
         }
         const ev = blockEvents.get(i)
         if (ev && Object.keys(armFix).length > 0) {
-          // Ramp the reaching arm in by the impact frame and back out by the defense's end.
+          // Ramp the reaching arm in by the impact frame and back out by the defense's end (on top of any rock-back).
           const fix = armFix
+          const before = ev.extra
           ev.extra = (t) => {
             const f = t <= T ? clamp((t - ev.start) / Math.max(1e-6, T - ev.start), 0, 1) : clamp(1 - (t - T) / Math.max(1e-6, ev.end - T), 0, 1)
-            if (f <= 0) return null
-            const out: Joints = {}
-            for (const [k, v] of Object.entries(fix)) out[k] = v * f
+            const out: Joints = { ...before(t) }
+            if (f <= 0) return Object.keys(out).length > 0 ? out : null
+            for (const [k, v] of Object.entries(fix)) out[k] = (out[k] ?? 0) + v * f
             return out
           }
         }

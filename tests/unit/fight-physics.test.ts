@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { impact, snapAmplitude, snapCurve, type ImpactInput } from '@engine/fight/physics'
+import { impact, snapAmplitude, snapCurve, weaponHeft, type ImpactInput } from '@engine/fight/physics'
 import { personDims } from '@engine/skeleton'
+import { weaponSpec } from '@engine/weapons'
 
 const MAN = personDims('person.man')
 const g = 9.81
@@ -48,7 +49,8 @@ describe('impact', () => {
     const r = impact(base({ moveId: 'haymaker', speed: 10, power: 1, exaggeration: 1.5 }))
     const e = expected(2.9, 10, 1, 1.5)
     expect(r.result).toBe('stagger')
-    expect(r.stepBack).toBeCloseTo(e.xcp - e.f + 0.1, 9)
+    // A stumble covers about twice the capture distance past the foot, plus a reflex step.
+    expect(r.stepBack).toBeCloseTo(0.25 + 2 * (e.xcp - e.f), 9)
     expect(r.stepBack).toBeGreaterThan(0)
     expect(r.stepDuration).toBeCloseTo(0.25 + (0.4 * e.xcp) / (0.6 * e.legLen), 9)
     expect(r.fallDuration).toBe(0)
@@ -72,10 +74,32 @@ describe('impact', () => {
     expect(impact(base({ moveId: 'tackle-lunge', effector: 'handL', speed: 5, power: 1 })).impulse).toBeCloseTo(20 * 5 * 1.3, 9)
   })
 
-  it('a block gives an impulse of exactly 0.35× the hit impulse', () => {
+  it('a block gives an impulse of exactly 0.5× the hit impulse', () => {
     const hit = impact(base({ speed: 10, power: 1 }))
-    expect(impact(base({ speed: 10, power: 1, outcome: 'block' })).impulse).toBeCloseTo(0.35 * hit.impulse, 12)
-    expect(impact(base({ speed: 10, power: 1, outcome: 'parry' })).impulse).toBeCloseTo(0.35 * hit.impulse, 12)
+    expect(impact(base({ speed: 10, power: 1, outcome: 'block' })).impulse).toBeCloseTo(0.5 * hit.impulse, 12)
+    expect(impact(base({ speed: 10, power: 1, outcome: 'parry' })).impulse).toBeCloseTo(0.5 * hit.impulse, 12)
+  })
+
+  it("scales the limb's effective mass by the attacker's body mass, (H/1.78)² · build", () => {
+    const woman = personDims('person.woman')
+    const r = impact(base({ speed: 10, power: 1, attacker: woman, attackerBuild: 1.2 }))
+    expect(r.impulse).toBeCloseTo(2.9 * (woman.H / 1.78) ** 2 * 1.2 * 10 * 1.3, 9)
+    expect(impact(base({ speed: 10, power: 1, attacker: MAN, attackerBuild: 1 })).impulse).toBeCloseTo(2.9 * 10 * 1.3, 9)
+    expect(impact(base({ moveId: 'grapple-shove', effector: 'handL', speed: 2, power: 1 })).impulse).toBeCloseTo(20 * 2 * 1.3, 9)
+  })
+
+  it("adds a weapon's mass, and a swing's leverage (arm + reach) / arm", () => {
+    const sword = weaponSpec('prop.sword')!
+    const reach = 0.8 * (sword.tip.y - sword.grip.y)
+    const arm = MAN.upperArmLen + MAN.lowerArmLen
+    const swing = weaponHeft(sword, 1, MAN, 1, 'sword-slash-combo', false)
+    expect(swing.mass).toBe(1.2)
+    expect(swing.leverage).toBeCloseTo((arm + reach) / arm, 12)
+    expect(weaponHeft(sword, 1, MAN, 1, 'sword-thrust', false).leverage).toBe(1)
+    // The off hand on a two-hander adds half a hand.
+    expect(weaponHeft(weaponSpec('prop.katana')!, 1, MAN, 1, 'sword-slash-combo', true).mass).toBeCloseTo(1.1 + 1.45, 12)
+    const r = impact(base({ speed: 9, power: 1, weapon: swing }))
+    expect(r.impulse).toBeCloseTo((2.9 + 1.2) * 9 * swing.leverage * 1.3, 9)
   })
 
   it('slip, duck and miss transfer nothing', () => {

@@ -1,3 +1,4 @@
+// Modified in this fork (2026): fork motions joined from motions-fork.ts; see MODIFICATIONS.md.
 /**
  * Mixamo-style motion-preset library for Blockout.
  *
@@ -37,6 +38,8 @@
  *
  * Pure data — no engine-purity concerns (no DOM/three/Electron imports).
  */
+
+import { FORK_MOTIONS } from './motions-fork'
 
 export interface MotionKeyframe {
   /** Seconds from the start of the motion. */
@@ -9572,4 +9575,6 @@ export const MOTION_PRESETS: MotionPreset[] = [
       },
     ],
   },
+  // Fork motions (src/engine/motions-fork.ts).
+  ...FORK_MOTIONS,
 ]

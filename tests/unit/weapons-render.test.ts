@@ -27,7 +27,7 @@ describe('weapon models', () => {
       const box = new Box3().setFromObject(built.group)
       expect(box.min.y, w.assetId).toBeGreaterThanOrEqual(-0.03)
       expect(Math.abs(box.max.y - assetSpec(w.assetId).height), w.assetId).toBeLessThan(0.06)
-      for (const p of [w.grip, w.tip, ...(w.support ? [w.support] : [])]) {
+      for (const p of [w.grip, w.tip, ...(w.support ? [w.support] : []), ...(w.stock ? [w.stock] : [])]) {
         expect(box.distanceToPoint(new Vector3(p.x, p.y, p.z)), `${w.assetId} point`).toBeLessThan(0.02)
       }
     }

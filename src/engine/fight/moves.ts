@@ -10,18 +10,23 @@
  * legs — off the ground (a lunge's step isn't a kick). Impacts closer than
  * 0.15 s keep the bigger strike.
  *
+ * Each impact's speed is the blow's nominal peak speed (`STRIKE_SPEED`): the
+ * keyframes are too sparse to measure it (their average is 2–4 m/s, a
+ * tenth of a real kick).
+ *
  * PURE: no DOM / three.js / Electron.
  */
 
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, type Effector } from '../skeleton'
 import type { V3 } from '../types'
+import { WEAPON_SPECS, type WeaponSpec } from '../weapons'
 
 export interface StrikeImpact {
   effector: Effector
   /** Seconds from the motion start. */
   t: number
-  /** Effector speed (m/s) from the previous keyframe into the impact, clamped to [2, 15]. */
+  /** Nominal peak speed of the blow (m/s): `STRIKE_SPEED`, else the effector's default. */
   speed: number
 }
 
@@ -82,8 +87,48 @@ const NON_STRIKES = new Set([
   'sword-parry',
   'bow-draw-loose',
   'pistol-aim-fire',
-  'rifle-aim-sweep'
+  'rifle-aim-sweep',
+  'rifle-aim-fire'
 ])
+
+/**
+ * Peak speed (m/s) of each impact of each strike, in impact order: jabs 5.5,
+ * crosses 9, hooks 10, haymakers 11; snap and push kicks 8, roundhouses 12,
+ * the spinning back kick 13; a blade's slash 9 and thrust 8 at the hand
+ * (`weaponHeft` adds the blade's reach). Whole-body pushes and lunges are
+ * slow and heavy (physics.ts gives them the body's mass).
+ */
+export const STRIKE_SPEED: Record<string, number[]> = {
+  'jab-cross': [5.5, 9],
+  uppercut: [9],
+  'high-kick': [12],
+  haymaker: [11],
+  'roundhouse-kick': [12],
+  'front-kick-combo': [8, 5.5],
+  'spinning-backfist': [10],
+  'double-jab-body-shot': [5.5, 5.5, 9],
+  'grapple-shove': [2.5],
+  'takedown-lunge': [4],
+  'boxing-combo': [5.5, 9],
+  'hook-punch': [10],
+  'elbow-strike': [7],
+  'knee-strike': [7],
+  'front-kick': [8],
+  'side-kick': [8],
+  'spinning-back-kick': [13],
+  'low-sweep': [7],
+  'spinning-back-fist': [11],
+  'tackle-lunge': [4],
+  'shove-two-hands': [2.5],
+  'sword-slash-combo': [9, 9],
+  'sword-thrust': [8],
+  'knife-lunge': [9],
+  'jab-hook-cross': [10, 9],
+  'teep-push-kick': [8]
+}
+
+/** Speed of a blow missing from `STRIKE_SPEED`, by the striking limb. */
+const EFFECTOR_SPEED: Record<string, number> = { hand: 8, elbow: 7, foot: 10, knee: 7 }
 
 const FOLDED = 1.7
 const MIN_EXTENSION = 0.2
@@ -134,17 +179,17 @@ function detect(m: MotionPreset): StrikeImpact[] {
       const rootZ = limb.root ? full[k]![limb.root].z : 0
       if (p.z - rootZ > 0.25) continue // clearly behind the body: a wind-up, not a blow
       if (!limb.root && p.y < FOOT_OFF_GROUND) continue // a step, not a kick
-      const dt = kfs[k]!.t - kfs[k - 1]!.t
-      const speed = dt > 0 ? dist(p, full[k - 1]![e]) / dt : 0
-      found.push({ effector: e, t: kfs[k]!.t, speed: Math.min(15, Math.max(2, speed)), score: s })
+      found.push({ effector: e, t: kfs[k]!.t, speed: 0, score: s })
     }
   }
   found.sort((a, b) => b.score - a.score || a.t - b.t)
   const kept: StrikeImpact[] = []
   for (const f of found) {
-    if (kept.every((k) => Math.abs(k.t - f.t) >= MIN_GAP - 1e-9)) kept.push({ effector: f.effector, t: f.t, speed: f.speed })
+    if (kept.every((k) => Math.abs(k.t - f.t) >= MIN_GAP - 1e-9)) kept.push({ effector: f.effector, t: f.t, speed: 0 })
   }
-  return kept.sort((a, b) => a.t - b.t)
+  return kept
+    .sort((a, b) => a.t - b.t)
+    .map((imp, k) => ({ ...imp, speed: STRIKE_SPEED[m.id]?.[k] ?? EFFECTOR_SPEED[imp.effector.replace(/[LR]$/, '')]! }))
 }
 
 /** Impacts of a strike motion (memoised); [] for unknown motions, defenses and reactions. */
@@ -173,7 +218,12 @@ export const STRIKE_IDS: string[] = MOTION_PRESETS.filter((m) => isStrikeCandida
 /* ----------------------------- gun shots (fork) ---------------------------- */
 
 /** Aim-and-fire motions a gun beat plays (held weapons; see src/engine/weapons.ts). */
-export const SHOT_MOVES = new Set(['pistol-aim-fire'])
+export const SHOT_MOVES = new Set(['pistol-aim-fire', 'rifle-aim-fire'])
+
+/** The aim a gun beat plays, whichever shot the script names: long guns shoulder, pistols aim arms out. */
+export function gunAimMove(spec: WeaponSpec): string {
+  return spec.mount === 'shoulder' ? 'rifle-aim-fire' : 'pistol-aim-fire'
+}
 /** A bullet: the physics sees the fastest blow there is. */
 const BULLET_SPEED = 15
 
@@ -194,7 +244,12 @@ export function listFightMoves(): { id: string; name: string; impacts: StrikeImp
   return STRIKE_IDS.map((id) => ({ id, name: BY_ID.get(id)!.name, impacts: strikeImpacts(id) }))
 }
 
-/** The gun shots a fight script can use (list_fight_moves adds them after the strikes). */
-export function listShotMoves(): { id: string; name: string; impacts: StrikeImpact[] }[] {
-  return [...SHOT_MOVES].map((id) => ({ id, name: BY_ID.get(id)!.name, impacts: shotImpacts(id) }))
+/** The gun shots a fight script can use (list_fight_moves adds them after the strikes), with the guns that play each. */
+export function listShotMoves(): { id: string; name: string; impacts: StrikeImpact[]; guns: string[] }[] {
+  return [...SHOT_MOVES].map((id) => ({
+    id,
+    name: BY_ID.get(id)!.name,
+    impacts: shotImpacts(id),
+    guns: WEAPON_SPECS.filter((w) => w.kind === 'gun' && gunAimMove(w) === id).map((w) => w.assetId)
+  }))
 }
