@@ -32,6 +32,11 @@ New binary and structured release artifacts are likewise identified here:
 `build/icon.ico` and `ASSET_MANIFEST.json`. Patch inputs retain their exact
 patch syntax and are documented by path under `third_party/ffmpeg/`.
 
+Changes in this fork (2026):
+
+- `CLAUDE.md` now describes the fork's purpose (blockout clips for
+  video-to-video AI models), its target models, and its product priorities.
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.
