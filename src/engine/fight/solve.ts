@@ -14,6 +14,11 @@
  * so the evaluator keeps each fighter's facing and posed gait. The report's
  * contact errors are measured through the real ShotEvaluator.
  *
+ * Weapons (fork; src/engine/weapons.ts): a blow from a hand holding a weapon
+ * lands with the weapon (blade, point, club end), a blocked one meets the
+ * defender's blade or shield, and a gun beat (SHOT_MOVES) aims the barrel
+ * line through the target, with the reaction on the shot frame.
+ *
  * PURE and deterministic: no DOM / three.js / Electron, no randomness.
  */
 
@@ -22,7 +27,8 @@ import { ShotEvaluator } from '../evaluate'
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, toWorld, type Effector, type PersonDims } from '../skeleton'
 import type { EntityState, FightBeat, FightDoc, FightOutcome, GaitId, Scene, Shot, V3 } from '../types'
-import { DEFENSES, REACTIONS, strikeImpacts, type StrikeImpact } from './moves'
+import { heldPointLocal, holdJoints, weaponContact, weaponSpec, type HeldWeapon } from '../weapons'
+import { DEFENSES, REACTIONS, SHOT_MOVES, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
 import { impact, snapAmplitude, snapCurve, type ImpactResult } from './physics'
 
 export interface FighterInput {
@@ -31,6 +37,8 @@ export interface FighterInput {
   params?: Record<string, number | string>
   scale: number
   start: V3
+  /** Weapons in this fighter's hands (held-weapon entities' asset, hand and scale). */
+  weapons?: { assetId: string; hand: 'L' | 'R'; scale: number }[]
 }
 
 /** A fight mark: an ordinary choreography mark that keeps its facing and posed gait while travelling. */
@@ -81,6 +89,8 @@ const ABDUCT_PITCH = 0.6
 export const MAX_KICK_LIFT = 0.5
 /** A blocking arm reaches toward the blow: elbow first, then abduction (shoulders stay in the block). */
 const BLOCK_ELBOW = 0.8
+/** An armed blow that can't reach the target height by pitch alone bends the elbow by up to this. */
+const WEAPON_ELBOW = 0.8
 const SNAP_HZ = 15
 const SNAP_S = 0.6
 
@@ -150,10 +160,19 @@ interface Fighter {
   spot: XZ
   heading: number
   down: boolean
+  /** Held weapons (one per hand). */
+  held: HeldWeapon[]
+  /** While a gun beat is solved: how far down the barrel line its contact point sits (m; 0 = none). */
+  shotRange: number
 }
 
 function fighterOf(input: FighterInput): Fighter {
   const b = input.params?.build
+  const held: HeldWeapon[] = []
+  for (const w of input.weapons ?? []) {
+    const spec = weaponSpec(w.assetId)
+    if (spec && !held.some((h) => h.hand === w.hand)) held.push({ spec, hand: w.hand, scale: w.scale > 0 ? w.scale : 1 })
+  }
   return {
     input,
     dims: personDims(input.assetId, input.params),
@@ -164,8 +183,43 @@ function fighterOf(input: FighterInput): Fighter {
     marks: [],
     spot: { x: input.start.x, z: input.start.z },
     heading: 0,
-    down: false
+    down: false,
+    held,
+    shotRange: 0
   }
+}
+
+/** The weapon a hand fights with: its own, or the two-handed one the other hand holds. */
+function weaponOf(f: Fighter, e: Effector): HeldWeapon | null {
+  if (e !== 'handL' && e !== 'handR') return null
+  const side = e === 'handL' ? 'L' : 'R'
+  const own = f.held.find((h) => h.hand === side)
+  if (own) return own
+  const other = f.held.find((h) => h.hand !== side)
+  return other?.spec.support ? other : null
+}
+
+/** A blow from a hand on a two-handed weapon comes from the hand that holds it. */
+function strikeEffector(f: Fighter, e: Effector): Effector {
+  const w = weaponOf(f, e)
+  return w ? (w.hand === 'L' ? 'handL' : 'handR') : e
+}
+
+/**
+ * Fighter-local point where an effector meets things. Unarmed: the rig
+ * effector. A hand with a weapon: the weapon's strike or guard point (a gun
+ * beat's: `shotRange` down the barrel line), in the pose the evaluator gives
+ * the fighter (the grip poses of `holdJoints`; `evaluated` joints have them).
+ */
+function contactLocal(f: Fighter, joints: Joints | undefined, e: Effector, role: 'strike' | 'guard' = 'strike', evaluated = false): V3 {
+  const w = weaponOf(f, e)
+  if (!w) return poseEffectors(f.dims, joints)[e]
+  const j = evaluated ? joints : holdJoints(f.dims, joints, f.held)
+  const range = role === 'strike' ? f.shotRange / w.scale : 0
+  const t = w.spec.tip
+  const a = w.spec.aim
+  const p = range > 0 ? { x: t.x + a.x * range, y: t.y + a.y * range, z: t.z + a.z * range } : weaponContact(w.spec, role)
+  return heldPointLocal(f.dims, j, w.hand, w.spec, p, w.scale)
 }
 
 function addMark(f: Fighter, time: number, pos: XZ, y: number, gait: GaitId, joints: Joints, heading: number): void {
@@ -189,9 +243,9 @@ function truncate(f: Fighter, t: number): void {
   while (f.marks.length > 1 && f.marks[f.marks.length - 1]!.time >= t - 1e-6) f.marks.pop()
 }
 
-/** World-space effector of a fighter in a pose at a root/heading. */
-function effectorWorld(f: Fighter, joints: Joints, root: XZ, y: number, heading: number, e: Effector): V3 {
-  return toWorld(poseEffectors(f.dims, joints)[e], { x: root.x, y, z: root.z }, heading, f.scale)
+/** World-space effector (or weapon point) of a fighter in a pose at a root/heading. */
+function effectorWorld(f: Fighter, joints: Joints, root: XZ, y: number, heading: number, e: Effector, role: 'strike' | 'guard' = 'strike'): V3 {
+  return toWorld(contactLocal(f, joints, e, role), { x: root.x, y, z: root.z }, heading, f.scale)
 }
 
 /** The point a blow aims at on the defender (also used by blocks via the guard hand). */
@@ -235,6 +289,26 @@ function guardHand(attackerLocalX: number): 'handL' | 'handR' {
   return attackerLocalX < 0 ? 'handR' : 'handL'
 }
 
+/** Weapons: an armed defender takes a blocked blow on its blade or shield, whichever hand holds it. */
+function guardSide(f: Fighter, side: 'handL' | 'handR'): 'handL' | 'handR' {
+  const guards = (e: 'handL' | 'handR'): boolean => {
+    const w = weaponOf(f, e)
+    return !!w && w.spec.kind !== 'gun' && w.spec.kind !== 'bow'
+  }
+  const other = side === 'handL' ? 'handR' : 'handL'
+  return !guards(side) && guards(other) ? other : side
+}
+
+/** Weapons: a one-handed weapon move (all blows from one hand), mirrored onto the other hand. */
+function mirroredMove(m: MotionPreset): MotionPreset {
+  return { ...m, keyframes: m.keyframes.map((k) => ({ ...k, joints: mirrorJoints(k.joints) })) }
+}
+
+const MIRROR_EFFECTOR: Record<Effector, Effector> = {
+  handL: 'handR', handR: 'handL', elbowL: 'elbowR', elbowR: 'elbowL', footL: 'footR', footR: 'footL',
+  kneeL: 'kneeR', kneeR: 'kneeL', shoulderL: 'shoulderR', shoulderR: 'shoulderL', head: 'head', chest: 'chest', pelvis: 'pelvis'
+}
+
 function pitchJoint(e: Effector): string {
   const side = e.endsWith('L') ? 'L' : 'R'
   return e.startsWith('hand') || e.startsWith('elbow') ? `shoulder${side}X` : `hip${side}X`
@@ -248,11 +322,12 @@ function solveChannel(
   rootY: number,
   targetY: number,
   key: string,
-  range: number
+  range: number,
+  role: 'strike' | 'guard' = 'strike'
 ): { delta: number; err: number } {
   const err = (d: number): number => {
     const j = { ...joints, [key]: (joints[key] ?? 0) + d }
-    return rootY + poseEffectors(f.dims, j)[e].y * f.scale - targetY
+    return rootY + contactLocal(f, j, e, role).y * f.scale - targetY
   }
   const N = 48
   let best = 0
@@ -299,7 +374,13 @@ function solvePitch(f: Fighter, joints: Joints, e: Effector, rootY: number, targ
   const z = x.replace(/X$/, 'Z')
   const withX = { ...joints, [x]: (joints[x] ?? 0) + first.delta }
   const second = solveChannel(f, withX, e, rootY, targetY, z, ABDUCT_PITCH)
-  return second.err < first.err ? { [x]: first.delta, [z]: second.delta } : { [x]: first.delta }
+  const out = second.err < first.err ? { [x]: first.delta, [z]: second.delta } : { [x]: first.delta }
+  // A weapon that still falls short (a short axe, a low follow-through) bends the elbow too.
+  const err = Math.min(first.err, second.err)
+  if (err <= 1e-3 || !weaponOf(f, e)) return out
+  const elbow = `elbow${e.endsWith('L') ? 'L' : 'R'}`
+  const third = solveChannel(f, withOffsets(joints, out), e, rootY, targetY, elbow, WEAPON_ELBOW)
+  return third.err < err ? { ...out, [elbow]: third.delta } : out
 }
 
 function withOffsets(joints: Joints, offsets: Joints): Joints {
@@ -375,7 +456,7 @@ export function solveFight(
   const F: [Fighter, Fighter] = [fighterOf(fighters[0]), fighterOf(fighters[1])]
   const warnings: string[] = []
   const beats: BeatReport[] = []
-  type Hit = { beat: number; i: number; time: number; attacker: 0 | 1; zone: FightBeat['target']; effector: Effector; outcome: FightOutcome }
+  type Hit = { beat: number; i: number; time: number; attacker: 0 | 1; zone: FightBeat['target']; effector: Effector; outcome: FightOutcome; shotRange: number }
   const hits: Hit[] = []
 
   F[0].heading = facing(F[0].spot, F[1].spot)
@@ -393,14 +474,30 @@ export function solveFight(
       warnings.push(`${name} dropped: a fighter is down`)
       continue
     }
-    const preset = BY_ID.get(beat.move)
-    const impacts: StrikeImpact[] = preset ? strikeImpacts(beat.move) : []
+    // Weapons: a gun beat fires from the gun hand; a one-hand strike mirrors onto the weapon hand when
+    // only the other hand is armed; a blow from a hand on a two-hander comes from its holding hand.
+    const shotBeat = SHOT_MOVES.has(beat.move)
+    const gun = shotBeat ? atk.held.find((h) => h.spec.kind === 'gun') : undefined
+    const raw = shotBeat ? (gun ? shotImpacts(beat.move, gun.hand) : []) : strikeImpacts(beat.move)
+    const mirror =
+      !shotBeat &&
+      raw.length > 0 &&
+      raw.every((imp) => !weaponOf(atk, imp.effector) && !!weaponOf(atk, MIRROR_EFFECTOR[imp.effector]))
+    const preset0 = BY_ID.get(beat.move)
+    const preset = preset0 && mirror ? mirroredMove(preset0) : preset0
+    const impacts: StrikeImpact[] = !preset
+      ? []
+      : raw.map((imp) => ({ ...imp, effector: strikeEffector(atk, mirror ? MIRROR_EFFECTOR[imp.effector] : imp.effector) }))
     if (!preset || impacts.length === 0) {
-      warnings.push(`${label} dropped: ${beat.move} is not a strike`)
+      warnings.push(shotBeat ? `${label} dropped: ${beat.attacker === 0 ? 'A' : 'B'} has no gun in hand` : `${label} dropped: ${beat.move} is not a strike`)
       continue
     }
     const beatWarnings: string[] = []
-    const outcomes = padOutcomes(beat.outcomes, impacts.length)
+    let outcomes = padOutcomes(beat.outcomes, impacts.length)
+    if (shotBeat && outcomes.some((o) => o === 'block' || o === 'parry')) {
+      outcomes = outcomes.map((o): FightOutcome => (o === 'block' || o === 'parry' ? 'miss' : o))
+      beatWarnings.push(`${label}: a shot can't be blocked or parried, so it misses`)
+    }
     const power = clamp(beat.power ?? 0.7, 0.2, 1)
     const clinch = CLINCH_MOVES.has(beat.move)
     const kIdx = impacts.map((imp) => preset.keyframes.findIndex((kf) => Math.abs(kf.t - imp.t) < 1e-9))
@@ -417,6 +514,13 @@ export function solveFight(
     const D = def.spot
     const A0 = atk.spot
     const hd = facing(D, A0)
+    atk.shotRange = 0
+    if (shotBeat) {
+      // The shot's contact point sits down the barrel line, about as far as the target: the shooter holds its ground.
+      const aim = preset.keyframes.find((kf) => Math.abs(kf.t - impacts[0]!.t) < 1e-9)!.joints
+      const muzzle = contactLocal(atk, aim, impacts[0]!.effector)
+      atk.shotRange = Math.max(0.3, flat(sub(D, A0)) - Math.hypot(muzzle.x, muzzle.z) * atk.scale - 0.15)
+    }
     const physics = impacts.map((imp, i) =>
       impact({
         moveId: beat.move,
@@ -598,22 +702,31 @@ export function solveFight(
             // to the height the blow comes in at (elbow, then abduction).
             const aimPitch = solvePitch(atk, kf.joints, imp.effector, rootY, T3.y)
             const aimed = withOffsets(kf.joints, aimPitch)
-            const e0 = poseEffectors(atk.dims, aimed)[imp.effector]
-            const side = guardHand(e0.x)
+            const e0 = contactLocal(atk, aimed, imp.effector)
+            const side = guardSide(def, guardHand(e0.x))
             const h = rootY + e0.y * atk.scale
-            const s = side.endsWith('L') ? 'L' : 'R'
-            const first = solveChannel(def, aimJoints, side, aimPos.y, h, `elbow${s}`, BLOCK_ELBOW)
+            const s = strikeEffector(def, side).endsWith('L') ? 'L' : 'R'
+            const first = solveChannel(def, aimJoints, side, aimPos.y, h, `elbow${s}`, BLOCK_ELBOW, 'guard')
             armFix = { [`elbow${s}`]: first.delta }
+            let guardErr = first.err
             if (first.err > 1e-3) {
-              const second = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}Z`, ABDUCT_PITCH)
-              if (second.err < first.err) armFix = { ...armFix, [`shoulder${s}Z`]: second.delta }
+              const second = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}Z`, ABDUCT_PITCH, 'guard')
+              if (second.err < first.err) {
+                armFix = { ...armFix, [`shoulder${s}Z`]: second.delta }
+                guardErr = second.err
+              }
             }
-            const hand = effectorWorld(def, withOffsets(aimJoints, armFix), aimPos, aimPos.y, hd, side)
+            if (guardErr > 1e-3 && weaponOf(def, side)) {
+              // A blade or shield held high (a parry) also swings the shoulder to meet the blow's height.
+              const third = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}X`, ARM_PITCH, 'guard')
+              if (third.err < guardErr) armFix = { ...armFix, [`shoulder${s}X`]: third.delta }
+            }
+            const hand = effectorWorld(def, withOffsets(aimJoints, armFix), aimPos, aimPos.y, hd, side, 'guard')
             T3 = { x: hand.x + toward.x * 0.05 * def.scale, y: hand.y, z: hand.z + toward.z * 0.05 * def.scale }
           }
           const pitch = solvePitch(atk, kf.joints, imp.effector, rootY, T3.y)
           const joints = withOffsets(kf.joints, pitch)
-          const e = poseEffectors(atk.dims, joints)[imp.effector]
+          const e = contactLocal(atk, joints, imp.effector)
           // A kick still short of the target lifts the kicker, only as much as needed.
           const short = T3.y - (rootY + e.y * atk.scale)
           const lift = kick && short > 1e-3 ? Math.min(MAX_KICK_LIFT, short) : 0
@@ -801,10 +914,10 @@ export function solveFight(
       defEnd = t0 + getUp.duration
     }
 
-    // 7. Rest: back to guard distance, facing each other.
+    // 7. Rest: back to guard distance, facing each other (after a shot, both hold their ground).
     const recoveryEnd = Math.max(atkEnd, defEnd)
     let restT = recoveryEnd
-    if (!def.down) {
+    if (!def.down && !shotBeat) {
       const M = { x: (atk.spot.x + def.spot.x) / 2, z: (atk.spot.z + def.spot.z) / 2 }
       const dir = unit(sub(def.spot, atk.spot), fwdOf(atk.heading))
       const aRest = add(M, dir, -GUARD_DISTANCE / 2)
@@ -847,7 +960,7 @@ export function solveFight(
       warnings: beatWarnings
     })
     impacts.forEach((imp, i) =>
-      hits.push({ beat: beats.length - 1, i, time: p.times[i]!, attacker: beat.attacker, zone: beat.target, effector: imp.effector, outcome: outcomes[i]! })
+      hits.push({ beat: beats.length - 1, i, time: p.times[i]!, attacker: beat.attacker, zone: beat.target, effector: imp.effector, outcome: outcomes[i]!, shotRange: atk.shotRange })
     )
   }
 
@@ -859,13 +972,25 @@ export function solveFight(
     name: 'fight',
     number: 1,
     environment: { lighting: 'day', sunAzimuth: 0, sunElevation: 1, fog: 0 },
-    entities: F.map((f) => ({
-      id: f.input.entityId,
-      assetId: f.input.assetId,
-      name: f.input.entityId,
-      params: f.input.params,
-      transform: { position: { ...f.input.start }, rotationY: 0, scale: f.scale }
-    })),
+    entities: [
+      ...F.map((f) => ({
+        id: f.input.entityId,
+        assetId: f.input.assetId,
+        name: f.input.entityId,
+        params: f.input.params,
+        transform: { position: { ...f.input.start }, rotationY: 0, scale: f.scale }
+      })),
+      // Held weapons, so the evaluator gives the fighters their grip poses.
+      ...F.flatMap((f) =>
+        f.held.map((h) => ({
+          id: `${f.input.entityId}-${h.hand}-weapon`,
+          assetId: h.spec.assetId,
+          name: h.spec.assetId,
+          heldBy: { entityId: f.input.entityId, hand: h.hand },
+          transform: { position: { ...f.input.start }, rotationY: 0, scale: h.scale }
+        }))
+      )
+    ],
     blocking: [
       {
         id: 'take',
@@ -890,6 +1015,7 @@ export function solveFight(
     const st = ev.evaluate(h.time)
     const a = st.entities.find((e) => e.entityId === F[h.attacker].input.entityId)!
     const d = st.entities.find((e) => e.entityId === F[h.attacker === 0 ? 1 : 0].input.entityId)!
+    F[h.attacker].shotRange = h.shotRange
     const err = measuredError(F[h.attacker], F[h.attacker === 0 ? 1 : 0], a, d, h.zone, h.effector, h.outcome)
     const rep = beats[h.beat]!
     rep.contactErrorM[h.i] = err
@@ -902,7 +1028,7 @@ export function solveFight(
   return { tracks, report: { beats, warnings, endT } }
 }
 
-/** Contact error of one blow from evaluated states (block/parry: on the guard hand). */
+/** Contact error of one blow from evaluated states (block/parry: on the guard hand or its weapon). */
 function measuredError(
   atk: Fighter,
   def: Fighter,
@@ -912,12 +1038,13 @@ function measuredError(
   effector: Effector,
   outcome: FightOutcome
 ): number {
-  const E = toWorld(poseEffectors(atk.dims, a.joints)[effector], a.position, a.heading, atk.scale)
+  const strike = contactLocal(atk, a.joints, effector, 'strike', true)
+  const E = toWorld(strike, a.position, a.heading, atk.scale)
   const toward = sub(a.position, d.position)
   let T = fightTarget(def.dims, def.scale, d.joints, d.position, d.heading, toward, zone, effector)
   if (outcome === 'block' || outcome === 'parry') {
-    const side = guardHand(poseEffectors(atk.dims, a.joints)[effector].x)
-    const hand = toWorld(poseEffectors(def.dims, d.joints)[side], d.position, d.heading, def.scale)
+    const side = guardSide(def, guardHand(strike.x))
+    const hand = toWorld(contactLocal(def, d.joints, side, 'guard', true), d.position, d.heading, def.scale)
     const t = unit(toward)
     T = { x: hand.x + t.x * 0.05 * def.scale, y: hand.y, z: hand.z + t.z * 0.05 * def.scale }
   }

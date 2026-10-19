@@ -6,6 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AttachClara, IClaraAttachOptions, IClaraHandle, IHostWindow } from '@2dl/clara-client'
 import {
+  CLARA_HOST_MIN_WIDTH,
   CLARA_INSTRUCTIONS,
   CLARA_RETRY_MS,
   buildAttachOptions,
@@ -50,6 +51,8 @@ function setup(opts: {
   results?: (FakeHandle | Promise<FakeHandle>)[]
   platform?: NodeJS.Platform
   mcp?: McpHttpStatus
+  win?: IHostWindow
+  onAttach?: () => void
 } = {}): {
   ctrl: ReturnType<typeof createClaraController>
   calls: IClaraAttachOptions[]
@@ -60,11 +63,12 @@ function setup(opts: {
   const queue = [...(opts.results ?? [])]
   const attach = (async (_w: IHostWindow, options: IClaraAttachOptions) => {
     calls.push(options)
+    opts.onAttach?.()
     return (await queue.shift()) ?? handle('failed', 'no more fakes')
   }) as unknown as typeof AttachClara
   const ctrl = createClaraController({
     attach,
-    getWindow: () => win,
+    getWindow: () => opts.win ?? win,
     getMcp: () => opts.mcp ?? { state: 'listening', port: 17480, url: URL },
     env: {},
     platform: opts.platform ?? 'win32',
@@ -201,6 +205,96 @@ describe('Clara controller', () => {
     ctrl.dispose()
     expect(h.detached).toBe(1)
     expect(ctrl.getState().state).toBe('idle')
+  })
+})
+
+// Blockout's window has minWidth 1100. Docked, Clara may shrink the host to
+// 60 % of the pair; a clamped host would sit under Clara (found in the
+// installed-Clara test: 135 px overlap hid the Close Clara button).
+describe('host minimum width while docked', () => {
+  function sizable(min: [number, number] = [1100, 700]): IHostWindow & { min: [number, number]; destroyed: boolean } {
+    const w = {
+      id: 2,
+      min,
+      destroyed: false,
+      getMinimumSize: (): number[] => [...w.min],
+      setMinimumSize(width: number, height: number): void {
+        if (w.destroyed) throw new Error('Object has been destroyed')
+        w.min = [width, height]
+      }
+    }
+    return w as unknown as IHostWindow & { min: [number, number]; destroyed: boolean }
+  }
+
+  it(`drops to ${CLARA_HOST_MIN_WIDTH} before the attach, keeps it while attached, and Detach restores it`, async () => {
+    const w = sizable()
+    const seen: number[][] = []
+    const { ctrl } = setup({ results: [handle('attached')], win: w, onAttach: () => seen.push([...w.min]) })
+    await ctrl.toggle(FOLDER)
+    expect(seen).toEqual([[CLARA_HOST_MIN_WIDTH, 700]])
+    expect(w.min).toEqual([CLARA_HOST_MIN_WIDTH, 700])
+    await ctrl.toggle(FOLDER)
+    expect(w.min).toEqual([1100, 700])
+  })
+
+  it('a failed or not-installed attach restores it; the retry lowers it again', async () => {
+    const w = sizable()
+    const seen: number[][] = []
+    const { ctrl } = setup({ results: [handle('failed', 'busy'), handle('not-installed')], win: w, onAttach: () => seen.push([...w.min]) })
+    await ctrl.toggle(FOLDER)
+    expect(w.min).toEqual([1100, 700])
+    await vi.advanceTimersByTimeAsync(CLARA_RETRY_MS)
+    expect(seen).toEqual([[CLARA_HOST_MIN_WIDTH, 700], [CLARA_HOST_MIN_WIDTH, 700]])
+    expect(ctrl.getState().state).toBe('not-installed')
+    expect(w.min).toEqual([1100, 700])
+  })
+
+  it('Clara closing restores it; a stale closed does not', async () => {
+    const w = sizable()
+    const old = handle('attached')
+    const current = handle('attached')
+    const { ctrl } = setup({ results: [old, current], win: w })
+    await ctrl.toggle(FOLDER)
+    await ctrl.toggle(FOLDER)
+    await ctrl.toggle(FOLDER)
+    old.fire('closed')
+    expect(w.min).toEqual([CLARA_HOST_MIN_WIDTH, 700])
+    current.fire('closed')
+    expect(w.min).toEqual([1100, 700])
+  })
+
+  it('toggle while attaching restores it, and the late handle leaves a newer attach docked', async () => {
+    const w = sizable()
+    let resolve!: (h: FakeHandle) => void
+    const late = handle('attached')
+    const { ctrl } = setup({ results: [new Promise<FakeHandle>((r) => (resolve = r)), handle('attached')], win: w })
+    const first = ctrl.toggle(FOLDER)
+    await ctrl.toggle(FOLDER)
+    expect(w.min).toEqual([1100, 700])
+    await ctrl.toggle(FOLDER)
+    resolve(late)
+    await first
+    expect(late.detached).toBe(1)
+    expect(ctrl.getState().state).toBe('attached')
+    expect(w.min).toEqual([CLARA_HOST_MIN_WIDTH, 700])
+  })
+
+  it('dispose restores it, and a destroyed window does not throw', async () => {
+    const w = sizable()
+    const { ctrl } = setup({ results: [handle('attached'), handle('attached')], win: w })
+    await ctrl.toggle(FOLDER)
+    ctrl.dispose()
+    expect(w.min).toEqual([1100, 700])
+    await ctrl.toggle(FOLDER)
+    w.destroyed = true
+    expect(() => ctrl.dispose()).not.toThrow()
+  })
+
+  it('a host that already allows less than the Clara minimum is left alone', async () => {
+    const w = sizable([400, 300])
+    const { ctrl } = setup({ results: [handle('attached')], win: w })
+    await ctrl.toggle(FOLDER)
+    expect(w.min).toEqual([400, 300])
   })
 })
 

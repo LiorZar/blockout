@@ -1,4 +1,4 @@
-// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing; see MODIFICATIONS.md.
+// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, Entity.heldBy (weapons); see MODIFICATIONS.md.
 /**
  * Blockout document model.
  *
@@ -25,6 +25,8 @@ export type EntityCategory =
   | 'vehicles'
   | 'furniture'
   | 'props'
+  // Fork: holdable weapons (src/engine/weapons.ts).
+  | 'weapons'
   | 'environment'
   | 'primitives'
   | 'custom'
@@ -103,6 +105,18 @@ export interface Entity {
   attachedLocal?: { x: number; y: number; z: number; rotY: number }
   /** Hide this entity in every export pass (still visible in the editor). */
   excludeFromExport?: boolean
+  /**
+   * Fork (weapons): this weapon is in a person's hand and follows it through
+   * every motion (src/engine/weapons.ts). Wins over marks and marriages; a
+   * dangling link is dropped on load.
+   */
+  heldBy?: HeldBy
+}
+
+/** Fork (weapons): who holds a weapon, and in which hand. */
+export interface HeldBy {
+  entityId: string
+  hand: 'L' | 'R'
 }
 
 /** Shared mark fields. A mark = a position an entity/camera hits at a time. */

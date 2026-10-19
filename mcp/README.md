@@ -169,10 +169,13 @@ when Blockout's tools aren't available (for example, port 17480 is taken).
 | `set_reference` | `videoPath, handoffVersion?, mode?, opacity?` | Attach a reference clip (copied into `refs/`) as a ghost/PIP underlay. Motion Previs sends independent handoff protocol version `1`; missing version remains accepted for legacy clients. |
 | `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Frame the camera with shot words — "MCU on B, over A's right shoulder, 50mm" — or the same fields. The mark is re-solved every frame from the subjects, so the framing holds while they move. |
 | `list_fight_moves` | — | Strikes a fight script can use, with aliases, default targets and impacts. |
-| `stage_fight` | `script` / `beats` / `random`, `x?, z?, headingDeg?, fighterIds?, exaggeration?, coverage?` | Stage a scripted two-person fight blow by blow ("A jab cross to head -> block, hit"); hits land on their frame. Returns `{ fightId, script, report }`. |
+| `stage_fight` | `script` / `beats` / `random`, `x?, z?, headingDeg?, fighterIds?, exaggeration?, coverage?, weapons?` | Stage a scripted two-person fight blow by blow ("A jab cross to head -> block, hit"); hits land on their frame. `weapons: ["prop.sword", "prop.pistol"]` arms A and B: "A sword slash to head -> parry" lands the blade, "B shoot to body -> hit" fires along a line through the target. Returns `{ fightId, script, report }`. |
 | `update_fight` | `fightId, script?, beats?, exaggeration?, coverage?` | Re-solve a staged fight. |
 | `get_fight` / `delete_fight` | `fightId` | Read a fight's script and report / forget a fight (its marks stay). |
 | `fight_coverage` | `fightId, mode, side?` | Replace the camera with fight coverage: `master`, `punch-in`, `over-shoulder` or `follow`, never crossing the fight line. |
+| `list_weapons` | — | Holdable weapons (`assetId, kind, strike, twoHanded, usualHand`) and who holds what in the scene. |
+| `hold_weapon` | `entityId, assetId` or `weaponId, hand?` | Put a weapon in a person's hand — a new one from `assetId`, or pick up `weaponId`. It follows the hand through every move; `get_state` shows `heldBy` and the weapon's position in the hand. |
+| `drop_weapon` | `weaponId` | Let go; it stands where the hand was at the playhead. |
 
 ---
 

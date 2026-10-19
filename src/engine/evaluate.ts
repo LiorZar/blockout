@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks; see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -17,6 +17,7 @@ import { Path, headingOf } from './path'
 import { RigNoise } from './rigs'
 import { solveShot, type ShotSpec, type ShotSubject, type SolvedShot } from './shot'
 import { evaluateShotTrack, shotTrackSegment } from './shot-track'
+import { applyHolds } from './weapons'
 import type {
   ActorMark,
   CameraMark,
@@ -336,6 +337,8 @@ export class ShotEvaluator {
 
     this.resolveBoardings(entities, time)
     this.resolveMarriages(entities, time)
+    // Fork: held weapons ride their holder's hand (src/engine/weapons.ts).
+    applyHolds(this.scene.entities, entities)
 
     return { time, camera: this.evaluateCamera(time, entities), entities }
   }

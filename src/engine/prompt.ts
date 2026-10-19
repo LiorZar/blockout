@@ -1,3 +1,4 @@
+// Modified in this fork (2026): held weapons are named with their holder's hand; see MODIFICATIONS.md.
 /**
  * Prompt generation, v5: a SHORT, paste-ready prompt. The reference video
  * carries all the choreography — the prompt's job is only to say "use this
@@ -11,6 +12,7 @@
 import { assetSpec } from './assets'
 import type { GeneratorProfile } from './profiles'
 import type { LightingPresetId, Scene, Shot } from './types'
+import { heldWeaponWords } from './weapons'
 
 const LIGHTING_WORDS: Record<LightingPresetId, string> = {
   day: 'soft daylight',
@@ -41,13 +43,16 @@ export function generatePrompt(scene: Scene, shot: Shot, profile: GeneratorProfi
     const cat = assetSpec(e.assetId).category
     const moves = take?.tracks.some((tr) => tr.entityId === e.id && tr.marks.length > 0)
     return (
-      moves || e.label || cat === 'people' || cat === 'vehicles' || cat === 'animals'
+      moves || e.label || e.heldBy || cat === 'people' || cat === 'vehicles' || cat === 'animals'
     )
   })
   if (notable.length > 0) {
     const names = notable.map((e) => {
       const noun = assetSpec(e.assetId).promptNoun
-      return e.label ? `${noun} ("${e.label.text}")` : noun
+      // Fork: "a sword (the green shape) in A's right hand".
+      const held = heldWeaponWords(e, scene.entities)
+      if (held) return held
+      return e.label?.text ? `${noun} ("${e.label.text}")` : noun
     })
     lines.push(`Subjects: ${[...new Set(names)].join(', ')}.`)
   }

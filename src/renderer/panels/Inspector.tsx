@@ -1,4 +1,4 @@
-// Modified for the fork (shared label palette, shot words box, pose-slider directions) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (shared label palette, shot words box, pose-slider directions, held weapons) in 2026; see MODIFICATIONS.md.
 /**
  * Context-sensitive right panel. Content is driven by store.selection and the
  * current mode: nothing selected → scene/lighting/shot; an entity, the shot
@@ -7,7 +7,7 @@
  * degrees where a filmmaker expects degrees.
  */
 
-import { useStore } from '../store'
+import { useStore, releaseHeldBy } from '../store'
 import { emit } from '../bus'
 import { useState } from 'react'
 import { SENSORS, LENS_SET } from '@engine/camera'
@@ -34,6 +34,8 @@ import type {
   Shot
 } from '@engine/types'
 import { LABEL_SWATCHES } from '@engine/palette'
+import { WEAPON_SPECS, canHoldWeapons, weaponSpec } from '@engine/weapons'
+import { assetSpec } from '@engine/assets'
 import { ShotLockNote, ShotPanel } from './ShotPanel'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi)
@@ -734,7 +736,10 @@ function EntityInspector({
 
       {isPerson && <PoseSection entity={entity} editEntity={editEntity} />}
 
-      <MarriageSection scene={scene} entity={entity} />
+      {weaponSpec(entity.assetId) && <HeldBySection scene={scene} entity={entity} />}
+      {canHoldWeapons(entity.assetId) && <ArmSection scene={scene} entity={entity} />}
+
+      {!entity.heldBy && <MarriageSection scene={scene} entity={entity} />}
 
 
       <div className="panel-section">
@@ -819,6 +824,7 @@ function EntityInspector({
             mutate('delete entity', (doc) => {
               const sc = findScene(doc, scene.id)
               if (!sc) return
+              releaseHeldBy(sc, shot.id, useStore.getState().time, new Set([entityId]))
               sc.entities = sc.entities.filter((e) => e.id !== entityId)
               for (const take2 of sc.blocking) {
                 take2.tracks = take2.tracks.filter((t) => t.entityId !== entityId)
@@ -1111,6 +1117,115 @@ function MarriageSection({ scene, entity }: { scene: Scene; entity: Entity }): J
   )
 }
 
+/* ------------------------- held weapons (fork) ------------------------- */
+
+const HAND_WORDS = { L: 'left hand', R: 'right hand' } as const
+
+/** On a weapon: who holds it, in which hand, and Drop. */
+function HeldBySection({ scene, entity }: { scene: Scene; entity: Entity }): JSX.Element {
+  const holdWeapon = useStore((s) => s.holdWeapon)
+  const dropWeapon = useStore((s) => s.dropWeapon)
+  const people = scene.entities.filter((e) => canHoldWeapons(e.assetId))
+  const held = entity.heldBy
+  const hand = held?.hand ?? weaponSpec(entity.assetId)?.defaultHand ?? 'R'
+
+  return (
+    <div className="panel-section">
+      <div className="panel-title">Held by</div>
+      <div className="field">
+        <select
+          value={held?.entityId ?? ''}
+          onChange={(e) => {
+            const id = e.target.value
+            if (id) holdWeapon(entity.id, id, held ? hand : undefined)
+            else dropWeapon(entity.id)
+          }}
+        >
+          <option value="">— nobody (set down) —</option>
+          {people.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label?.text || p.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {held && (
+        <>
+          <div className="field">
+            <label>Hold in</label>
+            <div className="seg">
+              {(['L', 'R'] as const).map((h) => (
+                <button
+                  key={h}
+                  className={hand === h ? 'active' : ''}
+                  onClick={() => hand !== h && holdWeapon(entity.id, held.entityId, h)}
+                >
+                  {h === 'L' ? 'Left' : 'Right'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <button className="btn" style={{ width: '100%' }} onClick={() => dropWeapon(entity.id)}>
+            Drop
+          </button>
+        </>
+      )}
+    </div>
+  )
+}
+
+/** On a person: the weapons in their hands, and "Arm with…" a new one. */
+function ArmSection({ scene, entity }: { scene: Scene; entity: Entity }): JSX.Element {
+  const spawnHeldWeapon = useStore((s) => s.spawnHeldWeapon)
+  const dropWeapon = useStore((s) => s.dropWeapon)
+  const setSelection = useStore((s) => s.setSelection)
+  const [hand, setHand] = useState<'auto' | 'L' | 'R'>('auto')
+  const held = scene.entities.filter((e) => e.heldBy?.entityId === entity.id)
+
+  return (
+    <div className="panel-section">
+      <div className="panel-title">Weapons</div>
+      {held.map((w) => (
+        <div key={w.id} className="field-row" style={{ marginBottom: 6, alignItems: 'center' }}>
+          <span
+            style={{ flex: 1, cursor: 'pointer', fontSize: 12 }}
+            onClick={() => setSelection({ kind: 'entity', entityId: w.id })}
+          >
+            {w.label?.text || w.name} — {HAND_WORDS[w.heldBy!.hand]}
+          </span>
+          <button className="btn" onClick={() => dropWeapon(w.id)}>
+            Drop
+          </button>
+        </div>
+      ))}
+      <div className="field">
+        <label>Arm with…</label>
+        <select
+          value=""
+          onChange={(e) => {
+            const id = e.target.value
+            if (id) spawnHeldWeapon(id, entity.id, hand === 'auto' ? undefined : hand)
+          }}
+        >
+          <option value="">— choose a weapon —</option>
+          {WEAPON_SPECS.map((w) => (
+            <option key={w.assetId} value={w.assetId}>
+              {assetSpec(w.assetId).name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="seg">
+        {(['auto', 'L', 'R'] as const).map((h) => (
+          <button key={h} className={hand === h ? 'active' : ''} onClick={() => setHand(h)}>
+            {h === 'auto' ? 'Usual hand' : h === 'L' ? 'Left' : 'Right'}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 /* ===================== B2) Multi-entity selection ==================== */
 
 function MultiEntityInspector({
@@ -1179,6 +1294,7 @@ function MultiEntityInspector({
             mutate('delete entities', (doc) => {
               const sc = findScene(doc, scene.id)
               if (!sc) return
+              releaseHeldBy(sc, useStore.getState().shotId, useStore.getState().time, idSet)
               sc.entities = sc.entities.filter((e) => !idSet.has(e.id))
               // Clean blocking tracks for the removed entities.
               for (const take of sc.blocking) {

@@ -13,7 +13,7 @@
 
 import { MOTION_PRESETS } from '../motions'
 import type { FightBeat, FightOutcome } from '../types'
-import { MOVE_ALIASES, STRIKE_IDS, strikeImpacts } from './moves'
+import { MOVE_ALIASES, SHOT_MOVES, STRIKE_IDS, strikeImpacts } from './moves'
 
 export const DEFAULT_POWER = 0.7
 
@@ -25,7 +25,7 @@ const norm = (s: string): string => s.toLowerCase().replace(/[-/]+/g, ' ').repla
 
 /** Normalized phrase → strike id, longest phrases first (greedy match). */
 const MOVE_LEXICON: [string, string][] = (() => {
-  const strikes = new Set(STRIKE_IDS)
+  const strikes = new Set([...STRIKE_IDS, ...SHOT_MOVES])
   const out = new Map<string, string>()
   for (const m of MOTION_PRESETS) {
     if (!strikes.has(m.id)) continue
@@ -39,6 +39,7 @@ const MOVE_LEXICON: [string, string][] = (() => {
 /** Kicks and knees go to the body, punches and elbows to the head, the sweep to the legs. */
 export function defaultTarget(moveId: string): FightBeat['target'] {
   if (moveId === 'low-sweep') return 'legs'
+  if (SHOT_MOVES.has(moveId)) return 'body'
   const first = strikeImpacts(moveId)[0]
   return first && /^(foot|knee)/.test(first.effector) ? 'body' : 'head'
 }

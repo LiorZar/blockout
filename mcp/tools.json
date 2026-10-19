@@ -108,8 +108,8 @@
   },
   {
     "name": "delete_entity",
-    "title": "Delete something",
-    "description": "Remove an entity from the scene.",
+    "title": "Remove a person or object",
+    "description": "Remove a person, vehicle or object from the scene, with its marks. Weapons it was holding are set down where its hands were.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -125,6 +125,71 @@
     },
     "annotations": {
       "destructiveHint": true
+    }
+  },
+  {
+    "name": "list_weapons",
+    "title": "List weapons",
+    "description": "The weapons a person can hold (swords, knives, axes, spears, staffs, bats, a shield, pistol, rifle, shotgun, bow): assetId, kind, one- or two-handed and the usual hand. Also lists who holds what in the current scene.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "hold_weapon",
+    "title": "Put a weapon in someone's hand",
+    "description": "Put a weapon in a person's hand. Give assetId (from list_weapons) to make a new one in their hand, or weaponId to pick up one already in the scene. It follows the hand through every move, gait and fight; two-handed weapons bring the other hand onto the grip. Whatever that hand held is set down. Returns the weapon id, hand and colour.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "entityId": {
+          "type": "string",
+          "description": "The person who holds it (entity id from get_state)."
+        },
+        "assetId": {
+          "type": "string",
+          "description": "A weapon assetId from list_weapons, e.g. \"prop.sword\" — makes a new one in the hand."
+        },
+        "weaponId": {
+          "type": "string",
+          "description": "An existing weapon's entity id — picks it up instead."
+        },
+        "hand": {
+          "type": "string",
+          "enum": [
+            "L",
+            "R"
+          ],
+          "description": "Left or right hand (default: the weapon's usual hand — R, but L for the bow and the shield)."
+        }
+      },
+      "required": [
+        "entityId"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "drop_weapon",
+    "title": "Drop a weapon",
+    "description": "Let go of a held weapon. It stands on the ground where the hand was at the playhead.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "weaponId": {
+          "type": "string",
+          "description": "The held weapon's entity id (get_state shows heldBy)."
+        }
+      },
+      "required": [
+        "weaponId"
+      ],
+      "additionalProperties": false
     }
   },
   {
@@ -328,7 +393,7 @@
   {
     "name": "list_fight_moves",
     "title": "List fight moves",
-    "description": "The strikes a fight script can use, with their aliases, default target and impacts (which hand/foot/elbow/knee lands, and when).",
+    "description": "The moves a fight script can use, with their aliases, default target and impacts (which hand/foot/elbow/knee lands, and when), then the gun shots (pistol-aim-fire: \"shoot\", \"fire\"), which need a gun in hand.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -341,7 +406,7 @@
   {
     "name": "stage_fight",
     "title": "Stage a fight",
-    "description": "Stage a scripted two-person fight blow by blow: every hit lands on its frame, defenses are up in time, knockback follows the physics, and the report gives each blow's contact error (warnings flag blows the bodies can't reach). Spawns fighters A and B at x/z (facing each other across headingDeg) unless fighterIds names two people. Returns the fight id, its script text and the report.",
+    "description": "Stage a scripted two-person fight blow by blow: every hit lands on its frame, defenses are up in time, knockback follows the physics, and the report gives each blow's contact error (warnings flag blows the bodies can't reach). Spawns fighters A and B at x/z (facing each other across headingDeg) unless fighterIds names two people. weapons puts a weapon in each fighter's usual hand: blows from it land with the blade or point (\"A sword slash to head -> parry\"), blocks meet the defender's blade or shield, and \"A shoot to body -> hit\" fires a held gun along a line through the target. Fighters keep weapons they already hold. Returns the fight id, its script text and the report.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -464,6 +529,18 @@
             "follow"
           ],
           "description": "Camera coverage built from live shot words: master (wide two-shot), punch-in (MCU on big hits), over-shoulder (per beat), follow (handheld on the attacker)."
+        },
+        "weapons": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[A's, B's] weapon: an assetId from list_weapons (e.g. \"prop.sword\", \"prop.pistol\") or null to leave that fighter as they are."
         }
       },
       "additionalProperties": false
@@ -1744,7 +1821,7 @@
         },
         "labels": {
           "type": "boolean",
-          "description": "Show name labels (default true)."
+          "description": "Show name labels (default false, like the exported clip)."
         }
       },
       "additionalProperties": false

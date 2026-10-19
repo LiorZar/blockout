@@ -57,7 +57,19 @@ export const MOVE_ALIASES: Record<string, string> = {
   'spinning back kick': 'spinning-back-kick',
   sweep: 'low-sweep',
   shove: 'shove-two-hands',
-  tackle: 'tackle-lunge'
+  tackle: 'tackle-lunge',
+  // Weapons: blades land with the weapon in hand, guns shoot (SHOT_MOVES).
+  'sword slash': 'sword-slash-combo',
+  slash: 'sword-slash-combo',
+  swing: 'sword-slash-combo',
+  'sword thrust': 'sword-thrust',
+  thrust: 'sword-thrust',
+  stab: 'knife-lunge',
+  lunge: 'knife-lunge',
+  shoot: 'pistol-aim-fire',
+  shoots: 'pistol-aim-fire',
+  fire: 'pistol-aim-fire',
+  shot: 'pistol-aim-fire'
 }
 
 /** Fight-category motions that aren't melee strikes (ranged weapons, footwork, being hit). */
@@ -158,6 +170,31 @@ export const STRIKE_IDS: string[] = MOTION_PRESETS.filter((m) => isStrikeCandida
   (m) => m.id
 )
 
+/* ----------------------------- gun shots (fork) ---------------------------- */
+
+/** Aim-and-fire motions a gun beat plays (held weapons; see src/engine/weapons.ts). */
+export const SHOT_MOVES = new Set(['pistol-aim-fire'])
+/** A bullet: the physics sees the fastest blow there is. */
+const BULLET_SPEED = 15
+
+/**
+ * The shot of an aim-and-fire motion: the keyframe just before the recoil
+ * (the gun arm's highest raise), fired from the gun hand. [] for anything else.
+ */
+export function shotImpacts(moveId: string, hand: 'L' | 'R' = 'R'): StrikeImpact[] {
+  const m = BY_ID.get(moveId)
+  if (!m || !SHOT_MOVES.has(moveId)) return []
+  const raise = m.keyframes.map((k) => -(k.joints[`shoulder${hand}X`] ?? 0))
+  const recoil = raise.indexOf(Math.max(...raise))
+  const k = Math.max(1, recoil - 1)
+  return [{ effector: hand === 'L' ? 'handL' : 'handR', t: m.keyframes[k]!.t, speed: BULLET_SPEED }]
+}
+
 export function listFightMoves(): { id: string; name: string; impacts: StrikeImpact[] }[] {
   return STRIKE_IDS.map((id) => ({ id, name: BY_ID.get(id)!.name, impacts: strikeImpacts(id) }))
+}
+
+/** The gun shots a fight script can use (list_fight_moves adds them after the strikes). */
+export function listShotMoves(): { id: string; name: string; impacts: StrikeImpact[] }[] {
+  return [...SHOT_MOVES].map((id) => ({ id, name: BY_ID.get(id)!.name, impacts: shotImpacts(id) }))
 }

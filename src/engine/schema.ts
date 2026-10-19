@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026, and in this fork (scene.fights migration); see MODIFICATIONS.md.
+// Modified for cross-platform Windows support in 2026, and in this fork (scene.fights and heldBy migration); see MODIFICATIONS.md.
 /**
  * Document creation, validation, and git-friendly serialization.
  * Projects are folders; this module owns the JSON shape. Serialization is
@@ -20,6 +20,7 @@ import type {
   V3
 } from './types'
 import { normalizeProjectRelativePath } from '../shared/portable-paths'
+import { sanitizeHolds } from './weapons'
 
 export const SCHEMA_VERSION = 1 as const
 
@@ -250,6 +251,8 @@ export function serializeProject(doc: ProjectDoc): string {
  */
 function migrateProject(doc: ProjectDoc): ProjectDoc {
   for (const scene of doc.scenes) {
+    // Fork: held weapons — drop dangling or impossible heldBy links.
+    sanitizeHolds(scene.entities)
     // Fork: scripted fights (src/engine/fight/) — missing or malformed → [].
     const fights = (scene as { fights?: unknown }).fights
     scene.fights = Array.isArray(fights)

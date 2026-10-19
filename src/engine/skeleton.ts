@@ -22,11 +22,15 @@ export interface PersonDims {
   headR: number
   torsoLen: number
   bodyW: number
+  /** Shoulder / hip joint offsets from the midline (classic: bodyW × 0.55 / × 0.28). */
+  shoulderX: number
+  hipX: number
   shoulderY: number
   upperArmLen: number
   lowerArmLen: number
   upperLegLen: number
   lowerLegLen: number
+  /** Rest torso pitch (rotation.x); negative stoops forward. */
   baseLean: number
 }
 
@@ -52,6 +56,17 @@ function numParam(params: Record<string, number | string> | undefined, key: stri
   return typeof v === 'number' ? v : def
 }
 
+/**
+ * Studio mannequins (fork): body width and shoulder / hip joint offsets at
+ * s = 1, build 1. Their lengths are anatomical fractions of H, and the torso
+ * absorbs the rig's fixed torso (0.08 s) and head (0.06 s) offsets so the head
+ * top lands at H (the classic formulas put it 0.14 s above).
+ */
+const MANNEQUIN_WIDTHS: Record<string, { bodyW: number; shoulderX: number; hipX: number }> = {
+  'person.mannequinMale': { bodyW: 0.36, shoulderX: 0.2, hipX: 0.09 },
+  'person.mannequinFemale': { bodyW: 0.31, shoulderX: 0.165, hipX: 0.1 }
+}
+
 /** Mannequin proportions for a person asset (height ×0.8..1.2, build ×0.8..1.3). */
 export function personDims(assetId: string, params?: Record<string, number | string>): PersonDims {
   const spec = assetSpec(assetId)
@@ -62,19 +77,46 @@ export function personDims(assetId: string, params?: Record<string, number | str
   const legLen = H * 0.47
   const headR = H * 0.13 * 0.5
   const torsoLen = H - legLen - headR * 2
+  const wide = MANNEQUIN_WIDTHS[assetId]
+  if (wide) {
+    const mLegLen = H * 0.51
+    const mTorsoLen = H - mLegLen - headR * 2 - (0.08 + 0.06) * s
+    const upperLegLen = H * 0.235
+    return {
+      H,
+      s,
+      legLen: mLegLen,
+      headR,
+      torsoLen: mTorsoLen,
+      bodyW: wide.bodyW * s * buildMul,
+      shoulderX: wide.shoulderX * s * buildMul,
+      hipX: wide.hipX * s * buildMul,
+      shoulderY: mTorsoLen * 0.92,
+      upperArmLen: H * 0.185,
+      lowerArmLen: H * 0.195,
+      upperLegLen,
+      lowerLegLen: mLegLen - upperLegLen,
+      baseLean: 0
+    }
+  }
+  const bodyW = 0.34 * s * buildMul
   return {
     H,
     s,
     legLen,
     headR,
     torsoLen,
-    bodyW: 0.34 * s * buildMul,
+    bodyW,
+    shoulderX: bodyW * 0.55,
+    hipX: bodyW * 0.28,
     shoulderY: torsoLen * 0.92,
     upperArmLen: torsoLen * 0.5,
     lowerArmLen: torsoLen * 0.48,
     upperLegLen: legLen * 0.52,
     lowerLegLen: legLen * 0.48,
-    baseLean: assetId === 'person.elderly' ? 0.18 : 0
+    // Rest torso pitch (rotation.x on a body facing −Z): negative stoops
+    // forward. Fork fix: the elderly used to lean back at +0.18.
+    baseLean: assetId === 'person.elderly' ? -0.18 : 0
   }
 }
 
@@ -153,12 +195,12 @@ export function poseEffectors(dims: PersonDims, joints: Record<string, number> |
   const pelvis = child(root, v(0, dims.legLen, 0), IDENTITY)
   const torso = child(pelvis, v(0, 0.08 * dims.s, 0), euler(dims.baseLean - j('torsoX'), j('torsoY'), -j('torsoZ')))
   const head = child(torso, v(0, dims.torsoLen, 0), euler(-j('headX'), j('headY'), -j('headZ')))
-  const shoulderL = child(torso, v(-dims.bodyW * 0.55, dims.shoulderY, 0), euler(-j('shoulderLX'), 0, -j('shoulderLZ')))
-  const shoulderR = child(torso, v(dims.bodyW * 0.55, dims.shoulderY, 0), euler(-j('shoulderRX'), 0, j('shoulderRZ')))
+  const shoulderL = child(torso, v(-dims.shoulderX, dims.shoulderY, 0), euler(-j('shoulderLX'), 0, -j('shoulderLZ')))
+  const shoulderR = child(torso, v(dims.shoulderX, dims.shoulderY, 0), euler(-j('shoulderRX'), 0, j('shoulderRZ')))
   const elbowL = child(shoulderL, v(0, -dims.upperArmLen, 0), euler(j('elbowL'), 0, 0))
   const elbowR = child(shoulderR, v(0, -dims.upperArmLen, 0), euler(j('elbowR'), 0, 0))
-  const hipL = child(pelvis, v(-dims.bodyW * 0.28, 0, 0), euler(-j('hipLX'), 0, -j('hipLZ')))
-  const hipR = child(pelvis, v(dims.bodyW * 0.28, 0, 0), euler(-j('hipRX'), 0, j('hipRZ')))
+  const hipL = child(pelvis, v(-dims.hipX, 0, 0), euler(-j('hipLX'), 0, -j('hipLZ')))
+  const hipR = child(pelvis, v(dims.hipX, 0, 0), euler(-j('hipRX'), 0, j('hipRZ')))
   const kneeL = child(hipL, v(0, -dims.upperLegLen, 0), euler(-j('kneeL'), 0, 0))
   const kneeR = child(hipR, v(0, -dims.upperLegLen, 0), euler(-j('kneeR'), 0, 0))
   const toe = v(0, -dims.lowerLegLen + 0.03 * dims.s, -0.16 * dims.s)

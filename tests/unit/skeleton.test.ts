@@ -3,6 +3,7 @@ import { Vector3 } from 'three'
 import { buildAsset } from '@renderer/viewport/builders'
 import { MOTION_PRESETS } from '@engine/motions'
 import { personDims, poseEffectors, toWorld, type Effector } from '@engine/skeleton'
+import { ASSET_CATALOG } from '@engine/assets'
 import type { V3 } from '@engine/types'
 
 const BASE: Record<string, number> = {
@@ -34,10 +35,55 @@ describe('personDims', () => {
           expect(d.lowerArmLen).toBeCloseTo(torsoLen * 0.48, 12)
           expect(d.upperLegLen).toBeCloseTo(legLen * 0.52, 12)
           expect(d.lowerLegLen).toBeCloseTo(legLen * 0.48, 12)
-          expect(d.baseLean).toBe(assetId === 'person.elderly' ? 0.18 : 0)
+          expect(d.baseLean).toBe(assetId === 'person.elderly' ? -0.18 : 0)
         }
       }
     }
+  })
+
+  it('classic people put the shoulder and hip joints at bodyW × 0.55 and × 0.28', () => {
+    for (const assetId of Object.keys(BASE)) {
+      const d = personDims(assetId, { build: 1.2 })
+      expect(d.shoulderX).toBeCloseTo(d.bodyW * 0.55, 12)
+      expect(d.hipX).toBeCloseTo(d.bodyW * 0.28, 12)
+    }
+  })
+
+  it('mannequins use anatomical proportions; the head top lands at their height', () => {
+    const widths: Record<string, { H: number; bodyW: number; shoulderX: number; hipX: number }> = {
+      'person.mannequinMale': { H: 1.8, bodyW: 0.36, shoulderX: 0.2, hipX: 0.09 },
+      'person.mannequinFemale': { H: 1.7, bodyW: 0.31, shoulderX: 0.165, hipX: 0.1 }
+    }
+    for (const [assetId, w] of Object.entries(widths)) {
+      for (const height of [0.8, 1, 1.2]) {
+        for (const build of [0.8, 1, 1.3]) {
+          const H = w.H * height
+          const s = H / 1.78
+          const headR = H * 0.13 * 0.5
+          const d = personDims(assetId, { height, build })
+          expect(d.H).toBeCloseTo(H, 12)
+          expect(d.s).toBeCloseTo(s, 12)
+          expect(d.headR).toBeCloseTo(headR, 12)
+          expect(d.legLen).toBeCloseTo(H * 0.51, 12)
+          expect(d.upperLegLen).toBeCloseTo(H * 0.235, 12)
+          expect(d.lowerLegLen).toBeCloseTo(d.legLen - d.upperLegLen, 12)
+          expect(d.upperArmLen).toBeCloseTo(H * 0.185, 12)
+          expect(d.lowerArmLen).toBeCloseTo(H * 0.195, 12)
+          expect(d.shoulderY).toBeCloseTo(d.torsoLen * 0.92, 12)
+          // pelvis (legLen) + torso offset 0.08 s + torso + head offset 0.06 s + head = H
+          expect(d.legLen + 0.08 * s + d.torsoLen + 0.06 * s + 2 * d.headR).toBeCloseTo(H, 12)
+          expect(d.bodyW).toBeCloseTo(w.bodyW * s * build, 12)
+          expect(d.shoulderX).toBeCloseTo(w.shoulderX * s * build, 12)
+          expect(d.hipX).toBeCloseTo(w.hipX * s * build, 12)
+          expect(d.baseLean).toBe(0)
+        }
+      }
+    }
+    // Silhouette: the male's shoulders are broader, the female's hip joints wider.
+    const m = personDims('person.mannequinMale')
+    const f = personDims('person.mannequinFemale')
+    expect(m.shoulderX).toBeGreaterThan(f.shoulderX + 0.03)
+    expect(f.hipX).toBeGreaterThan(m.hipX)
   })
 
   it('clamps height to 0.8..1.2 and build to 0.8..1.3', () => {
@@ -71,6 +117,15 @@ function randomPoses(n: number, seed: number): Record<string, number>[] {
   return out
 }
 
+describe('mannequin catalog', () => {
+  it('lists the male and female mannequins as people', () => {
+    const male = ASSET_CATALOG.find((a) => a.id === 'person.mannequinMale')
+    const female = ASSET_CATALOG.find((a) => a.id === 'person.mannequinFemale')
+    expect(male).toMatchObject({ name: 'Mannequin (male)', category: 'people', height: 1.8, motion: 'biped', promptNoun: 'a man' })
+    expect(female).toMatchObject({ name: 'Mannequin (female)', category: 'people', height: 1.7, motion: 'biped', promptNoun: 'a woman' })
+  })
+})
+
 describe('poseEffectors', () => {
   it('FK matches three.js for random poses', () => {
     const fightKeyframes = MOTION_PRESETS.filter((m) => m.category === 'fight')
@@ -81,7 +136,9 @@ describe('poseEffectors', () => {
     const rigs: [string, Record<string, number>][] = [
       ['person.man', { height: 1.1, build: 1.2 }],
       ['person.elderly', { height: 0.9, build: 0.8 }],
-      ['person.child', {}]
+      ['person.child', {}],
+      ['person.mannequinMale', {}],
+      ['person.mannequinFemale', { height: 0.9, build: 1.3 }]
     ]
     for (const [assetId, params] of rigs) {
       const built = buildAsset(assetId, params)
@@ -121,7 +178,7 @@ describe('poseEffectors', () => {
         }
       }
     }
-  })
+  }, 30_000)
 })
 
 describe('joint conventions (motions.ts header) on a body facing −Z', () => {

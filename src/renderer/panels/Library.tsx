@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director; see MODIFICATIONS.md.
+// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director; mannequin thumbs; Weapons group; see MODIFICATIONS.md.
 /**
  * Stage-mode asset palette. Browse the built-in catalog grouped by category,
  * filter by name, and arm click-to-place (the Viewport does the drop).
@@ -452,6 +452,8 @@ const THUMBS: Record<string, string> = {
   'person.woman': '👩',
   'person.child': '🧒',
   'person.elderly': '🧓',
+  'person.mannequinMale': '🧍‍♂️',
+  'person.mannequinFemale': '🧍‍♀️',
   // Animals
   'animal.dog': '🐕',
   'animal.cat': '🐈',
@@ -599,6 +601,17 @@ const THUMBS: Record<string, string> = {
   'prop.slotMachine': '🎰',
   'prop.cloud': '☁️',
   'prop.squirtGun': '🔫',
+  // Fork: weapons a person can hold (src/engine/weapons.ts).
+  'prop.katana': '⚔️',
+  'prop.knife': '🔪',
+  'prop.axe': '🪓',
+  'prop.spear': '🔱',
+  'prop.staff': '🦯',
+  'prop.shield': '🛡',
+  'prop.pistol': '🔫',
+  'prop.rifle': '🎯',
+  'prop.shotgun': '💥',
+  'prop.bow': '🏹',
   // Environments
   'env.houseInterior': '🏠',
   'env.houseExterior': '🏡',
@@ -676,6 +689,7 @@ const CATEGORY_ORDER: { key: EntityCategory; title: string }[] = [
   { key: 'vehicles', title: 'Vehicles' },
   { key: 'furniture', title: 'Furniture' },
   { key: 'props', title: 'Props' },
+  { key: 'weapons', title: 'Weapons' },
   { key: 'environment', title: 'Environments' },
   { key: 'primitives', title: 'Primitives' }
 ]

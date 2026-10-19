@@ -19,7 +19,7 @@ const root = resolve(__dirname, '../..')
 const tools = JSON.parse(readFileSync(resolve(root, 'mcp/tools.json'), 'utf-8')) as ToolDef[]
 const handlerSrc = readFileSync(resolve(root, 'src/renderer/control/handler.ts'), 'utf-8')
 
-const READ_ONLY = ['get_state', 'list_assets', 'list_action_presets', 'list_sequence_styles', 'list_choreography_options', 'list_motion_presets', 'list_camera_moves', 'list_presets', 'screenshot']
+const READ_ONLY = ['get_state', 'list_assets', 'list_action_presets', 'list_sequence_styles', 'list_choreography_options', 'list_motion_presets', 'list_camera_moves', 'list_presets', 'screenshot', 'list_weapons']
 const DESTRUCTIVE = ['delete_entity', 'clear_camera_marks', 'remove_scan']
 
 describe('MCP tool catalog', () => {
@@ -42,6 +42,11 @@ describe('MCP tool catalog', () => {
       expect(t.annotations?.readOnlyHint === true && t.annotations?.destructiveHint === true, t.name).toBe(false)
       if (t.name.startsWith('list_')) expect(t.annotations?.readOnlyHint, t.name).toBe(true)
     }
+  })
+
+  it('has the held-weapon tools', () => {
+    const names = tools.map((t) => t.name)
+    for (const name of ['hold_weapon', 'drop_weapon', 'list_weapons']) expect(names).toContain(name)
   })
 
   it('catalog and renderer handler cover each other', () => {

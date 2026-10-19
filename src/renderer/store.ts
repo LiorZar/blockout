@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words and Fight Director actions; see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director and held-weapon actions; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -28,6 +28,7 @@ import { ShotEvaluator } from '@engine/evaluate'
 import type { ShotSpec } from '@engine/shot'
 import { GUARD_DISTANCE, solveFight, type FighterInput, type FightSolution } from '@engine/fight/solve'
 import { nextLabelColor } from '@engine/palette'
+import { handFor, holdError, putInHand, setDown, weaponSpec, weaponsInHand } from '@engine/weapons'
 import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
@@ -161,6 +162,16 @@ interface BlockoutState {
   marryEntities(childIds: string[], parentId: string): void
   /** Detach entities, baking their current world pose into the transform. */
   unmarryEntities(entityIds: string[]): void
+  /**
+   * Weapons (fork): put a weapon entity in a person's hand (default: its usual
+   * hand). Whatever that hand held is set down. Returns an error message, or
+   * null on success.
+   */
+  holdWeapon(weaponId: string, holderId: string, hand?: 'L' | 'R'): string | null
+  /** Spawn a weapon from the catalog straight into a person's hand; returns its id. */
+  spawnHeldWeapon(assetId: string, holderId: string, hand?: 'L' | 'R'): { weaponId?: string; error?: string }
+  /** Let go of a held weapon: it stands where the hand was at the playhead. */
+  dropWeapon(weaponId: string): void
   /** Switch the shot's active camera to a bank entry by name ('A','B',…). */
   switchCamera(name: string): void
   /** Bank the active camera and start a fresh one (B, C, …). */
@@ -276,6 +287,26 @@ function reconcileSelection(doc: ProjectDoc, sceneId: string | null, shotId: str
   return { sceneId: scene?.id ?? null, shotId: shot?.id ?? null }
 }
 
+/**
+ * Weapons (fork): set held weapons down where their grip is at `time` in the
+ * shot (standing, facing the holder). Use before deleting a holder.
+ */
+export function setDownAtHand(scene: Scene, shotId: string | null, time: number, weapons: Entity[]): void {
+  const shot = scene.shots.find((s) => s.id === shotId) ?? scene.drafts?.find((s) => s.id === shotId) ?? scene.shots[0]
+  const states = shot ? new ShotEvaluator(scene, shot).evaluate(time).entities : []
+  for (const weapon of weapons) {
+    if (!weapon.heldBy) continue
+    const st = states.find((e) => e.entityId === weapon.id)
+    setDown(weapon, st?.position ?? weapon.transform.position, st?.heading ?? weapon.transform.rotationY)
+  }
+}
+
+/** Weapons (fork): before deleting entities, set down every weapon they hold. */
+export function releaseHeldBy(scene: Scene, shotId: string | null, time: number, deletedIds: Set<string>): void {
+  const held = scene.entities.filter((e) => e.heldBy && deletedIds.has(e.heldBy.entityId) && !deletedIds.has(e.id))
+  if (held.length > 0) setDownAtHand(scene, shotId, time, held)
+}
+
 /** Fight Director (fork) input for stageFight. */
 export interface StageFightInput {
   beats: FightBeat[]
@@ -285,13 +316,27 @@ export interface StageFightInput {
   labels?: [string, string]
   exaggeration?: number
   coverage?: FightDoc['coverage']
+  /** Weapons (fork): a weapon asset to put in each fighter's usual hand (null: as they are). */
+  weapons?: [string | null, string | null]
 }
 
 /** RoutineSpec.style that marks a Fight Director placement (see spawnChoreography). */
 export const FIGHT_DIRECTOR_STYLE = 'fight-director'
 
-function fighterInput(e: Entity): FighterInput {
-  return { entityId: e.id, assetId: e.assetId, params: e.params, scale: e.transform.scale, start: { ...e.transform.position } }
+/** A fighter for the solver, with the weapons it holds in `scene` (fork) plus `extra` (about to be put in its hands). */
+export function fighterInput(e: Entity, scene: Scene, extra: Entity[] = []): FighterInput {
+  const held = [...extra, ...scene.entities].filter((w) => w.heldBy?.entityId === e.id && weaponSpec(w.assetId))
+  const weapons = held
+    .filter((w, k) => held.findIndex((x) => x.heldBy!.hand === w.heldBy!.hand) === k)
+    .map((w) => ({ assetId: w.assetId, hand: w.heldBy!.hand, scale: w.transform.scale }))
+  return {
+    entityId: e.id,
+    assetId: e.assetId,
+    params: e.params,
+    scale: e.transform.scale,
+    start: { ...e.transform.position },
+    ...(weapons.length > 0 ? { weapons } : {})
+  }
 }
 
 /** Replace the two fighters' tracks in a take with a solution. */
@@ -821,6 +866,62 @@ export const useStore = create<BlockoutState>((set, get) => ({
     get().toast('Unmarried — they move independently again.', 'info')
   },
 
+  holdWeapon(weaponId, holderId, hand) {
+    const { sceneId, shotId, time } = get()
+    let error: string | null = 'No scene.'
+    get().mutate('hold weapon', (doc) => {
+      const scene = doc.scenes.find((s) => s.id === sceneId)
+      if (!scene) return
+      const weapon = scene.entities.find((e) => e.id === weaponId)
+      const holder = scene.entities.find((e) => e.id === holderId)
+      error = holdError(weapon, holder)
+      if (error) return
+      const side = handFor(weapon!, hand)
+      setDownAtHand(scene, shotId, time, weaponsInHand(scene.entities, holderId, side, weaponId))
+      putInHand(weapon!, holder!, side)
+    })
+    if (error) get().toast(error, 'error')
+    return error
+  },
+
+  spawnHeldWeapon(assetId, holderId, hand) {
+    const { sceneId, shotId, time } = get()
+    const spec = assetSpec(assetId)
+    const weapon = createEntity(assetId, spec.name, { x: 0, y: 0, z: 0 })
+    let error: string | null = 'No scene.'
+    get().mutate('arm with weapon', (doc) => {
+      const scene = doc.scenes.find((s) => s.id === sceneId)
+      if (!scene) return
+      const holder = scene.entities.find((e) => e.id === holderId)
+      error = holdError(weapon, holder)
+      if (error) return
+      const count = scene.entities.filter((e) => e.assetId === assetId).length
+      if (count > 0) weapon.name = `${spec.name} ${count + 1}`
+      weapon.transform.position = { ...holder!.transform.position }
+      // Its own colour, no text: the video model reads it as its own proxy.
+      const used = scene.entities.filter((e) => e.label).map((e) => e.label!.color)
+      weapon.label = { text: '', color: nextLabelColor(used) }
+      const side = handFor(weapon, hand)
+      setDownAtHand(scene, shotId, time, weaponsInHand(scene.entities, holderId, side))
+      scene.entities.push(weapon)
+      putInHand(weapon, holder!, side)
+    })
+    if (error) {
+      get().toast(error, 'error')
+      return { error }
+    }
+    return { weaponId: weapon.id }
+  },
+
+  dropWeapon(weaponId) {
+    const { sceneId, shotId, time } = get()
+    get().mutate('drop weapon', (doc) => {
+      const scene = doc.scenes.find((s) => s.id === sceneId)
+      const weapon = scene?.entities.find((e) => e.id === weaponId)
+      if (scene && weapon?.heldBy) setDownAtHand(scene, shotId, time, [weapon])
+    })
+  },
+
   switchCamera(name) {
     const { sceneId, shotId } = get()
     get().mutate('switch camera', (doc) => {
@@ -947,6 +1048,19 @@ export const useStore = create<BlockoutState>((set, get) => ({
       }
       fighters = [spawned[0]!, spawned[1]!]
     }
+    // Weapons (fork): each fighter's new weapon, in its usual hand, with its own colour.
+    const arming: Entity[] = []
+    const colors = [...scene.entities, ...spawned].map((e) => e.label?.color).filter((c): c is string => !!c)
+    fighters.forEach((holder, q) => {
+      const assetId = input.weapons?.[q]
+      if (!assetId || !weaponSpec(assetId)) return
+      const w = createEntity(assetId, assetSpec(assetId).name, { ...holder.transform.position })
+      w.heldBy = { entityId: holder.id, hand: handFor(w) }
+      const color = nextLabelColor(colors)
+      colors.push(color)
+      w.label = { text: '', color }
+      arming.push(w)
+    })
     const fight: FightDoc = {
       id: newId('fight'),
       name: `Fight ${(scene.fights?.length ?? 0) + 1}`,
@@ -958,13 +1072,20 @@ export const useStore = create<BlockoutState>((set, get) => ({
       exaggeration: Math.min(3, Math.max(1, input.exaggeration ?? 1.5)),
       ...(input.coverage ? { coverage: input.coverage } : {})
     }
-    const sol = solveFight(fight, [fighterInput(fighters[0]), fighterInput(fighters[1])], { duration: shot.duration, fps: shot.fps })
+    const sol = solveFight(fight, [fighterInput(fighters[0], scene, arming), fighterInput(fighters[1], scene, arming)], {
+      duration: shot.duration,
+      fps: shot.fps
+    })
     get().mutate('stage fight', (doc) => {
       const sc = doc.scenes.find((x) => x.id === sceneId)
       const sh = sc?.shots.find((x) => x.id === shotId) ?? sc?.drafts?.find((x) => x.id === shotId)
       const take = sc?.blocking.find((b) => b.id === sh?.blockingTakeId)
       if (!sc || !take) return
       sc.entities.push(...spawned)
+      for (const w of arming) {
+        setDownAtHand(sc, shotId, get().time, weaponsInHand(sc.entities, w.heldBy!.entityId, w.heldBy!.hand))
+        sc.entities.push(w)
+      }
       sc.fights = [...(sc.fights ?? []), fight]
       writeFightTracks(take, fight.fighterIds, sol)
       if (fight.coverage && sh) writeCoverage(sc, sh, fight, sol.report, fight.coverage, cameraLineSide(sc, sh, fight))
@@ -982,7 +1103,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const fight: FightDoc = { ...structuredClone(current), ...structuredClone(patch) }
     fight.exaggeration = Math.min(3, Math.max(1, fight.exaggeration))
     const fighters = fightersOf(scene, fight.fighterIds)
-    const sol = solveFight(fight, [fighterInput(fighters[0]), fighterInput(fighters[1])], { duration: shot.duration, fps: shot.fps })
+    const sol = solveFight(fight, [fighterInput(fighters[0], scene), fighterInput(fighters[1], scene)], { duration: shot.duration, fps: shot.fps })
     get().mutate('update fight', (doc) => {
       const sc = doc.scenes.find((x) => x.id === sceneId)
       const sh = sc?.shots.find((x) => x.id === shotId) ?? sc?.drafts?.find((x) => x.id === shotId)
@@ -1011,7 +1132,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const fight = scene?.fights?.find((f) => f.id === fightId)
     if (!scene || !shot || !fight) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
     const fighters = fightersOf(scene, fight.fighterIds)
-    const sol = solveFight(fight, [fighterInput(fighters[0]), fighterInput(fighters[1])], { duration: shot.duration, fps: shot.fps })
+    const sol = solveFight(fight, [fighterInput(fighters[0], scene), fighterInput(fighters[1], scene)], { duration: shot.duration, fps: shot.fps })
     const lineSide: 1 | -1 = side === 'right' ? 1 : side === 'left' ? -1 : cameraLineSide(scene, shot, fight)
     let cameraMarks = 0
     get().mutate('fight coverage', (doc) => {
@@ -1485,6 +1606,12 @@ export const useStore = create<BlockoutState>((set, get) => ({
       // Remap marriages and choreography onto the fresh entity ids.
       for (const e of scene.entities) {
         if (e.attachedTo) e.attachedTo = idMap.get(e.attachedTo) ?? undefined
+        // Fork: held weapons stay in their (remapped) holder's hand.
+        if (e.heldBy) {
+          const holder = idMap.get(e.heldBy.entityId)
+          if (holder) e.heldBy = { entityId: holder, hand: e.heldBy.hand }
+          else delete e.heldBy
+        }
       }
       const master = scene.blocking[0]!
       for (const take of payload.blocking ?? []) {

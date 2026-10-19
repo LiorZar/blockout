@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director) in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -7,7 +7,7 @@
  * does is undoable, autosaved, and visible live.
  */
 
-import { useStore, currentProjectJson } from '../store'
+import { useStore, currentProjectJson, releaseHeldBy } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { createActorMark, createCameraMark } from '@engine/schema'
 import { newId } from '@engine/ids'
@@ -25,14 +25,15 @@ import {
 import { BUILTIN_PROFILES } from '@engine/profiles'
 import { generatePrompt } from '@engine/prompt'
 import { getSceneManager } from '../export/scene-access'
-import type { ActorMark, AspectId, CameraMark, Entity, GaitId, LightingPresetId, RigId, Scene, Shot } from '@engine/types'
+import type { ActorMark, AspectId, CameraMark, Entity, GaitId, LightingPresetId, RigId, Scene, Shot, V3 } from '@engine/types'
+import { WEAPON_SPECS, weaponSpec } from '@engine/weapons'
 import type { ChoreoKind, FormationId, RoutineSpec } from '@engine/choreography'
 import type { FramingKind } from '../bus'
 import { SHOT_SIZES } from '@engine/camera'
 import { ShotEvaluator } from '@engine/evaluate'
 import { parseShotWords } from '@engine/shot-words'
 import type { ShotAngle, ShotSide, ShotSpec } from '@engine/shot'
-import { MOVE_ALIASES, STRIKE_IDS, listFightMoves } from '@engine/fight/moves'
+import { MOVE_ALIASES, SHOT_MOVES, STRIKE_IDS, listFightMoves, listShotMoves } from '@engine/fight/moves'
 import { defaultTarget, formatFightScript, parseFightScript, randomFightScript } from '@engine/fight/script'
 import { solveFight, type FightSolution } from '@engine/fight/solve'
 import type { FightBeat, FightDoc, FightOutcome } from '@engine/types'
@@ -84,14 +85,15 @@ function activeTake(scene: Scene | null | undefined, shot: Shot | null | undefin
   return scene?.blocking.find((b) => b.id === shot?.blockingTakeId)
 }
 
-function entitySummary(e: Entity, take: Take | undefined): unknown {
+function entitySummary(e: Entity, take: Take | undefined, at?: V3): unknown {
+  const p = at ?? e.transform.position
   return {
     id: e.id,
     name: e.name,
     assetId: e.assetId,
-    x: e.transform.position.x,
-    y: e.transform.position.y,
-    z: e.transform.position.z,
+    x: p.x,
+    y: p.y,
+    z: p.z,
     rotationDeg: toDeg(e.transform.rotationY),
     label: e.label?.text,
     color: e.label?.color,
@@ -99,8 +101,20 @@ function entitySummary(e: Entity, take: Take | undefined): unknown {
     build: typeof e.params?.build === 'number' ? e.params.build : undefined,
     hideInExports: e.excludeFromExport === true || undefined,
     attachedTo: e.attachedTo,
+    heldBy: e.heldBy ? { entityId: e.heldBy.entityId, hand: e.heldBy.hand } : undefined,
     markCount: take?.tracks.find((t) => t.entityId === e.id)?.marks.length ?? 0
   }
+}
+
+/** Fork: held weapons report where they are — in the hand at the playhead — not their stale placement. */
+function heldWeaponPositions(scene: Scene, shot: Shot | null, time: number): Map<string, V3> {
+  const out = new Map<string, V3>()
+  if (!shot || !scene.entities.some((e) => e.heldBy)) return out
+  const held = new Set(scene.entities.filter((e) => e.heldBy).map((e) => e.id))
+  for (const st of new ShotEvaluator(scene, shot).evaluate(time).entities) {
+    if (held.has(st.entityId)) out.set(st.entityId, st.position)
+  }
+  return out
 }
 
 function environmentSummary(scene: Scene): unknown {
@@ -175,6 +189,18 @@ function fightLabels(scene: Scene, ids: string[]): [string, string] {
   return [name(ids[0], 'A'), name(ids[1], 'B')]
 }
 
+/** stage_fight `weapons`: [A's, B's] weapon assetId or null. */
+function fightWeapons(params: Params): [string | null, string | null] | undefined {
+  const raw = params.weapons
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw) || raw.length !== 2) throw new Error('stage_fight: weapons must be two entries, [A, B]: a weapon assetId from list_weapons, or null.')
+  return raw.map((w, q) => {
+    if (w === null || w === '') return null
+    if (typeof w !== 'string' || !weaponSpec(w)) throw new Error(`stage_fight: weapons[${q}] "${String(w)}" isn't a weapon — call list_weapons.`)
+    return w
+  }) as [string | null, string | null]
+}
+
 /** Beats from `script` (text), `beats` (array) or `random` ({seed, style, ending}). */
 function fightBeatsFromParams(params: Params, tool: string, labels: [string, string], duration: number): FightBeat[] | undefined {
   const script = str(params, 'script')
@@ -190,7 +216,7 @@ function fightBeatsFromParams(params: Params, tool: string, labels: [string, str
       const attacker = b.attacker === 1 || b.attacker === 'B' ? 1 : b.attacker === 0 || b.attacker === 'A' ? 0 : null
       if (attacker === null) throw new Error(`${where}.attacker must be 0 or 1 (A or B).`)
       const move = typeof b.move === 'string' ? (MOVE_ALIASES[b.move.toLowerCase()] ?? b.move) : ''
-      if (!STRIKE_IDS.includes(move)) throw new Error(`${where}.move "${String(b.move)}" is not a strike: list_fight_moves shows the moves.`)
+      if (!STRIKE_IDS.includes(move) && !SHOT_MOVES.has(move)) throw new Error(`${where}.move "${String(b.move)}" is not a strike: list_fight_moves shows the moves.`)
       const target = b.target ?? defaultTarget(move)
       if (target !== 'head' && target !== 'body' && target !== 'legs') throw new Error(`${where}.target must be head, body or legs.`)
       const outcomes = Array.isArray(b.outcomes) ? (b.outcomes as unknown[]) : ['hit']
@@ -314,6 +340,7 @@ function summary(): unknown {
   const scene = s.scene()
   const shot = s.shot()
   const take = activeTake(scene, shot)
+  const heldAt = scene ? heldWeaponPositions(scene, shot, s.time) : new Map<string, V3>()
   return {
     project: s.doc?.name ?? null,
     mode: s.mode,
@@ -324,7 +351,7 @@ function summary(): unknown {
           name: scene.name,
           lighting: scene.environment.lighting,
           environment: environmentSummary(scene),
-          entities: scene.entities.map((e) => entitySummary(e, take)),
+          entities: scene.entities.map((e) => entitySummary(e, take, heldAt.get(e.id))),
           fights: (scene.fights ?? []).map((f) => ({ id: f.id, name: f.name, fighterIds: f.fighterIds, beats: f.beats.length })),
           scans: (scene.scans ?? []).map((sc) => ({
             id: sc.id,
@@ -498,6 +525,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         for (const scene of doc.scenes) {
           if (!scene.entities.some((e) => e.id === entityId)) continue
           found = true
+          releaseHeldBy(scene, s.shotId, s.time, new Set([entityId]))
           scene.entities = scene.entities.filter((e) => e.id !== entityId)
           for (const take of scene.blocking) {
             take.tracks = take.tracks.filter((t) => t.entityId !== entityId)
@@ -510,6 +538,62 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (!found) throw new Error(`No entity "${entityId}".`)
       if (useStore.getState().selection?.kind === 'entity') s.setSelection(null)
       return { deleted: entityId }
+    }
+
+    case 'list_weapons': {
+      return {
+        weapons: WEAPON_SPECS.map((w) => ({
+          assetId: w.assetId,
+          name: assetSpec(w.assetId).name,
+          kind: w.kind,
+          strike: w.strike,
+          twoHanded: w.twoHanded,
+          usualHand: w.defaultHand
+        })),
+        held: (s.scene()?.entities ?? [])
+          .filter((e) => e.heldBy)
+          .map((e) => ({ weaponId: e.id, assetId: e.assetId, holderId: e.heldBy!.entityId, hand: e.heldBy!.hand }))
+      }
+    }
+
+    case 'hold_weapon': {
+      requireDoc()
+      const entityId = str(params, 'entityId') ?? ''
+      const assetId = str(params, 'assetId')
+      const weaponId = str(params, 'weaponId')
+      const hand = str(params, 'hand')
+      if (hand !== undefined && hand !== 'L' && hand !== 'R') {
+        throw new Error(`hold_weapon: hand must be L or R (got "${hand}").`)
+      }
+      if (!assetId === !weaponId) {
+        throw new Error('hold_weapon: give assetId (a new weapon) or weaponId (one already in the scene), not both.')
+      }
+      if (!s.scene()?.entities.some((e) => e.id === entityId)) {
+        throw new Error(`hold_weapon: no entity "${entityId}" in this scene — call get_state for ids.`)
+      }
+      if (assetId && !weaponSpec(assetId)) throw new Error(`hold_weapon: "${assetId}" isn't a weapon — call list_weapons.`)
+      let id = weaponId
+      if (assetId) {
+        const res = s.spawnHeldWeapon(assetId, entityId, hand)
+        if (res.error) throw new Error(`hold_weapon: ${res.error}`)
+        id = res.weaponId
+      } else {
+        const error = s.holdWeapon(weaponId!, entityId, hand)
+        if (error) throw new Error(`hold_weapon: ${error}`)
+      }
+      const w = useStore.getState().scene()?.entities.find((e) => e.id === id)
+      return { weaponId: id, holderId: entityId, hand: w?.heldBy?.hand, color: w?.label?.color }
+    }
+
+    case 'drop_weapon': {
+      requireDoc()
+      const weaponId = str(params, 'weaponId') ?? ''
+      const w = s.scene()?.entities.find((e) => e.id === weaponId)
+      if (!w) throw new Error(`No entity "${weaponId}" — call get_state for ids.`)
+      if (!w.heldBy) throw new Error(`drop_weapon: ${w.name} isn't held by anyone.`)
+      s.dropWeapon(weaponId)
+      const p = useStore.getState().scene()?.entities.find((e) => e.id === weaponId)?.transform.position
+      return { dropped: weaponId, x: p?.x, z: p?.z }
     }
 
     case 'add_actor_mark': {
@@ -562,7 +646,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
 
     case 'list_fight_moves': {
       const aliases = Object.entries(MOVE_ALIASES)
-      return listFightMoves().map((m) => ({
+      return [...listFightMoves(), ...listShotMoves()].map((m) => ({
         id: m.id,
         name: m.name,
         aliases: aliases.filter(([, id]) => id === m.id).map(([a]) => a),
@@ -582,10 +666,12 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (!beats || beats.length === 0) throw new Error('stage_fight: give a script, beats, or random.')
       const exaggeration = flt(params, 'exaggeration')
       const coverage = fightCoverage(params, 'stage_fight')
+      const weapons = fightWeapons(params)
       const { fightId, report } = s.stageFight({
         beats,
         at: { x: flt(params, 'x') ?? 0, z: flt(params, 'z') ?? 0, heading: toRad(flt(params, 'headingDeg') ?? 0) },
         ...(fighterIds.length === 2 ? { fighters: [fighterIds[0]!, fighterIds[1]!] as [string, string] } : {}),
+        ...(weapons ? { weapons } : {}),
         ...(exaggeration !== undefined ? { exaggeration } : {}),
         ...(coverage ? { coverage } : {})
       })
@@ -1314,7 +1400,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       requireIdle()
       const profileId = exportProfileId(params, 'export_frame')
       const resolution = exportResolution(params, 'export_frame')
-      const res = await exportStillAtPlayhead(profileId, resolution, bool(params, 'labels') ?? true)
+      const res = await exportStillAtPlayhead(profileId, resolution, bool(params, 'labels') ?? false)
       if (!res.ok || !res.packagePath) throw new Error(res.error ?? 'export_frame failed.')
       return { path: res.packagePath }
     }

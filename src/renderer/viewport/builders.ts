@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override signs fixed; see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -13,6 +13,8 @@ import * as THREE from 'three'
 import type { GaitId } from '@engine/types'
 import { assetSpec } from '@engine/assets'
 import { personDims } from '@engine/skeleton'
+import { dressMannequin } from './mannequin-mesh'
+import { buildWeapon, isWeaponModel } from './weapon-builders'
 
 export interface AnimInput {
   gait: GaitId
@@ -172,7 +174,7 @@ interface PersonJoints {
   elbowR: THREE.Group
   legLen: number
   scale: number
-  baseLean: number // constant forward lean (elderly)
+  baseLean: number // rest torso pitch (rotation.x; negative leans forward — the elderly stoop)
 }
 
 function buildPerson(assetId: string, params?: Record<string, number | string>): BuiltAsset {
@@ -222,7 +224,7 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
   const armR = 0.055 * s * w
 
   const mkArm = (side: number) => {
-    const shoulder = grp(side * bodyW * 0.55, shoulderY, 0)
+    const shoulder = grp(side * dims.shoulderX, shoulderY, 0)
     shoulder.name = side < 0 ? 'shoulderL' : 'shoulderR'
     torso.add(shoulder)
     const upper = capsule(armR, upperArmLen * 0.7, 0x88888f)
@@ -244,7 +246,7 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
   const { upperLegLen, lowerLegLen } = dims
 
   const mkLeg = (side: number) => {
-    const hip = grp(side * bodyW * 0.28, 0, 0)
+    const hip = grp(side * dims.hipX, 0, 0)
     hip.name = side < 0 ? 'hipL' : 'hipR'
     pelvis.add(hip)
     const upper = capsule(legR, upperLegLen * 0.7, 0x86868e)
@@ -292,6 +294,43 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
   return { group, height: H, animate, setTint }
 }
 
+// Fork: sculpted studio mannequins (mannequin-mesh.ts). Same joint groups,
+// names and personDims positions as buildPerson, so FK, every motion and the
+// fight solver work unchanged; only the body differs.
+function buildMannequin(assetId: string, params?: Record<string, number | string>): BuiltAsset {
+  const dims = personDims(assetId, params)
+  const { s, legLen, torsoLen, shoulderX, shoulderY, upperArmLen, hipX, upperLegLen } = dims
+  const group = new THREE.Group()
+  group.name = assetId
+  const root = grp(0, 0, 0)
+  group.add(root)
+  const joint = (parent: THREE.Object3D, name: string, x: number, y: number): THREE.Group => {
+    const g = grp(x, y, 0)
+    g.name = name
+    parent.add(g)
+    return g
+  }
+  const pelvis = joint(root, 'pelvis', 0, legLen)
+  const torso = joint(pelvis, 'torso', 0, 0.08 * s)
+  const head = joint(torso, 'head', 0, torsoLen)
+  const shoulderL = joint(torso, 'shoulderL', -shoulderX, shoulderY)
+  const shoulderR = joint(torso, 'shoulderR', shoulderX, shoulderY)
+  const elbowL = joint(shoulderL, 'elbowL', 0, -upperArmLen)
+  const elbowR = joint(shoulderR, 'elbowR', 0, -upperArmLen)
+  const hipL = joint(pelvis, 'hipL', -hipX, 0)
+  const hipR = joint(pelvis, 'hipR', hipX, 0)
+  const kneeL = joint(hipL, 'kneeL', 0, -upperLegLen)
+  const kneeR = joint(hipR, 'kneeR', 0, -upperLegLen)
+  const build = Math.min(1.3, Math.max(0.8, numParam(params, 'build', 1)))
+  const bones = { pelvis, torso, head, shoulderL, shoulderR, elbowL, elbowR, hipL, hipR, kneeL, kneeR }
+  dressMannequin(bones, dims, assetId === 'person.mannequinFemale', build)
+  const j: PersonJoints = { root, torso, head, hipL, hipR, kneeL, kneeR, shoulderL, shoulderR, elbowL, elbowR, legLen, scale: s, baseLean: dims.baseLean }
+  const setTint = makeSetTint(group)
+  const animate = (input: AnimInput) => animatePerson(j, input)
+  animate({ gait: 'stand', phase: 0, speed: 0, distance: 0, time: 0 })
+  return { group, height: dims.H, animate, setTint }
+}
+
 function resetPersonPose(j: PersonJoints): void {
   j.root.rotation.set(0, 0, 0)
   j.root.position.set(0, 0, 0)
@@ -320,10 +359,12 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
       // Neutral with tiny breathing bob.
       j.root.position.y = Math.sin(t * 1.5) * 0.005
       if (input.gait === 'gesture') {
-        // One forearm raised, gently waving.
-        j.shoulderR.rotation.x = -2.3
+        // One forearm raised, gently waving. Fork fix: a positive X rotation
+        // swings a hanging limb forward on a body facing −Z (the arm used to
+        // rise behind the head and the elbow to hyperextend).
+        j.shoulderR.rotation.x = 2.3
         j.elbowR.rotation.z = Math.sin(t * 2) * 0.3
-        j.elbowR.rotation.x = -0.4
+        j.elbowR.rotation.x = 0.4
       }
       break
     }
@@ -341,10 +382,12 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
       // Lower legs bend on the back-swing.
       j.kneeL.rotation.x = -Math.max(0, -Math.sin(p * TAU)) * 0.8
       j.kneeR.rotation.x = -Math.max(0, -Math.sin(p * TAU + Math.PI)) * 0.8
-      j.elbowL.rotation.x = -0.3
-      j.elbowR.rotation.x = -0.3
+      // Fork fix: elbows flex forward (positive), torso pitches forward
+      // (negative); both used to play mirrored.
+      j.elbowL.rotation.x = 0.3
+      j.elbowR.rotation.x = 0.3
       j.root.position.y = Math.abs(swing) * bobAmp
-      if (input.gait === 'run') j.torso.rotation.x = j.baseLean + 0.15
+      if (input.gait === 'run') j.torso.rotation.x = j.baseLean - 0.15
       break
     }
     case 'crouch': {
@@ -354,7 +397,7 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
       j.hipR.rotation.x = 0.9
       j.kneeL.rotation.x = -1.4
       j.kneeR.rotation.x = -1.4
-      j.torso.rotation.x = j.baseLean + 0.3
+      j.torso.rotation.x = j.baseLean - 0.3 // fork fix: forward over the knees
       if (input.speed > 0) {
         const legAngle = swing * 0.25
         j.hipL.rotation.x += legAngle
@@ -365,11 +408,12 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
     case 'sit': {
       const chairH = 0.45 * j.scale
       j.root.position.y = -(j.legLen - chairH)
-      // Thighs horizontal, lower legs vertical.
-      j.hipL.rotation.x = -Math.PI / 2
-      j.hipR.rotation.x = -Math.PI / 2
-      j.kneeL.rotation.x = Math.PI / 2
-      j.kneeR.rotation.x = Math.PI / 2
+      // Thighs horizontal and forward, lower legs vertical (fork fix: the
+      // thighs used to point backward).
+      j.hipL.rotation.x = Math.PI / 2
+      j.hipR.rotation.x = Math.PI / 2
+      j.kneeL.rotation.x = -Math.PI / 2
+      j.kneeR.rotation.x = -Math.PI / 2
       j.torso.rotation.x = j.baseLean
       break
     }
@@ -6099,6 +6143,7 @@ function buildFallback(assetId: string): BuiltAsset {
 // ---------------------------------------------------------------------------
 
 export function buildAsset(assetId: string, params?: Record<string, number | string>): BuiltAsset {
+  if (assetId.startsWith('person.mannequin')) return buildMannequin(assetId, params)
   if (assetId.startsWith('person.')) return buildPerson(assetId, params)
   if (assetId === 'animal.bird') return buildBird(assetId)
   if (assetId.startsWith('animal.')) return buildQuadruped(assetId)
@@ -6133,6 +6178,7 @@ export function buildAsset(assetId: string, params?: Record<string, number | str
     }
   }
   if (assetId.startsWith('furniture.')) return buildFurniture(assetId)
+  if (isWeaponModel(assetId)) return buildWeapon(assetId)
   if (assetId.startsWith('prop.')) return buildProp(assetId)
   if (assetId.startsWith('env.')) return buildEnv(assetId)
   if (assetId.startsWith('prim.')) return buildPrimitive(assetId)

@@ -6,8 +6,10 @@
  */
 
 import { useMemo, useState } from 'react'
-import { useStore } from '../store'
+import { fighterInput, useStore } from '../store'
 import { solveFight, type BeatReport } from '@engine/fight/solve'
+import { assetSpec } from '@engine/assets'
+import { WEAPON_SPECS } from '@engine/weapons'
 import { formatFightScript, parseFightScript, randomFightScript } from '@engine/fight/script'
 import type { FightDoc, Scene } from '@engine/types'
 
@@ -23,6 +25,11 @@ const COVERAGE: { id: NonNullable<FightDoc['coverage']> | ''; name: string }[] =
   { id: 'punch-in', name: 'Punch in on big hits' },
   { id: 'over-shoulder', name: 'Over the shoulder' },
   { id: 'follow', name: 'Handheld follow' }
+]
+
+const BODIES: { id: 'classic' | 'mannequin'; name: string; assets?: [string, string] }[] = [
+  { id: 'classic', name: 'Classic' },
+  { id: 'mannequin', name: 'Mannequin', assets: ['person.mannequinMale', 'person.mannequinFemale'] }
 ]
 
 const EXAMPLE = `A jab cross to head -> block, hit
@@ -76,6 +83,8 @@ export function FightDirector(): JSX.Element {
   const [seed, setSeed] = useState(randomSeed)
   const [exaggeration, setExaggeration] = useState(fight?.exaggeration ?? 1.5)
   const [coverage, setCoverage] = useState<NonNullable<FightDoc['coverage']> | ''>(fight?.coverage ?? '')
+  const [bodies, setBodies] = useState<(typeof BODIES)[number]['id']>('classic')
+  const [arms, setArms] = useState<[string, string]>(['', ''])
 
   const parsed = parseFightScript(script, labels)
   const selected =
@@ -88,13 +97,7 @@ export function FightDirector(): JSX.Element {
     if (!fight || !scene || !shot) return null
     const ents = fight.fighterIds.map((id) => scene.entities.find((e) => e.id === id))
     if (!ents[0] || !ents[1]) return null
-    const input = ents.map((e) => ({
-      entityId: e!.id,
-      assetId: e!.assetId,
-      params: e!.params,
-      scale: e!.transform.scale,
-      start: { ...e!.transform.position }
-    }))
+    const input = ents.map((e) => fighterInput(e!, scene))
     return solveFight(fight, [input[0]!, input[1]!], { duration: shot.duration, fps: shot.fps }).report
   }, [fight, scene, shot])
 
@@ -104,6 +107,9 @@ export function FightDirector(): JSX.Element {
     exaggeration,
     ...(coverage ? { coverage } : {})
   })
+  // Weapons for Stage fight / Apply to 2 selected ('' keeps a fighter as it is).
+  const weapons = (): { weapons?: [string | null, string | null] } =>
+    arms[0] || arms[1] ? { weapons: [arms[0] || null, arms[1] || null] } : {}
 
   const onRandom = (): void => {
     const beats = randomFightScript(seed, style, shot.duration, { ending })
@@ -116,7 +122,8 @@ export function FightDirector(): JSX.Element {
       setPlacing(null)
       return
     }
-    armFightPlacement({ beats: parsed.beats, ...settings() })
+    const assets = BODIES.find((b) => b.id === bodies)?.assets
+    armFightPlacement({ beats: parsed.beats, ...settings(), ...weapons(), ...(assets ? { assets } : {}) })
   }
 
   const onApplySelected = (): void => {
@@ -128,7 +135,7 @@ export function FightDirector(): JSX.Element {
       heading: 0
     }
     try {
-      const r = stageFight({ beats: parsed.beats, at, fighters: [selected[0]!, selected[1]!], ...settings() })
+      const r = stageFight({ beats: parsed.beats, at, fighters: [selected[0]!, selected[1]!], ...settings(), ...weapons() })
       setFightId(r.fightId)
       toast(`Fight staged on the 2 selected: ${r.report.beats.length} beats.`, 'success')
     } catch (e) {
@@ -219,6 +226,40 @@ export function FightDirector(): JSX.Element {
       <div className="field">
         <label>Exaggeration ×{exaggeration.toFixed(1)}</label>
         <input type="range" min={1} max={3} step={0.1} value={exaggeration} onChange={(e) => setExaggeration(Number(e.target.value))} />
+      </div>
+      <div className="field">
+        <label>Weapons (A / B)</label>
+        <div style={{ display: 'flex', gap: 6 }}>
+          {([0, 1] as const).map((q) => (
+            <select
+              key={q}
+              value={arms[q]}
+              title={`What ${q === 0 ? 'A' : 'B'} fights with: blows land with the blade or point, "shoot" fires a gun. Empty keeps what they hold.`}
+              onChange={(e) => setArms(q === 0 ? [e.target.value, arms[1]] : [arms[0], e.target.value])}
+            >
+              <option value="">{q === 0 ? 'A' : 'B'}: as is</option>
+              {WEAPON_SPECS.map((w) => (
+                <option key={w.assetId} value={w.assetId}>
+                  {assetSpec(w.assetId).name}
+                </option>
+              ))}
+            </select>
+          ))}
+        </div>
+      </div>
+      <div className="field">
+        <label>Bodies</label>
+        <select
+          value={bodies}
+          title="What Stage fight spawns: the classic capsule people or the sculpted mannequins (male A, female B). Apply to 2 selected keeps their bodies."
+          onChange={(e) => setBodies(e.target.value as typeof bodies)}
+        >
+          {BODIES.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </select>
       </div>
       <div className="field">
         <label>Camera coverage</label>

@@ -1,3 +1,4 @@
+// Modified in this fork (2026): catalog additions; see MODIFICATIONS.md.
 /**
  * Asset catalog — engine-side metadata for every built-in library item.
  * The renderer maps each id to a procedural grey-box builder; the engine
@@ -41,6 +42,9 @@ export const ASSET_CATALOG: AssetSpec[] = [
   A('person.woman', 'Woman', 'people', 1.65, 0.28, 1, 'biped', 'a woman'),
   A('person.child', 'Child', 'people', 1.2, 0.22, 0.8, 'biped', 'a child'),
   A('person.elderly', 'Elderly person', 'people', 1.68, 0.3, 0.6, 'biped', 'an elderly person'),
+  // Fork: sculpted studio mannequins on the same rig (see MODIFICATIONS.md).
+  A('person.mannequinMale', 'Mannequin (male)', 'people', 1.8, 0.3, 1, 'biped', 'a man'),
+  A('person.mannequinFemale', 'Mannequin (female)', 'people', 1.7, 0.28, 1, 'biped', 'a woman'),
 
   // Animals
   A('animal.dog', 'Dog', 'animals', 0.6, 0.35, 1.8, 'quadruped', 'a dog'),
@@ -255,6 +259,18 @@ export const ASSET_CATALOG: AssetSpec[] = [
   A('env.stadium', 'Stadium Section', 'environment', 8, 24, 0, 'static', 'a stadium section'),
   A('env.sky', 'Sky (Aerial)', 'environment', 0.1, 40, 0, 'static', 'an open sky'),
   A('env.houseFull', 'House Interior (Rooms)', 'environment', 2.4, 10, 0, 'static', 'a full house interior with rooms'),
+
+  // Fork: weapons a person can hold (src/engine/weapons.ts; prop.sword and prop.baseballBat too).
+  A('prop.katana', 'Katana', 'weapons', 1.0, 0.1, 0, 'static', 'a katana'),
+  A('prop.knife', 'Knife', 'weapons', 0.29, 0.04, 0, 'static', 'a knife'),
+  A('prop.axe', 'Axe', 'weapons', 0.72, 0.15, 0, 'static', 'an axe'),
+  A('prop.spear', 'Spear', 'weapons', 2.05, 0.1, 0, 'static', 'a spear'),
+  A('prop.staff', 'Staff', 'weapons', 1.7, 0.05, 0, 'static', 'a fighting staff'),
+  A('prop.shield', 'Shield', 'weapons', 0.7, 0.35, 0, 'static', 'a round shield'),
+  A('prop.pistol', 'Pistol', 'weapons', 0.17, 0.12, 0, 'static', 'a pistol'),
+  A('prop.rifle', 'Rifle', 'weapons', 0.25, 0.55, 0, 'static', 'a rifle'),
+  A('prop.shotgun', 'Shotgun', 'weapons', 0.25, 0.55, 0, 'static', 'a shotgun'),
+  A('prop.bow', 'Bow', 'weapons', 1.44, 0.2, 0, 'static', 'a bow'),
 
   // Primitives
   A('prim.cube', 'Cube', 'primitives', 1, 0.5, 0, 'static', 'a box'),

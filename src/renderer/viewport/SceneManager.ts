@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -31,9 +31,12 @@ import { headingOf } from '@engine/path'
 import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
 import { pickFramingSubjectIds } from '@engine/framing'
 import type { Entity, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
-import { useStore, selectedEntityIds } from '../store'
+import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
 import { buildAsset, markMesh, labelSprite, type BuiltAsset } from './builders'
+import { heldWeaponMatrix, steadyArm } from './hold'
+import { canHoldWeapons, weaponSpec } from '@engine/weapons'
+import { personDims } from '@engine/skeleton'
 
 const RAD2DEG = 180 / Math.PI
 
@@ -55,6 +58,9 @@ interface EntityVisual {
   root: THREE.Group
   label?: THREE.Sprite
   customLoaded?: boolean
+  /** Fork (weapons): the gait and joint overrides of the last animate() call. */
+  lastGait?: string
+  lastOverrides?: Record<string, number>
 }
 
 export type RenderPass = 'clean' | 'depth' | 'normal'
@@ -387,7 +393,9 @@ export class SceneManager {
     }
     for (const entity of wanted.values()) {
       const existing = this.visuals.get(entity.id)
-      if (!existing || existing.entity.assetId !== entity.assetId || existing.entity.params !== entity.params) {
+      // Fork: picking a weapon up or dropping it rebuilds its visual (a held root carries a full rotation).
+      const holdChanged = !!existing && !!existing.entity.heldBy !== !!entity.heldBy
+      if (!existing || existing.entity.assetId !== entity.assetId || existing.entity.params !== entity.params || holdChanged) {
         if (existing) this.removeEntityVisual(existing)
         this.addEntityVisual(entity)
       } else {
@@ -1071,7 +1079,8 @@ export class SceneManager {
     if (obj && !s.lookThrough && s.mode !== 'deliver') {
       // Entities are transformable in BOTH Stage and Shoot (move/rotate);
       // the camera body likewise (drags commit to the active camera mark).
-      if (isEntitySel) this.transform.attach(obj)
+      // A held weapon moves with its holder's hand — no gizmo of its own.
+      if (isEntitySel && !this.isHeldWeapon(obj)) this.transform.attach(obj)
       if (s.selection?.kind === 'camera') this.transform.attach(this.cameraBody)
       this.applyGizmoAxisLimits()
     }
@@ -1312,6 +1321,7 @@ export class SceneManager {
     const idSet = new Set(ids)
     s.mutate(ids.length > 1 ? 'delete entities' : 'delete entity', (doc) => {
       for (const scene of doc.scenes) {
+        releaseHeldBy(scene, s.shotId, s.time, idSet)
         scene.entities = scene.entities.filter((e) => !idSet.has(e.id))
         for (const entity of scene.entities) {
           // Widow any marriages pointing at a deleted parent.
@@ -2064,6 +2074,8 @@ export class SceneManager {
         time: t,
         overrides
       })
+      visual.lastGait = gait
+      visual.lastOverrides = overrides
     }
 
     // Live group drag: the other members of a multi-selection follow the
@@ -2112,6 +2124,8 @@ export class SceneManager {
       }
     }
 
+    this.applyHeldWeapons()
+
     // Shot camera
     const c = state.camera
     this.shotCam.position.set(c.position.x, c.position.y, c.position.z)
@@ -2126,6 +2140,43 @@ export class SceneManager {
       this.cameraBody.position.copy(this.shotCam.position)
       this.cameraBody.rotation.copy(this.shotCam.rotation)
     }
+  }
+
+  /**
+   * Fork: held weapons follow their holder's rendered hand exactly — the
+   * weapon root takes the world matrix from the rig's elbow (and shoulder)
+   * groups, so every gait, motion and gizmo drag carries it. The label floats
+   * above the grip.
+   */
+  private applyHeldWeapons(): void {
+    for (const visual of this.visuals.values()) {
+      const held = visual.entity.heldBy
+      if (!held) continue
+      const spec = weaponSpec(visual.entity.assetId)
+      const holder = this.visuals.get(held.entityId)
+      if (!spec || !holder || !canHoldWeapons(holder.entity.assetId)) continue
+      if (holder.lastGait === 'walk' || holder.lastGait === 'jog' || holder.lastGait === 'run') {
+        steadyArm(holder.built.group, held.hand, holder.lastOverrides)
+        if (spec.support) steadyArm(holder.built.group, held.hand === 'L' ? 'R' : 'L', holder.lastOverrides)
+      }
+      holder.root.updateWorldMatrix(true, true)
+      const dims = personDims(holder.entity.assetId, holder.entity.params)
+      const m = heldWeaponMatrix(holder.built.group, dims, spec, held.hand, visual.entity.transform.scale)
+      if (!m) continue
+      m.decompose(visual.root.position, visual.root.quaternion, visual.root.scale)
+      if (visual.label) {
+        visual.root.updateWorldMatrix(true, false)
+        const grip = new THREE.Vector3(spec.grip.x, spec.grip.y, spec.grip.z).applyMatrix4(m)
+        grip.y += 0.3 * holder.root.scale.y
+        visual.label.position.copy(visual.root.worldToLocal(grip))
+      }
+    }
+  }
+
+  private isHeldWeapon(obj: THREE.Object3D): boolean {
+    const id = obj.userData.entityId as string | undefined
+    const e = id ? this.visuals.get(id)?.entity : undefined
+    return !!e?.heldBy && !!weaponSpec(e.assetId)
   }
 
   private entityHasTrack(entityId: string): boolean {

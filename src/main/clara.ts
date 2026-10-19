@@ -19,6 +19,15 @@ import { resolveMcpPort, type McpHttpStatus } from './mcp-http'
 
 export const CLARA_RETRY_MS = 3000
 
+/** Clara keeps the docked host at least this wide (DIP). */
+export const CLARA_HOST_MIN_WIDTH = 480
+
+/** BrowserWindow's min-size calls; IHostWindow leaves them out. */
+type SizableWindow = IHostWindow & {
+  getMinimumSize?(): number[]
+  setMinimumSize?(width: number, height: number): void
+}
+
 export const CLARA_INSTRUCTIONS =
   'You help filmmakers block shots in Blockout, a grey-box 3D previs app, and export clips that AI video models use as their input video. Call get_state first. Units are meters and seconds; +X is right and -Z is away from the default camera. Every change can be undone. After staging or moving the camera, call screenshot to check the shot before you export. Give each character a different colour and a short label so the video model can tell them apart.'
 
@@ -67,6 +76,32 @@ export function createClaraController(deps: {
   let handle: IClaraHandle | null = null
   // Bumped by every new attempt or cancel; a result for an older one is stale.
   let generation = 0
+  // Blockout's own minWidth (1100) is wider than the share Clara docks it to,
+  // and Electron would clamp it, leaving the host under Clara. While Clara is
+  // attaching or docked the minimum drops to Clara's host minimum.
+  let savedMin: { win: SizableWindow; size: number[] } | null = null
+
+  function relaxMinWidth(win: SizableWindow): void {
+    if (savedMin || !win.getMinimumSize || !win.setMinimumSize) return
+    try {
+      const size = win.getMinimumSize()
+      savedMin = { win, size }
+      if (size[0]! > CLARA_HOST_MIN_WIDTH) win.setMinimumSize(CLARA_HOST_MIN_WIDTH, size[1]!)
+    } catch {
+      // window destroyed meanwhile
+    }
+  }
+
+  function restoreMinWidth(): void {
+    const saved = savedMin
+    savedMin = null
+    if (!saved) return
+    try {
+      saved.win.setMinimumSize?.(saved.size[0]!, saved.size[1]!)
+    } catch {
+      // window destroyed meanwhile
+    }
+  }
 
   function getState(): ClaraView {
     const mcp = deps.getMcp()
@@ -87,6 +122,7 @@ export function createClaraController(deps: {
     set('attaching')
     const win = deps.getWindow()
     if (!win) return set('failed', "Blockout's window isn't open")
+    relaxMinWidth(win)
     const mcp = deps.getMcp()
     const url = mcp.state === 'listening' && mcp.url ? mcp.url : `http://127.0.0.1:${resolveMcpPort(deps.env)}/mcp`
     let h: IClaraHandle
@@ -104,6 +140,7 @@ export function createClaraController(deps: {
       h.on('closed', () => {
         if (handle !== h) return
         handle = null
+        restoreMinWidth()
         set('idle')
       })
       h.on('error', (message) => {
@@ -113,6 +150,7 @@ export function createClaraController(deps: {
       })
       return set('attached')
     }
+    restoreMinWidth()
     if (h.status === 'not-installed') return set('not-installed', h.error)
     const view = set('failed', h.error ?? 'unknown error')
     if (!isRetry) {
@@ -130,12 +168,14 @@ export function createClaraController(deps: {
       if (state === 'unsupported') return getState()
       if (state === 'attaching') {
         generation++
+        restoreMinWidth()
         return set('idle')
       }
       if (state === 'attached') {
         const h = handle
         handle = null
         h?.Detach()
+        restoreMinWidth()
         return set('idle')
       }
       if (!target || !target.trim()) return set('idle', CLARA_NO_PROJECT)
@@ -147,6 +187,7 @@ export function createClaraController(deps: {
       const h = handle
       handle = null
       h?.Detach()
+      restoreMinWidth()
       if (state !== 'unsupported') state = 'idle'
     }
   }

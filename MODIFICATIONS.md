@@ -60,6 +60,14 @@ Changes in this fork (2026):
   chin down. The Inspector's "Pose limbs" sliders are relabelled with their
   direction and arm/leg forward sliders flipped so dragging right means
   forward. Limb poses set with those sliders in older projects flip.
+- Upstream bug fix, same family (worth reporting upstream): `animatePerson`'s
+  gaits set rotations with the same mirrored signs. The run lean, the crouch
+  lean and the elderly stoop (`personDims.baseLean`, `skeleton.ts`, now
+  −0.18) leaned backward, `sit` put the thighs behind the body, the talk /
+  gesture arm rose behind the head, and walk / jog / run hyperextended the
+  elbows. On a body facing −Z they now lean forward, sit with the thighs
+  forward, raise the talking arm in front and flex the elbows
+  (`tests/unit/gaits.test.ts`).
 - Fight move tables `src/engine/fight/moves.ts`: strike impacts (effector,
   time, speed) detected from the motion data by FK, plus defense, reaction
   and alias tables.
@@ -121,6 +129,10 @@ Changes in this fork (2026):
   `vendor/2dl-clara-client-0.1.0.tgz`); controller `src/main/clara.ts`, IPC in
   `src/main/index.ts`, `window.blockout.clara` in `src/preload/index.ts`,
   shared types `src/shared/clara-types.ts`.
+- While Clara is attaching or docked, the controller lowers the window's
+  minimum width from 1100 to Clara's 480 DIP host minimum and restores it
+  afterwards (`src/main/clara.ts`); otherwise Electron clamped the host and
+  Clara covered its right edge, including the Close Clara button.
 - `playwright.config.ts` defaults `BLOCKOUT_MCP_PORT` to `0`, so e2e runs put
   the HTTP MCP server on a free port instead of `17480`.
 - While an export runs, the control handler refuses every action except
@@ -133,6 +145,67 @@ Changes in this fork (2026):
 - Upstream fix: the top-down blocking diagram (`stills/*_topdown.png`) no
   longer shows the transform gizmo or the selection tint
   (`SceneManager.renderTopDown`).
+- Held weapons: `src/engine/weapons.ts` (weapon catalog with grip, tip, aim
+  and support points; the rig's hand frame, position and orientation, from
+  `personDims` + joints; left/right holds; idle hold poses; closed-form arm
+  IK), `Entity.heldBy` and the `weapons` category (`types.ts`), and ten new
+  weapon assets (`assets.ts`; `prop.sword` and `prop.baseballBat` are
+  holdable too). `migrateProject` (`schema.ts`) drops dangling or impossible
+  holds; `ShotEvaluator.evaluate` (`evaluate.ts`) calls `applyHolds` after
+  marriages: holders blend in idle hold poses, the off hand of a two-handed
+  weapon reaches it, and held weapons' states sit in the hand. Scenes without
+  held weapons evaluate exactly as before.
+- Held weapons in the viewport: grey-box weapon models
+  (`src/renderer/viewport/weapon-builders.ts`, dispatched from `buildAsset` in
+  `builders.ts`), and `src/renderer/viewport/hold.ts` (a held weapon's world
+  matrix from the rig's elbow / shoulder groups; holding arms don't swing in
+  walk / jog / run). `SceneManager` follows the hand every frame
+  (`applyHeldWeapons`, after marriages), rebuilds a weapon's visual when it is
+  picked up or dropped, keeps its label above the grip, and gives a held
+  weapon no gizmo.
+- Held weapons in the editor: store actions `holdWeapon`, `spawnHeldWeapon`
+  and `dropWeapon` (`store.ts`; a weapon set down stands where the hand was),
+  and every entity delete (`handler.ts`, `Inspector.tsx`, `SceneManager.ts`)
+  sets the deleted people's weapons down first (`releaseHeldBy`). The
+  Inspector shows "Held by / Hold in / Drop" on a weapon and "Weapons / Arm
+  with…" on a person; the Library has a Weapons group. `generatePrompt`
+  (`prompt.ts`) names a held weapon with its colour, holder and hand ("a
+  sword (the green shape) in A's right hand") and no longer prints `("")` for
+  a label without text. Idle blades and shafts hold at low ready, tip forward
+  and down.
+- Held-weapon MCP tools `list_weapons`, `hold_weapon` and `drop_weapon`
+  (`mcp/tools.json`, `handler.ts`); `get_state` shows each weapon's `heldBy`
+  and reports a held weapon at its grip at the playhead. `delete_entity` reads
+  "Remove a person or object" on approval cards, and `export_frame` defaults
+  to no labels, like the exported clip.
+- Held-weapon e2e (`tests/e2e/weapons.spec.ts`): the rendered sword tip
+  matches the engine tip through `sword-slash-combo`, a mid-swing frame
+  renders byte-identically, and an export names the sword in the prompt. The
+  spear and staff rest as a one-handed carry (`restOneHanded` in
+  `weapons.ts`); the off hand takes the shaft as the arm leaves rest.
+- Weapon fights: `FighterInput.weapons` (`fight/solve.ts`, additive; unarmed
+  fighters solve exactly as before). Blows from an armed hand land with the
+  weapon, blocks meet the defender's blade or shield, one-hand weapon moves
+  mirror onto the weapon hand, and gun beats (`SHOT_MOVES`, `shotImpacts`,
+  `listShotMoves` in `fight/moves.ts`) aim the barrel line through the target
+  with the reaction on the shot frame. Script words `sword slash`, `slash`,
+  `swing`, `thrust`, `stab`, `lunge`, `shoot`, `fire` (`moves.ts`,
+  `script.ts`). `weapons.ts` gains `holdJoints` (shared by `applyHolds` and the
+  solver) and `weaponContact`. The store feeds held weapons to the solver
+  (`fighterInput`), `stageFight` / `stage_fight` take `weapons`, and the Fight
+  Director has a Weapons (A / B) choice (`FightDirector.tsx`).
+- Studio mannequins `person.mannequinMale` / `person.mannequinFemale`
+  (`assets.ts`): procedural sculpted bodies in the look of a game-engine
+  mannequin (`src/renderer/viewport/mannequin-mesh.ts`: lofted muscle volumes,
+  panel seams on the chest, abdomen and spine, darker recessed joints, a
+  plastic Phong sheen; ≤ 8k triangles each), built by `buildMannequin` in
+  `builders.ts` on the same named joint groups and `animatePerson` as
+  `buildPerson`; Library thumbs (`Library.tsx`). `personDims`
+  (`skeleton.ts`) gains `shoulderX` / `hipX` (classic values unchanged) and
+  anatomical mannequin proportions whose head top lands at the catalog
+  height. The Fight Director gains a Bodies select (Classic / Mannequin) that
+  stages a fight with a male A and a female B (`FightDirector.tsx`). Tests:
+  `tests/unit/mannequin.test.ts`, `tests/e2e/mannequin.spec.ts`.
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
