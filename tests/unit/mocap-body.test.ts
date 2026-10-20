@@ -31,7 +31,7 @@ function rng(seed: number): () => number {
   }
 }
 
-const CHANNELS = ['rootX', 'rootY', 'rootZ', 'torsoX', 'torsoY', 'torsoZ', 'headX', 'headY', 'headZ', 'shoulderLX', 'shoulderRX', 'shoulderLZ', 'shoulderRZ', 'elbowL', 'elbowR', 'hipLX', 'hipRX', 'hipLZ', 'hipRZ', 'kneeL', 'kneeR']
+const CHANNELS = ['rootX', 'rootY', 'rootZ', 'torsoX', 'torsoY', 'torsoZ', 'headX', 'headY', 'headZ', 'shoulderLX', 'shoulderRX', 'shoulderLZ', 'shoulderRZ', 'elbowL', 'elbowR', 'hipLX', 'hipRX', 'hipLZ', 'hipRZ', 'kneeL', 'kneeR', 'handL', 'handR']
 
 function randomJoints(r: () => number, root = true): Record<string, number> {
   const out: Record<string, number> = {}

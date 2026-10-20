@@ -29,7 +29,8 @@ function rng(seed: number): () => number {
 
 const KEYS = [
   'shoulderLX', 'shoulderRX', 'shoulderLZ', 'shoulderRZ', 'elbowL', 'elbowR', 'hipLX', 'hipRX',
-  'hipLZ', 'hipRZ', 'kneeL', 'kneeR', 'torsoX', 'torsoY', 'torsoZ', 'headX', 'headY', 'headZ'
+  'hipLZ', 'hipRZ', 'kneeL', 'kneeR', 'torsoX', 'torsoY', 'torsoZ', 'headX', 'headY', 'headZ',
+  'handL', 'handR' // mocap clips: hand shape only, no bone moves
 ]
 
 function randomPoses(n: number, seed: number): Record<string, number>[] {
@@ -209,7 +210,7 @@ describe('held weapon points', () => {
     const SWAP: Record<string, string> = {
       shoulderLX: 'shoulderRX', shoulderRX: 'shoulderLX', shoulderLZ: 'shoulderRZ', shoulderRZ: 'shoulderLZ',
       elbowL: 'elbowR', elbowR: 'elbowL', hipLX: 'hipRX', hipRX: 'hipLX', hipLZ: 'hipRZ', hipRZ: 'hipLZ',
-      kneeL: 'kneeR', kneeR: 'kneeL'
+      kneeL: 'kneeR', kneeR: 'kneeL', handL: 'handR', handR: 'handL'
     }
     const NEGATE = new Set(['torsoY', 'torsoZ', 'headY', 'headZ'])
     const mirror = (j: Record<string, number>): Record<string, number> => {

@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots; see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots, mocap clip inputs; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -10,7 +10,7 @@
  */
 
 import * as THREE from 'three'
-import type { GaitId } from '@engine/types'
+import type { ClipState, GaitId } from '@engine/types'
 import { assetSpec } from '@engine/assets'
 import { personDims, type PersonDims } from '@engine/skeleton'
 import { bodyShape, lowestY, type BodyShape } from '@engine/floor'
@@ -39,6 +39,16 @@ export interface AnimInput {
    * headY (turn), headZ (tilt, positive = right).
    */
   overrides?: Record<string, number>
+  /** Fork (mocap clips, bots only): the clip the evaluator plays on the bot. */
+  clip?: ClipState
+  /** Fork (mocap clips): the entity's scale (a gait loop runs on distance over the scaled stride). */
+  scale?: number
+  /** Fork (mocap clips): the pose a bot crossfades from after a gait change, by `w` (0..1 toward this one). */
+  from?: { input: AnimInput; w: number }
+  /** Fork (mocap clips): each hand from relaxed (0) to a fist (1). */
+  hands?: { L: number; R: number }
+  /** Fork (mocap clips): a seat prop takes the hips (a sitting bot sits in the chair, else on the floor). */
+  seated?: boolean
 }
 
 export interface BuiltAsset {

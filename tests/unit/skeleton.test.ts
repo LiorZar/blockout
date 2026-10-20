@@ -106,7 +106,8 @@ function randomPoses(n: number, seed: number): Record<string, number>[] {
   }
   const keys = [
     'shoulderLX', 'shoulderRX', 'shoulderLZ', 'shoulderRZ', 'elbowL', 'elbowR', 'hipLX', 'hipRX',
-    'hipLZ', 'hipRZ', 'kneeL', 'kneeR', 'torsoX', 'torsoY', 'torsoZ', 'headX', 'headY', 'headZ'
+    'hipLZ', 'hipRZ', 'kneeL', 'kneeR', 'torsoX', 'torsoY', 'torsoZ', 'headX', 'headY', 'headZ',
+    'handL', 'handR' // mocap clips: hand shape only, no bone moves
   ]
   const out: Record<string, number>[] = []
   for (let i = 0; i < n; i++) {

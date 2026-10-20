@@ -11,16 +11,18 @@
  *
  * `poseFrames` / `poseEffectors` are the body call for every person: a
  * mocap bot (`dims.mocap`, see `mocap/`) branches off first, so the
- * procedural bodies evaluate exactly as before.
+ * procedural bodies evaluate exactly as before; a bot may also play a
+ * library clip (`clip`, `mocap/clip.ts`).
  *
  * PURE: no DOM / three.js / Electron.
  */
 
 import { assetSpec } from './assets'
-import { mocapEffectors, mocapFrames, type MocapDims } from './mocap/fk'
+import { botEffectors, botFrames } from './mocap/clip'
+import { type MocapDims } from './mocap/fk'
 import { mocapDims, mocapStandIn } from './mocap/registry'
 import type { MocapFrame } from './mocap/rig'
-import type { V3 } from './types'
+import type { ClipState, V3 } from './types'
 
 export interface PersonDims {
   H: number
@@ -217,8 +219,9 @@ export type ProxyBone = Bone | MocapFrame
  * `rootZ` roll (positive to the right) turn the whole body about the pelvis
  * joint (the pelvis frame's Euler XYZ: −rootX, rootY, −rootZ).
  */
-export function poseFrames(dims: PersonDims, joints: Record<string, number> | undefined): PoseFrames {
-  if (dims.mocap) return mocapFrames(dims.mocap, joints)
+export function poseFrames(dims: PersonDims, joints: Record<string, number> | undefined, clip?: ClipState): PoseFrames {
+  // Fork: a bot may play a library clip (mocap/clip.ts; joints add on top); other bodies ignore it.
+  if (dims.mocap) return botFrames(dims.mocap, joints, clip)
   const j = (k: string): number => joints?.[k] ?? 0
   const root: Frame = { p: v(0, 0, 0), r: IDENTITY }
   const pelvis = child(root, v(0, dims.legLen, 0), euler(-j('rootX'), j('rootY'), -j('rootZ')))
@@ -239,8 +242,8 @@ export function poseFrames(dims: PersonDims, joints: Record<string, number> | un
  * Effector positions for a pose, entity-local (ground origin, facing −Z),
  * from `poseFrames`.
  */
-export function poseEffectors(dims: PersonDims, joints: Record<string, number> | undefined): Record<Effector, V3> {
-  if (dims.mocap) return mocapEffectors(dims.mocap, joints)
+export function poseEffectors(dims: PersonDims, joints: Record<string, number> | undefined, clip?: ClipState): Record<Effector, V3> {
+  if (dims.mocap) return botEffectors(dims.mocap, joints, clip)
   const { pelvis, torso, head, shoulderL, shoulderR, elbowL, elbowR, kneeL, kneeR } = poseFrames(dims, joints)
   const toe = v(0, -dims.lowerLegLen + 0.03 * dims.s, -0.16 * dims.s)
   return {

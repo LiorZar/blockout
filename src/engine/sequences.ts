@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and apply_motion marks are posed moves; see MODIFICATIONS.md.
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and apply_motion marks are posed moves, mocap clip runs on bots; see MODIFICATIONS.md.
 /**
  * Crowd & sequence director: one-click choreographed groups. Generates the
  * ENTITIES (people, cars) and their TRACKS (marks with gaits, altitude, and
@@ -13,6 +13,8 @@
 
 import { MOTION_PRESETS, type MotionPreset } from './motions'
 import { bodyLowY, motionRootY, type Body } from './floor'
+import { clipMotion, clipPlays, tagPlay, type SeatSpot } from './mocap/library-clips'
+import type { MarkClip } from './types'
 
 export type SequenceType = 'dance' | 'fight' | 'footChase' | 'carChase'
 
@@ -30,6 +32,8 @@ export interface SequenceOptions {
   origin: { x: number; z: number; heading: number }
   /** Shot duration — choreography fills it. */
   duration: number
+  /** Fork: the bodies the men and the women are cast as (a bot plays its motions as clip runs). */
+  bodies?: [string, string]
 }
 
 export interface SequenceMarkSpec {
@@ -43,6 +47,8 @@ export interface SequenceMarkSpec {
   /** Fork: face this heading through the motion (with `posedMove`). */
   arriveHeading?: number
   posedMove?: boolean
+  /** Fork: a mocap clip run's mark on a bot (types.ts `ActorMark.clip`). */
+  clip?: MarkClip
 }
 
 export interface SequenceEntitySpec {
@@ -107,13 +113,16 @@ function appendMotion(
   let t = startT
   const cycle = preset.duration + (preset.loop ? 0.05 : 0.4)
   const fwd = { x: -Math.sin(heading), z: -Math.cos(heading) }
+  // Fork: the plays a bot turns into clip runs (mocap/library-clips.ts): a loop is one, a one-shot one per repeat.
+  let play = { presetId: preset.id, pos: { ...pos }, startT, endT }
   while (t <= endT + 1e-6 && marks.length < MAX_MARKS_PER_ENTITY) {
+    if (!preset.loop) play = { presetId: preset.id, pos: { ...pos }, startT: t, endT: Math.min(endT, t + cycle) }
     for (const kf of preset.keyframes) {
       const time = t + kf.t
       if (time > endT + 1e-6 || marks.length >= MAX_MARKS_PER_ENTITY) break
       const forward = kf.move?.forward ?? 0
       const up = kf.move?.up ?? 0
-      marks.push({
+      marks.push(tagPlay(play, {
         time,
         position: {
           x: pos.x + fwd.x * forward,
@@ -126,7 +135,7 @@ function appendMotion(
         easeOut: 0,
         hold: 0,
         joints: { ...kf.joints }
-      })
+      }))
     }
     if (!preset.loop && t + cycle + preset.duration > endT) break
     t += cycle
@@ -405,8 +414,15 @@ export function choreographMotion(
   heading: number,
   duration: number,
   startT = 0,
-  body?: Body
+  body?: Body,
+  /** Fork: a bot's clip run plays mirrored, its travel too (keyframe joints stay the caller's to mirror). */
+  mirror = false,
+  /** Fork: the seat props a bot's sit-down sits on (else the floor). */
+  seats: readonly SeatSpot[] = []
 ): SequenceMarkSpec[] | null {
+  // Fork: a loaded bot plays the motion's library clip as one run (mocap/library-clips.ts).
+  const run = clipMotion(presetId, body, pos, heading, duration, startT, mirror, seats)
+  if (run) return run
   const preset = MOTION_PRESETS.find((p) => p.id === presetId)
   if (!preset) return null
   const marks: SequenceMarkSpec[] = []
@@ -423,7 +439,12 @@ export function choreographMotion(
 
 export function generateSequence(opts: SequenceOptions): SequenceEntitySpec[] {
   const specs = sequenceOf(opts)
-  for (const e of specs) floorMarks(e.marks, 0, { assetId: e.assetId }) // fork
+  for (const e of specs) {
+    // Fork: cast the chosen bodies; a bot plays its motions as clip runs; the floor rule.
+    if (opts.bodies) e.assetId = e.assetId === 'person.man' ? opts.bodies[0] : e.assetId === 'person.woman' ? opts.bodies[1] : e.assetId
+    e.marks = clipPlays(e.marks, { assetId: e.assetId }, e.rotationY)
+    floorMarks(e.marks, 0, { assetId: e.assetId })
+  }
   return specs
 }
 

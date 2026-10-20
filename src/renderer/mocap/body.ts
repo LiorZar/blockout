@@ -10,18 +10,32 @@
  * nothing accumulates, a frame is a function of (document, t). Named marker
  * objects (`elbowL`, `torso` …) carry the engine's frames, so held weapons
  * (`hold.ts`) find the palm at `(0, −lowerArmLen, 0)` below the elbow.
+ *
+ * Phase 2 (mocap clips): a bot plays library clips — the evaluator's mark
+ * clip (`AnimInput.clip`) or its gait's loop (`mocap/gait-clips.ts`), the
+ * joint overrides on top as an overlay — posed and grounded by the engine
+ * (`mocap/clip.ts`), so the rendered bones are the engine's. A bare stand
+ * plays the idle loop; joints on a stand keep the keyframe rig pose (the
+ * pose the engine's fights, weapons and shot words use). A gait change
+ * crossfades (`AnimInput.from`). Fingers play the clip's (the engine poses
+ * them, so the floor sees them); otherwise a relaxed hand; `AnimInput.hands`
+ * closes either into a fist.
  */
 
 import * as THREE from 'three'
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { bodyShape } from '@engine/floor'
-import { boneWorld, mocapPose, poseFramesOf, type RigLocals } from '@engine/mocap/fk'
-import { qconj, qmul, type Quat } from '@engine/mocap/quat'
+import { blendPoses, chain, clipSample, groundPose, mocapClip, mocapClipPose, poseLocals, poseLowY, sampleLocals, withExtras } from '@engine/mocap/clip'
+import { boneWorld, mocapPose, poseFramesOf, type MocapPose, type RigLocals } from '@engine/mocap/fk'
+import { clipWarp, gaitClipId, gaitPose as gaitClipPose } from '@engine/mocap/gait-clips'
+import { qconj, qeuler, qmul, qrot, qslerp, vadd, type Quat } from '@engine/mocap/quat'
 import { BONE_INDEX, FRAME_BONE, MOCAP_BONES } from '@engine/mocap/rig'
 import { personDims, type Bone } from '@engine/skeleton'
+import type { GaitId } from '@engine/types'
 import type { AnimInput, BuiltAsset, PersonJoints } from '../viewport/builders'
 import { primaryBones } from './extract'
 import { mocapTemplate } from './library'
+import { movesBody } from './scene'
 
 /** The studio mannequins' plastic: light body, dark joints. */
 const BODY = 0xc9c9ce
@@ -29,7 +43,19 @@ const JOINT = 0x55555d
 
 const RIG_FRAMES: Bone[] = ['pelvis', 'torso', 'head', 'shoulderL', 'shoulderR', 'elbowL', 'elbowR', 'hipL', 'hipR', 'kneeL', 'kneeR']
 
+/** The clips whose first frame gives the relaxed hand and the fist. */
+const RELAXED_CLIP = 'idle'
+const FIST_CLIP = 'boxIdle'
+
+const STILL_GAITS = new Set<GaitId>(['stand', 'gesture'])
+
 const q = (o: THREE.Object3D): Quat => [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w]
+
+/** A pose, and whether it came off the hidden rig (the phase-1 path, the root's transform kept). */
+interface Posed {
+  pose: MocapPose
+  rig?: boolean
+}
 
 /** A bot's visual, or null while its library template isn't loaded. */
 export function buildMocapPerson(
@@ -78,9 +104,16 @@ export function buildMocapPerson(
   const bones = primaryBones(model)
   for (const [name, bone] of bones) t.bindLocal.get(name)?.decompose(bone.position, bone.quaternion, bone.scale)
   const core = MOCAP_BONES.map((name) => bones.get(name)!)
+  // The bones beyond the core (fingers) in the engine's order, with their bind under the parent.
+  const extra = m.rig.extra.map((x) => {
+    const bone = bones.get(x.name)
+    return { bone, bind: bone?.quaternion.clone() }
+  })
+  const skinned: THREE.SkinnedMesh[] = []
   model.traverse((o) => {
     const mesh = o as THREE.SkinnedMesh
     if (!mesh.isSkinnedMesh) return
+    skinned.push(mesh)
     const color = /joint/i.test(mesh.name) ? JOINT : BODY
     mesh.material = new THREE.MeshPhongMaterial({ color, specular: 0x2c2c2c, shininess: 36 })
     mesh.userData.origColor = color
@@ -105,21 +138,8 @@ export function buildMocapPerson(
   const pos = new THREE.Vector3()
   const rot = new THREE.Quaternion()
   const scl = new THREE.Vector3(unit, unit, unit)
-  const pose = (): void => {
-    const L: RigLocals = {
-      pelvis: q(pelvis),
-      torso: q(torso),
-      head: q(head),
-      shoulderL: q(shoulderL),
-      shoulderR: q(shoulderR),
-      elbowL: q(elbowL),
-      elbowR: q(elbowR),
-      hipL: q(hipL),
-      hipR: q(hipR),
-      kneeL: q(kneeL),
-      kneeR: q(kneeR)
-    }
-    const p = mocapPose(m, L)
+  /** Set the bones and markers from a pose (root space). */
+  const setBones = (p: MocapPose): void => {
     const Q = boneWorld(m, p)
     const h = Q[0]!
     tmp.compose(pos.set(p.P[0]!.x, p.P[0]!.y, p.P[0]!.z), rot.set(h[0], h[1], h[2], h[3]), scl).premultiply(hipsParentInv)
@@ -134,11 +154,113 @@ export function buildMocapPerson(
       o.position.set(fr[f].p.x, fr[f].p.y, fr[f].p.z)
       o.quaternion.set(g[0], g[1], g[2], g[3])
     }
+    // three caches a skinned mesh's bounds from the pose it first measures (export depth range,
+    // top-down fit): forget them, so a measure is of this pose, whatever was rendered before.
+    for (const mesh of skinned) {
+      const lazy = mesh as unknown as { boundingBox: THREE.Box3 | null; boundingSphere: THREE.Sphere | null }
+      lazy.boundingBox = null
+      lazy.boundingSphere = null
+    }
+    // The fingers: the pose's own (skinning rotation G · restQ under the parent's), else at bind.
+    const QX: Quat[] = []
+    m.rig.extra.forEach((x, e) => {
+      const b = extra[e]!
+      if (!p.XG) {
+        if (b.bone) b.bone.quaternion.copy(b.bind!)
+        return
+      }
+      QX[e] = qmul(p.XG[e]!, x.restQ)
+      const l = qmul(qconj(x.parent < Q.length ? Q[x.parent]! : QX[x.parent - Q.length]!), QX[e]!)
+      b.bone?.quaternion.set(l[0], l[1], l[2], l[3])
+    })
+  }
+  const rigLocals = (): RigLocals => ({
+    pelvis: q(pelvis),
+    torso: q(torso),
+    head: q(head),
+    shoulderL: q(shoulderL),
+    shoulderR: q(shoulderR),
+    elbowL: q(elbowL),
+    elbowR: q(elbowR),
+    hipL: q(hipL),
+    hipR: q(hipR),
+    kneeL: q(kneeL),
+    kneeR: q(kneeR)
+  })
+
+  // Hands: relaxed and fist (each clip's first frame, when the library has it).
+  const handOf = (id: string): Map<string, Quat> | null => {
+    const c = mocapClip(id)
+    return c ? sampleLocals(m, clipSample(c, 0)) : null
+  }
+  const relaxed = handOf(RELAXED_CLIP)
+  const fist = handOf(FIST_CLIP)
+  /** The pose's fingers (relaxed where it has none), closed toward a fist per hand. */
+  const withHands = (p: MocapPose, hands: AnimInput['hands']): MocapPose => {
+    if (!relaxed && !fist) return p
+    let local = p.XG ? poseLocals(m, p) : (relaxed ?? new Map<string, Quat>())
+    if (fist && hands && (hands.L > 0 || hands.R > 0)) {
+      local = new Map(local)
+      for (const [name, f] of fist) {
+        const w = Math.min(1, name.startsWith('Left') ? hands.L : name.startsWith('Right') ? hands.R : 0)
+        if (w > 0) local.set(name, qslerp(local.get(name) ?? [0, 0, 0, 1], f, w))
+      }
+    }
+    return withExtras(m, p, local)
   }
 
-  const animate = (input: AnimInput): void => {
+  /** The hidden rig's pose in entity space (its root's grounding and tilt applied). */
+  const rigPose = (): MocapPose => {
+    const p = mocapPose(m, rigLocals())
+    const rq = q(root)
+    const rp = { x: root.position.x, y: root.position.y, z: root.position.z }
+    return { P: p.P.map((v) => vadd(qrot(rq, v), rp)), G: p.G.map((g) => qmul(rq, g)) }
+  }
+  const mix = (a: Posed, b: Posed, w: number): Posed => {
+    const target = poseLowY(m, a.pose) + (poseLowY(m, b.pose) - poseLowY(m, a.pose)) * w
+    return { pose: groundPose(m, blendPoses(m, a.pose, b.pose, w), target) }
+  }
+  /** A gait's pose: its clip loop, or the hidden rig (a stand under joint offsets, or no clip in the library). */
+  const gaitPose = (input: AnimInput): Posed => {
+    const ov = input.overrides
+    const id = movesBody(ov) && STILL_GAITS.has(input.gait) ? undefined : gaitClipId(assetId, input.gait, input.speed, input.seated)
+    const clip = id ? mocapClip(id) : undefined
+    if (id && clip) {
+      return { pose: gaitClipPose(m, clip, clipWarp(m, clip, assetId), input.distance / ((input.scale ?? 1) * m.k), input.time, ov).pose }
+    }
     animatePerson(j, input)
-    pose()
+    return { pose: rigPose(), rig: true }
+  }
+  /** What the bot shows for an input (see the module header). */
+  const resolve = (input: AnimInput): Posed => {
+    const c = input.clip && mocapClip(input.clip.id) ? input.clip : undefined
+    const w = c ? Math.min(1, Math.max(0, c.w ?? 1)) : 0
+    if (c && (w >= 1 || c.from)) return { pose: mocapClipPose(m, c, input.overrides)! }
+    let g = gaitPose(input)
+    if (input.from && input.from.w < 1) {
+      const a = gaitPose(input.from.input)
+      g = mix(a, g, Math.max(0, input.from.w))
+    }
+    if (c) g = mix(g, { pose: mocapClipPose(m, { ...c, w: 1 }, input.overrides)! }, w)
+    return g
+  }
+
+  let last: { pose: MocapPose; rig: boolean } = { pose: mocapPose(m, rigLocals()), rig: true }
+  const animate = (input: AnimInput): void => {
+    const r = resolve(input)
+    if (r.rig) {
+      // Phase 1: the hidden rig as posed (its root carries the gait's grounding).
+      animatePerson(j, input)
+      const p = withHands(mocapPose(m, rigLocals()), input.hands)
+      setBones(p)
+      last = { pose: p, rig: true }
+    } else {
+      root.position.set(0, 0, 0)
+      root.rotation.set(0, 0, 0)
+      const p = withHands(r.pose, input.hands)
+      setBones(p)
+      last = { pose: p, rig: false }
+    }
   }
   // hold.ts steadyArm: a weapon arm keeps its posed rotation through a travelling gait.
   group.userData.mocapSteady = (side: 'L' | 'R', overrides: Record<string, number> | undefined): void => {
@@ -150,7 +272,22 @@ export function buildMocapPerson(
       shoulderR.rotation.set(-ov('shoulderRX'), 0, ov('shoulderRZ'))
       elbowR.rotation.set(ov('elbowR'), 0, 0)
     }
-    pose()
+    if (last.rig) {
+      const p = mocapPose(m, rigLocals())
+      return setBones(last.pose.XG ? withExtras(m, p, poseLocals(m, last.pose)) : p)
+    }
+    // On a clip: the arm hangs off the clip's chest as the rig would hold it.
+    const G = [...last.pose.G]
+    const half = (side === 'L' ? -1 : 1) * (m.rig.armRest / 2)
+    const sh = side === 'L' ? qeuler(-ov('shoulderLX'), 0, -ov('shoulderLZ')) : qeuler(-ov('shoulderRX'), 0, ov('shoulderRZ'))
+    const arm = qmul(G[BONE_INDEX.Spine2]!, qmul(sh, [0, 0, Math.sin(half), Math.cos(half)]))
+    const fore = qmul(arm, qeuler(ov(side === 'L' ? 'elbowL' : 'elbowR'), 0, 0))
+    const s = side === 'L' ? 'Left' : 'Right'
+    G[BONE_INDEX[`${s}Arm`]] = arm
+    G[BONE_INDEX[`${s}ForeArm`]] = fore
+    G[BONE_INDEX[`${s}Hand`]] = fore
+    const p = chain(m, G, last.pose.P[0]!)
+    setBones(last.pose.XG ? withExtras(m, p, poseLocals(m, last.pose)) : p)
   }
 
   const tint = new THREE.Color()

@@ -21,7 +21,7 @@
 import { assetSpec } from './assets'
 import { LABEL_COLOR_NAMES } from './palette'
 import { personDims, poseFrames, toWorld, type PersonDims } from './skeleton'
-import type { Entity, EntityState, HeldBy, V3 } from './types'
+import type { ClipState, Entity, EntityState, HeldBy, V3 } from './types'
 
 export type Hand = HeldBy['hand']
 
@@ -177,10 +177,10 @@ function shoulderOffset(dims: PersonDims, side: Hand): V3 {
  * hand point. Same chain and override signs as `poseEffectors` in
  * `skeleton.ts` (a test pins the two together).
  */
-export function handFrame(dims: PersonDims, joints: Record<string, number> | undefined, hand: Hand): HandFrame {
-  // Fork: a mocap bot's hand rides its own forearm frame (skeleton.ts body call).
+export function handFrame(dims: PersonDims, joints: Record<string, number> | undefined, hand: Hand, clip?: ClipState): HandFrame {
+  // Fork: a mocap bot's hand rides its own forearm frame (skeleton.ts body call), clip and all.
   if (dims.mocap) {
-    const fr = poseFrames(dims, joints)
+    const fr = poseFrames(dims, joints, clip)
     const elbow = fr[hand === 'L' ? 'elbowL' : 'elbowR']
     return { p: add(elbow.p, apply(elbow.r, v(0, -dims.lowerArmLen, 0))), r: elbow.r, shoulder: fr[hand === 'L' ? 'shoulderL' : 'shoulderR'].p, torso: fr.torso.r }
   }
@@ -454,9 +454,10 @@ export function heldPointLocal(
   hand: Hand,
   spec: WeaponSpec,
   modelPoint: V3,
-  weaponScale: number
+  weaponScale: number,
+  clip?: ClipState
 ): V3 {
-  const f = handFrame(dims, joints, hand)
+  const f = handFrame(dims, joints, hand, clip)
   const r = weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder, torso: f.torso })
   return add(f.p, apply(r, scale(sub(modelPoint, spec.grip), weaponScale)))
 }
@@ -777,13 +778,15 @@ export function applyHolds(entities: Entity[], states: EntityState[]): void {
     const held: HeldWeapon[] = (['R', 'L'] as Hand[])
       .filter((hand) => hands[hand])
       .map((hand) => ({ spec: hands[hand]!.spec, hand, scale: hands[hand]!.weapon.transform.scale }))
-    st.joints = holdJoints(dims, st.joints, held, fixed)
+    // Fork (mocap clips): a bot playing a clip holds the weapon in the clip's own hands.
+    const clip = dims.mocap ? st.clip : undefined
+    if (!clip) st.joints = holdJoints(dims, st.joints, held, fixed)
     const combined = sumJoints(st.joints, fixed)
     for (const hand of ['R', 'L'] as Hand[]) {
       const h = hands[hand]
       if (!h) continue
       const ws = stateOf.get(h.weapon.id)!
-      const grip = heldPointLocal(dims, combined, hand, h.spec, h.spec.grip, h.weapon.transform.scale)
+      const grip = heldPointLocal(dims, combined, hand, h.spec, h.spec.grip, h.weapon.transform.scale, clip)
       ws.position = toWorld(grip, st.position, st.heading, holder.transform.scale)
       ws.heading = st.heading
       ws.gait = 'stand'

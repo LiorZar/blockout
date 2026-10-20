@@ -70,6 +70,19 @@ export function qpow(q: Quat, t: number): Quat {
   return [q[0] * k, q[1] * k, q[2] * k, Math.cos(half * t)]
 }
 
+/** Spherical blend from a to b (t = 0..1) on the shorter arc (mocap clips). */
+export function qslerp(a: Quat, b: Quat, t: number): Quat {
+  let d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+  const s = d < 0 ? -1 : 1
+  d *= s
+  if (d > 0.9995) return qnorm([a[0] + (s * b[0] - a[0]) * t, a[1] + (s * b[1] - a[1]) * t, a[2] + (s * b[2] - a[2]) * t, a[3] + (s * b[3] - a[3]) * t])
+  const th = Math.acos(d)
+  const sin = Math.sin(th)
+  const ka = Math.sin((1 - t) * th) / sin
+  const kb = (s * Math.sin(t * th)) / sin
+  return [a[0] * ka + b[0] * kb, a[1] * ka + b[1] * kb, a[2] * ka + b[2] * kb, a[3] * ka + b[3] * kb]
+}
+
 /** The smallest rotation taking direction `from` onto direction `to`. */
 export function qswing(from: V3, to: V3): Quat {
   const a = vscale(from, 1 / (vlen(from) || 1))

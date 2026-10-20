@@ -18,7 +18,7 @@ import { assetSpec } from './assets'
 import { ASPECT_RATIOS, SHOT_SIZES, frameSubject, verticalFov } from './camera'
 import { headingOf } from './path'
 import { personDims, poseEffectors, toWorld } from './skeleton'
-import type { AspectId, EntityCategory, SensorId, ShotSizeId, V3 } from './types'
+import type { AspectId, ClipState, EntityCategory, SensorId, ShotSizeId, V3 } from './types'
 
 export type ShotSide = 'front' | 'frontLeft' | 'left' | 'backLeft' | 'back' | 'backRight' | 'right' | 'frontRight' | 'line'
 export type ShotAngle = 'eye' | 'low' | 'high' | 'overhead' | 'ground'
@@ -60,6 +60,8 @@ export interface ShotSubject {
   position: V3
   heading: number
   joints?: Record<string, number>
+  /** Fork (mocap clips): the clip a bot plays (skeleton.ts body call). */
+  clip?: ClipState
 }
 
 export interface ShotSetup {
@@ -128,7 +130,7 @@ function bodyOf(s: ShotSubject): Body {
   const scale = s.scale
   if (s.assetId.startsWith('person.')) {
     const dims = personDims(s.assetId, s.params)
-    const fx = poseEffectors(dims, s.joints)
+    const fx = poseEffectors(dims, s.joints, s.clip)
     const w = (p: V3): V3 => toWorld(p, s.position, s.heading, scale)
     const head = w(fx.head)
     const top = head.y + dims.headR * scale

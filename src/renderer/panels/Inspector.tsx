@@ -1,4 +1,4 @@
-// Modified for the fork (shared label palette, shot words box, pose-slider directions, held weapons, fight re-solve, camera-move subject hint, person body picker) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (shared label palette, shot words box, pose-slider directions, held weapons, fight re-solve, camera-move subject hint, person body picker, mocap clip motions) in 2026; see MODIFICATIONS.md.
 /**
  * Context-sensitive right panel. Content is driven by store.selection and the
  * current mode: nothing selected → scene/lighting/shot; an entity, the shot
@@ -38,6 +38,8 @@ import { LABEL_SWATCHES } from '@engine/palette'
 import { WEAPON_SPECS, canHoldWeapons, weaponSpec } from '@engine/weapons'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { assetListed, useMocapLoaded } from '../mocap/library'
+import { clipMotionPresets, motionClip, motionRun, playsClips, seatSpots } from '@engine/mocap/library-clips'
+import { mocapClip } from '@engine/mocap/clip'
 import { ShotLockNote, ShotPanel } from './ShotPanel'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi)
@@ -203,7 +205,9 @@ function GroupAnimateSection({ entityIds }: { entityIds: string[] }): JSX.Elemen
   const people = entityIds.filter((id) =>
     scene?.entities.find((e) => e.id === id)?.assetId.startsWith('person.')
   )
-  const motionCats = [...new Set(MOTION_PRESETS.map((p) => p.category))]
+  useMocapLoaded() // fork: the clips' own motions once the library loads
+  const motions = [...MOTION_PRESETS, ...clipMotionPresets()]
+  const motionCats = [...new Set(motions.map((p) => p.category))]
   const actionCats = [...new Set(ACTION_PRESETS.map((p) => p.category))]
 
   return (
@@ -222,9 +226,10 @@ function GroupAnimateSection({ entityIds }: { entityIds: string[] }): JSX.Elemen
             <select value={motionId} onChange={(e) => setMotionId(e.target.value)}>
               {motionCats.map((cat) => (
                 <optgroup key={cat} label={cat.toUpperCase()}>
-                  {MOTION_PRESETS.filter((p) => p.category === cat).map((p) => (
+                  {motions.filter((p) => p.category === cat).map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
+                      {p.keyframes.length === 0 ? ' (mocap bots)' : ''}
                     </option>
                   ))}
                 </optgroup>
@@ -898,6 +903,8 @@ function MotionPresetsSection({
   const time = useStore((s) => s.time)
   const toast = useStore((s) => s.toast)
   const [category, setCategory] = useState<MotionPreset['category']>('fight')
+  useMocapLoaded() // fork: clip motions once the library loads
+  const body = { assetId: entity.assetId, params: entity.params, scale: entity.transform.scale }
 
   const apply = (preset: MotionPreset): void => {
     // Where the character stands at the playhead — the motion plays from
@@ -911,6 +918,27 @@ function MotionPresetsSection({
     const heading = es?.heading ?? entity.transform.rotationY
     const fwd = { x: -Math.sin(heading), z: -Math.cos(heading) }
     let added = 0
+    // Fork: a Mocap bot plays the motion's library clip as one run from the playhead (mocap/library-clips.ts).
+    const spec = motionClip(preset.id, body)
+    if (spec) {
+      const clip = mocapClip(spec.clip)!
+      const end = Math.min(shot.duration, time + (clip.loop ? preset.duration : clip.duration))
+      if (end <= time + 1e-6) return toast('No room before the end of the shot — move the playhead earlier.', 'info')
+      mutate(`motion: ${preset.name}`, (doc) => {
+        const sh = findShot(doc, scene.id, shot.id)
+        const take = findScene(doc, scene.id)?.blocking.find((b) => b.id === sh?.blockingTakeId)
+        if (!take) return
+        let track = take.tracks.find((t) => t.entityId === entity.id)
+        if (!track) {
+          track = { entityId: entity.id, marks: [] }
+          take.tracks.push(track)
+        }
+        // A sit-down sits on a seat prop under the bot (where it is at the playhead), else on the floor.
+        const seats = seatSpots(scene.entities, (id) => state.entities.find((e) => e.entityId === id)?.position)
+        for (const m of motionRun(preset.id, body, pos, heading, time, end, false, seats) ?? []) track.marks.push({ id: newId('mark'), ...m, position: { ...m.position }, clip: { ...m.clip } })
+      })
+      return toast(`${preset.name} (mocap) from ${time.toFixed(1)}s. Press ▶ to watch.`, 'success')
+    }
     mutate(`motion: ${preset.name}`, (doc) => {
       const sc = findScene(doc, scene.id)
       const sh = findShot(doc, scene.id, shot.id)
@@ -953,7 +981,8 @@ function MotionPresetsSection({
     }
   }
 
-  const items = MOTION_PRESETS.filter((p) => p.category === category)
+  const bot = playsClips(body)
+  const items = [...MOTION_PRESETS, ...(bot ? clipMotionPresets() : [])].filter((p) => p.category === category)
   return (
     <div className="panel-section">
       <div className="panel-title">Motion presets</div>
@@ -973,6 +1002,7 @@ function MotionPresetsSection({
           <span style={{ flex: 1, fontSize: 12 }}>
             {p.name}
             <span style={{ opacity: 0.55 }}> · {p.duration.toFixed(1)}s</span>
+            {bot && motionClip(p.id, body) && <span style={{ opacity: 0.55 }} title="Plays the Mixamo mocap clip on this body"> · mocap</span>}
           </span>
           <button
             className="btn small"

@@ -1079,7 +1079,7 @@
   {
     "name": "list_motion_presets",
     "title": "List performer motions",
-    "description": "List the single-performer motion-preset library (fight / dance / gesture / everyday / sport / stunt) as { id, name, category, duration }. These are the motions choreography routines are built from. Optionally filter by category.",
+    "description": "List the single-performer motion-preset library (fight / dance / gesture / everyday / sport / stunt) as { id, name, category, duration }. These are the motions choreography routines are built from. With the local Mixamo library loaded, mocap: true marks a motion a Mocap man / Mocap woman plays as its real mocap clip, and mocapOnly: true entries (ids mocap-…: more dances, guns, phone, kneel, backflip …) exist only as clips and play on those bodies only. Optionally filter by category.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1707,7 +1707,7 @@
   {
     "name": "apply_motion",
     "title": "Give performers a move",
-    "description": "Give people a single-performer motion from the motion library (a punch, a dance step, a gesture…), replacing their marks. Motion ids come from list_motion_presets; only person entities move.",
+    "description": "Give people a single-performer motion from the motion library (a punch, a dance step, a gesture…), replacing their marks. Motion ids come from list_motion_presets; only person entities move. A Mocap man / Mocap woman plays the motion's mocap clip when it has one (two marks: the clip runs between them) and the keyframe motion otherwise; mocap-… ids apply to those bodies only. Their sit-down sits on a seat prop (chair, stool, couch, bench …) under them, and on the floor without one.",
     "inputSchema": {
       "type": "object",
       "properties": {

@@ -65,6 +65,9 @@ export function jointLocals(joints: Record<string, number> | undefined, baseLean
 export interface MocapPose {
   P: V3[]
   G: Quat[]
+  /** Phase 2: the bones beyond the core (`rig.extra`: fingers), when the pose turns them; else they ride their core bone. */
+  XP?: V3[]
+  XG?: Quat[]
 }
 
 const I = BONE_INDEX
@@ -142,7 +145,11 @@ function point(f: Frame, x: number, y: number, z: number): V3 {
 
 /** Effectors of a posed bot: the rig's formulas on the bot's frames, the toe at the ball of the foot. */
 export function mocapEffectors(m: MocapDims, joints: Record<string, number> | undefined): Record<Effector, V3> {
-  const fr = mocapFrames(m, joints)
+  return effectorsOf(m, mocapFrames(m, joints))
+}
+
+/** Effectors from a bot's frames (any pose: rig or clip). */
+export function effectorsOf(m: MocapDims, fr: PoseFrames): Record<Effector, V3> {
   const d = m.rig.dims
   const k = m.k
   const hand = -d.lowerArmLen * k

@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -32,16 +32,18 @@ import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
 import { groupShotPose, pickFramingSubjectIds } from '@engine/framing'
 import type { ViewOutcome } from '@engine/camera-clear'
 import { clearFollowMarks, clearFramingPose } from '../camera-view'
-import type { Entity, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
+import type { Entity, EntityState, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
 import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
-import { buildAsset, markMesh, labelSprite, type BuiltAsset } from './builders'
+import { buildAsset, markMesh, labelSprite, type AnimInput, type BuiltAsset } from './builders'
 import { heldWeaponMatrix, steadyArm } from './hold'
 import { canHoldWeapons, weaponSpec } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
 import { StageEnvironment, toneMapSky } from './environment'
+import { seatSpots, seatUnder } from '@engine/mocap/library-clips'
 import { isMocapAsset } from '@engine/mocap/registry'
 import { loadMocapLibrary, onMocapLoaded } from '../mocap/library'
+import { botInput } from '../mocap/scene'
 
 const RAD2DEG = 180 / Math.PI
 
@@ -125,6 +127,9 @@ export class SceneManager {
   private tintedMaterials: { mat: THREE.MeshStandardMaterial; emissive: number; intensity: number }[] = []
 
   private evaluator: ShotEvaluator | null = null
+  /** Fork (mocap clips): a camera-less evaluator and its states by time, for the bots' crossfades. */
+  private poseEvaluator: ShotEvaluator | null = null
+  private poseStates = new Map<number, EntityState[]>()
   private docScene: DocScene | null = null
   private shot: Shot | null = null
 
@@ -412,6 +417,8 @@ export class SceneManager {
     this.docScene = docScene
     this.shot = shot
     this.evaluator = docScene && shot ? new ShotEvaluator(docScene, shot) : null
+    this.poseEvaluator = null
+    this.poseStates.clear()
 
     // --- diff entities
     const wanted = new Map((docScene?.entities ?? []).map((e) => [e.id, e]))
@@ -2061,6 +2068,7 @@ export class SceneManager {
 
   private applyTime(t: number): void {
     if (!this.evaluator || !this.shot) return
+    this.poseStates.clear() // fork (mocap clips): per-frame cache
     const state = this.evaluator.evaluate(t)
     const live = this.currentState()
     const puppeteering = live.recording && this.recTarget !== 'camera' ? this.recTarget : null
@@ -2082,42 +2090,12 @@ export class SceneManager {
         visual.root.position.y = visual.entity.transform.position.y
       }
       visual.root.rotation.y = es.heading
-      // Stage-level pose (params.pose: a person sits on the bus without any
-      // marks) and manual joint offsets (params.joint_*: fight/dance poses).
-      const params = visual.entity.params
-      let gait = es.gait
-      if (!this.entityHasTrack(es.entityId) && typeof params?.pose === 'string') {
-        gait = params.pose as typeof es.gait
-      }
-      let overrides: Record<string, number> | undefined
-      if (params) {
-        for (const key of Object.keys(params)) {
-          const v = params[key]
-          if (key.startsWith('joint_') && typeof v === 'number' && v !== 0) {
-            (overrides ??= {})[key.slice(6)] = v
-          }
-        }
-      }
-      // Mark-keyframed joints (pose-per-mark choreography, interpolated by
-      // the evaluator) layer additively on the entity's static pose offsets.
-      if (es.joints) {
-        for (const [key, v] of Object.entries(es.joints)) {
-          if (v === 0) continue
-          ;(overrides ??= {})[key] = (overrides?.[key] ?? 0) + v
-        }
-      }
-      const stride = GAITS[gait].strideLength * Math.max(visual.entity.transform.scale, 0.2)
-      const phase = stride > 0 ? (es.distanceTravelled / stride) % 1 : 0
-      visual.built.animate?.({
-        gait,
-        phase,
-        speed: es.speed,
-        distance: es.distanceTravelled,
-        time: t,
-        overrides
-      })
-      visual.lastGait = gait
-      visual.lastOverrides = overrides
+      const input = this.animInput(visual, es, t)
+      // Fork (mocap clips): a bot's clip, scale, hands and gait crossfade (renderer/mocap/scene.ts).
+      if (isMocapAsset(visual.entity.assetId)) this.botAnimInput(visual, es, input)
+      visual.built.animate?.(input)
+      visual.lastGait = input.gait
+      visual.lastOverrides = input.overrides
     }
 
     // Live group drag: the other members of a multi-selection follow the
@@ -2213,6 +2191,77 @@ export class SceneManager {
         visual.label.position.copy(visual.root.worldToLocal(grip))
       }
     }
+  }
+
+  /** An entity's animation input at time t (fork: factored out of applyTime for the mocap bots' crossfades). */
+  private animInput(visual: EntityVisual, es: EntityState, t: number): AnimInput {
+    // Stage-level pose (params.pose: a person sits on the bus without any
+    // marks) and manual joint offsets (params.joint_*: fight/dance poses).
+    const params = visual.entity.params
+    let gait = es.gait
+    if (!this.entityHasTrack(es.entityId) && typeof params?.pose === 'string') {
+      gait = params.pose as typeof es.gait
+    }
+    let overrides: Record<string, number> | undefined
+    if (params) {
+      for (const key of Object.keys(params)) {
+        const v = params[key]
+        if (key.startsWith('joint_') && typeof v === 'number' && v !== 0) {
+          (overrides ??= {})[key.slice(6)] = v
+        }
+      }
+    }
+    // Mark-keyframed joints (pose-per-mark choreography, interpolated by
+    // the evaluator) layer additively on the entity's static pose offsets.
+    if (es.joints) {
+      for (const [key, v] of Object.entries(es.joints)) {
+        if (v === 0) continue
+        ;(overrides ??= {})[key] = (overrides?.[key] ?? 0) + v
+      }
+    }
+    const stride = GAITS[gait].strideLength * Math.max(visual.entity.transform.scale, 0.2)
+    const phase = stride > 0 ? (es.distanceTravelled / stride) % 1 : 0
+    return {
+      gait,
+      phase,
+      speed: es.speed,
+      distance: es.distanceTravelled,
+      time: t,
+      overrides
+    }
+  }
+
+  /** Fork (mocap clips): a bot's extra inputs; earlier times come from a camera-less evaluator (pure in t). */
+  private botAnimInput(visual: EntityVisual, es: EntityState, input: AnimInput): void {
+    if (!this.docScene || !this.shot) return
+    const scene = this.docScene
+    const shot = this.shot
+    this.poseEvaluator ??= new ShotEvaluator(scene, { ...shot, camera: { ...shot.camera, marks: [], trackEntityId: undefined } })
+    const ev = this.poseEvaluator
+    const statesAt = (time: number): EntityState[] => {
+      let states = this.poseStates.get(time)
+      if (!states) {
+        states = ev.evaluate(time).entities
+        this.poseStates.set(time, states)
+      }
+      return states
+    }
+    // A sitting bot sits in the chair when a seat prop (where it is at that time) takes its hips.
+    const seat = (input: AnimInput, time: number, at: EntityState): AnimInput => {
+      if (input.gait !== 'sit') return input
+      const states = statesAt(time)
+      input.seated = !!seatUnder(seatSpots(scene.entities, (id) => states.find((x) => x.entityId === id)?.position), at.position)
+      return input
+    }
+    const inputAt = (t: number): AnimInput | null => {
+      const time = Math.min(Math.max(0, t), shot.duration)
+      const st = statesAt(time).find((x) => x.entityId === es.entityId)
+      return st ? seat(this.animInput(visual, st, time), time, st) : null
+    }
+    seat(input, Math.min(Math.max(0, input.time), shot.duration), es)
+    const held = new Set<'L' | 'R'>()
+    for (const e of scene.entities) if (e.heldBy?.entityId === visual.entity.id) held.add(e.heldBy.hand)
+    botInput(visual.entity, es, input, { inputAt, fights: scene.fights, held })
   }
 
   private isHeldWeapon(obj: THREE.Object3D): boolean {

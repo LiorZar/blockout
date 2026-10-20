@@ -16,8 +16,10 @@
  * PURE: no DOM / three.js / Electron.
  */
 
+import { mocapClipPose, poseLowY } from './mocap/clip'
 import { isMocapAsset, mocapStandIn, mocapVersion } from './mocap/registry'
 import { personDims, poseFrames, type Bone, type PersonDims, type ProxyBone } from './skeleton'
+import type { ClipState } from './types'
 
 /** A ball (r > 0) or a surface point (r = 0) in a bone's frame. */
 interface Ball {
@@ -217,7 +219,10 @@ export function bodyShape(assetId: string, params?: Record<string, number | stri
  * unscaled): the stand gait plus `joints` (motions.ts conventions), tipped
  * by `rootPitch` (the root's rotation.x, as the lying gaits use).
  */
-export function lowestY(shape: BodyShape, joints: Record<string, number> | undefined, rootPitch = 0): number {
+export function lowestY(shape: BodyShape, joints: Record<string, number> | undefined, rootPitch = 0, clip?: ClipState): number {
+  // Fork: a bot playing a clip (mocap/clip.ts): its support points on their own bones.
+  const pose = clip && shape.dims.mocap ? mocapClipPose(shape.dims.mocap, clip, joints) : null
+  if (pose) return poseLowY(shape.dims.mocap!, pose)
   const frames = poseFrames(shape.dims, joints)
   const c = Math.cos(rootPitch)
   const s = Math.sin(rootPitch)
@@ -236,7 +241,7 @@ export function lowestY(shape: BodyShape, joints: Record<string, number> | undef
 const SHAPES = new Map<string, BodyShape>()
 
 /** Lowest surface point of a performer's posed body, in meters above its root (scaled). */
-export function bodyLowY(body: Body | undefined, joints: Record<string, number> | undefined): number {
+export function bodyLowY(body: Body | undefined, joints: Record<string, number> | undefined, clip?: ClipState): number {
   const assetId = body?.assetId.startsWith('person.') ? body.assetId : 'person.man'
   const key = `${assetId}|${numParam(body?.params, 'height', 1)}|${numParam(body?.params, 'build', 1)}${isMocapAsset(assetId) ? `|${mocapVersion()}` : ''}`
   let shape = SHAPES.get(key)
@@ -244,7 +249,7 @@ export function bodyLowY(body: Body | undefined, joints: Record<string, number> 
     shape = bodyShape(assetId, body?.params)
     SHAPES.set(key, shape)
   }
-  return lowestY(shape, joints) * (body?.scale ?? 1)
+  return lowestY(shape, joints, 0, clip) * (body?.scale ?? 1)
 }
 
 /**

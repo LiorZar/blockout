@@ -24,6 +24,8 @@ export interface MocapManifestClip {
   inPlace?: boolean
   loop?: boolean
   fps?: number
+  /** The character the clip was exported on (a character's `name`; default: the male one). */
+  character?: string
 }
 
 export interface MocapManifest {

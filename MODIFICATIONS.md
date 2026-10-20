@@ -705,6 +705,99 @@ Changes in this fork (2026):
   studio mannequins. MCP defaults stay man and woman. Tests:
   `tests/unit/mocap-pickers.test.ts`, `prompt-scene.test.ts`, the
   mannequin and mocap-bots e2e specs.
+- Mocap clip data (mocap-clips; `src/engine/mocap/clip.ts`, `quat.ts`,
+  `rig.ts`, `fk.ts`, `src/renderer/mocap/clips.ts`, `library.ts`,
+  `src/shared/mocap-library.ts`): the renderer samples every library take
+  (FBXLoader, the tracks' interpolants, once at load) into each frame's core
+  bone and finger world rotations and hips joint, and registers it; the
+  engine keeps rig rotations against the source bot's A-rest, so any bot
+  plays a clip through the bind correction, its hips scaled by hip height.
+  Sampling loops or clamps, mirrors left / right, blends on the shortest arc;
+  joint channels add on top as an overlay; a root-motion clip's hips travel
+  comes out as root travel. A clip pose is grounded at its clearance (the
+  source's height off its floor past a 2 cm contact band: Mixamo sinks
+  hands and arms into the floor when on the ground), on support points per
+  bone, fingers included. Nothing sampled is stored. Tests:
+  `tests/unit/mocap-clips.test.ts`, `mocap-clip-take.test.ts` (synthetic
+  clips on the fixture skeleton).
+- Mocap clips on marks (mocap-clips; `types.ts`, `schema.ts`, `evaluate.ts`,
+  `src/engine/mocap/clip-marks.ts`, `skeleton.ts`, `floor.ts`, `shot.ts`,
+  `camera-clear.ts`, `weapons.ts`): optional `ActorMark.clip` `{ id, at,
+  mirror? }` (malformed ones dropped on load, no migration). Between two
+  marks on the same clip the clip time runs linearly; a posed leg between
+  different clips crossfades; a travel leg blends a clip in or out over
+  0.25 s. A root-motion clip moves the performer by its hips track; a clip
+  mark's y is its floor. `EntityState.clip` carries the clip to the body
+  call (`poseFrames` / `poseEffectors` / `bodyLowY` take it; other bodies
+  ignore it), shot words, clear views and held weapons (a bot holds a weapon
+  in the clip's own hands). Old projects evaluate as before. Tests:
+  `tests/unit/mocap-clip-marks.test.ts`.
+- Mocap clips on screen and gaits from clips (mocap-clips;
+  `src/renderer/mocap/body.ts`, `scene.ts`, `src/engine/mocap/gait-clips.ts`,
+  `builders.ts` `AnimInput`, `SceneManager.ts`): a loaded bot renders the
+  engine's clip pose. Each gait plays its library loop (stand idle, walk /
+  the woman's walk, jog, run, crouch still / walking, sit, lie and fall on
+  the lying idle, talk); a stand under joint offsets keeps the keyframe rig
+  (the pose fights, weapons and shot words use). Travelling loops run on
+  distance through a time warp measured off the clip's planted contacts, so
+  a flat foot stays put at any speed. A change of pose source crossfades over
+  0.25 s, found by bisection on a camera-less evaluator (pure in t). Fingers
+  play the clip's; otherwise relaxed, a fist for a fighter's hands, a held
+  weapon's hand and the `handL` / `handR` channels. The skinned meshes'
+  cached bounds are dropped on every pose (three caches them from the pose
+  it first measures), so an export's depth range and top-down fit never
+  depend on what was rendered before. Tests:
+  `tests/unit/mocap-clip-render.test.ts`, `mocap-clips-real.test.ts` (the
+  real library: feet on the floor ±2 cm every 1/12 s for every gait and
+  clip on both bots, flat-foot slide < 2 cm per step; skipped without it).
+- The motion library on mocap bots (mocap-clips;
+  `src/engine/mocap/library-clips.ts`, `sequences.ts`, `choreography.ts`,
+  `prompt-scene.ts`, `store.ts`, `Inspector.tsx`, `Library.tsx`,
+  `control/handler.ts`, `mcp/tools.json`, `AGENTS.md`): a fork table maps
+  motion presets onto library clips (`MOTION_PRESETS` untouched) and the
+  clips with no preset become motions of their own (`mocap-<clip>`). On a
+  loaded bot, `apply_motion` / the Inspector / the group panel lay a motion
+  as one clip run (two marks, a root-motion clip's along its travel), and
+  the Choreographer and Sequences (new Bodies select) replace a bot's
+  keyframe plays with clip runs, strikes and blocks excepted (the Fight
+  Director's moves are phase 3); back-to-back runs crossfade. Everything
+  else keeps the keyframes. `list_motion_presets` adds `mocap` /
+  `mocapOnly`; the prompt names a clip run by its motion. `handL` / `handR`
+  mirror as a pair. Tests: `tests/unit/mocap-library-clips.test.ts`, the
+  floor moves on the real bots in `mocap-clips-real.test.ts`, the
+  mocap-bots e2e spec.
+- A crouch at rest on the bots (mocap-clips; `src/engine/mocap/clip.ts`,
+  `gait-clips.ts`): the library's crouch idle holds a hand up for its whole
+  loop, so the crouch still plays `crouchStill`, built as soon as both
+  clips register: the crouch idle with each arm bone and finger at the
+  crouched walk's mean rotation under its parent. Tests:
+  `tests/unit/mocap-clips.test.ts`, `mocap-clips-real.test.ts` (both hands
+  below the chest every 1/12 s on both bots).
+- Bots sit on seat props (mocap-clips; `src/engine/mocap/library-clips.ts`,
+  `gait-clips.ts`, `sequences.ts`, `store.ts`, `Inspector.tsx`,
+  `src/renderer/mocap/body.ts`, `scene.ts`, `builders.ts` `AnimInput`,
+  `SceneManager.ts`): a catalog seat (chair, stool, armchair, couch, office
+  chair, wheelchair, toilet, bench, lounger) whose footprint takes a bot's
+  hips makes its sit a chair sit; anywhere else it sits on the floor. The
+  sit-down motion checks at apply time (`apply_motion`, the Inspector): over
+  a seat it stands, sits back onto it (laid so the hips land on the seat)
+  and the chair idle fills the rest; routines and sequences have no seats
+  and sit on the floor. The sit gait checks each frame against where the
+  seats are at that time. Tests: `tests/unit/mocap-seats.test.ts`, the
+  real-library sits in `mocap-clips-real.test.ts`, the mocap-bots e2e spec.
+- Travelling clip runs on the warp (mocap-clips; `clip-marks.ts`,
+  `evaluate.ts`, `gait-clips.ts`, `library-clips.ts`, `clip.ts`): an
+  in-place travelling loop laid as a run (crawl, sneak, drunk walk, sprint)
+  plays its clip time on the distance covered through the gaits' warp, and
+  its marks lie the warp's distance apart, so its planted contacts stay put.
+  A take flagged in place whose hips walk forward anyway (the library's
+  sprint) has that straight-line travel taken out at registration. Tests:
+  `tests/unit/mocap-library-clips.test.ts`, `mocap-clips.test.ts`, the
+  real-library run slide check in `mocap-clips-real.test.ts`.
+- Mirrored clip runs travel mirrored (mocap-clips; `sequences.ts`
+  `choreographMotion`, `store.ts`): when `apply_motion` mirrors a weapon
+  motion onto the other hand, a bot's clip run is laid mirrored, its root
+  travel too. Tests: `tests/unit/mocap-library-clips.test.ts`.
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

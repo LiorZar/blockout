@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director (kept across remounts); mannequin thumbs; Weapons group; Sequences fight hint; mocap bots and Choreographer bodies; see MODIFICATIONS.md.
+// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director (kept across remounts); mannequin thumbs; Weapons group; Sequences fight hint; mocap bots and Choreographer / Sequences bodies; see MODIFICATIONS.md.
 /**
  * Stage-mode asset palette. Browse the built-in catalog grouped by category,
  * filter by name, and arm click-to-place (the Viewport does the drop).
@@ -142,6 +142,12 @@ function Sequences(): JSX.Element {
   const [style, setStyle] = useState('mixed')
   const placingSequence = useStore((s) => s.placingSequence)
   const setPlacingSequence = useStore((s) => s.setPlacingSequence)
+  // Fork: the bodies a sequence casts; Mocap by default once the library has loaded (bots play their motions as mocap clips).
+  const mocapLoaded = useMocapLoaded()
+  const { sets: bodyChoices, preferred } = bodySets(mocapLoaded)
+  const [pickedBodies, setBodies] = useState<BodySetId | null>(null)
+  const bodies = pickedBodies && bodyChoices.some((b) => b.id === pickedBodies) ? pickedBodies : preferred
+  const bodyAssets = type === 'carChase' ? undefined : bodyChoices.find((b) => b.id === bodies)?.assets
 
   const styles = sequenceStyles(type)
   const activeStyle = styles.some((s) => s.id === style) ? style : styles[0]!.id
@@ -191,6 +197,22 @@ function Sequences(): JSX.Element {
           </select>
         </div>
       </div>
+      {type !== 'carChase' && (
+        <div className="field">
+          <label>Bodies</label>
+          <select
+            value={bodies}
+            title="Who the sequence casts: the classic capsule people, the sculpted mannequins or the Mixamo mocap bots (men and women alternate); mocap bots play their motions as mocap clips."
+            onChange={(e) => setBodies(e.target.value as BodySetId)}
+          >
+            {bodyChoices.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       {/* Fork (gap 3): only a two-fighter fight is solved so blows land. */}
       {type === 'fight' && (
         <p style={{ color: 'var(--text-faint)', fontSize: 10.5, lineHeight: 1.4, margin: '0 0 6px' }}>
@@ -203,7 +225,7 @@ function Sequences(): JSX.Element {
         className={`btn primary${placingSequence ? ' active' : ''}`}
         style={{ width: '100%' }}
         onClick={() =>
-          setPlacingSequence(placingSequence ? null : { type, count, style: activeStyle })
+          setPlacingSequence(placingSequence ? null : { type, count, style: activeStyle, ...(bodyAssets ? { bodies: bodyAssets } : {}) })
         }
         title="Arms placement — then click the floor exactly where you want the group. It stages there, facing the camera. Esc cancels. One undo step; every performer stays individually editable."
       >

@@ -206,6 +206,22 @@ export interface MocapSource {
 export interface MocapPoint {
   frame: FrameKey
   p: V3
+  /** Phase 2: the core bone it is skinned to, and its A-rest offset from that bone's joint (clip poses turn hands and feet on their own). */
+  bone: number
+  off: V3
+  /** Phase 2: on a bone beyond the core (a finger): its index in `extra`, and the offset from that bone's joint. */
+  sub?: number
+  subOff?: V3
+}
+
+/** Phase 2: a bone beyond the core (a finger, an end bone). */
+export interface MocapExtraBone {
+  name: string
+  /** A core index, or the core count plus an extra's index. */
+  parent: number
+  /** A-rest offset from the parent's joint, and A-rest world rotation. */
+  offset: V3
+  restQ: Quat
 }
 
 export interface MocapCapsule {
@@ -241,6 +257,8 @@ export interface MocapRig {
   capsules: MocapCapsule[]
   /** The torso loft in the torso frame (contact.ts `TorsoShape` 'loft'). */
   torso: { ys: number[]; rings: [number, number][][] }
+  /** Phase 2: the bones beyond the core, parent-first. Clips turn them; otherwise they ride their core bone. */
+  extra: MocapExtraBone[]
 }
 
 /** The bone name without the mixamorig prefix ("mixamorig:Hips", "mixamorig9Hips" → "Hips"). */
@@ -393,7 +411,23 @@ export function fitMocapRig(src: MocapSource, height: number): MocapRig {
   const lowerArmLen = avg((sd) => at(`${sd}ForeArm`).y - palm(sd).y)
   const T0 = rest[BONE_INDEX.Spine]!
   const byBone = MOCAP_BONES.map((): V3[] => [])
-  for (let v = 0; v < m; v++) byBone[coreOf[vb[v]!]!]!.push(verts[v]!)
+  const vertsOf = MOCAP_BONES.map((): number[] => [])
+  for (let v = 0; v < m; v++) {
+    byBone[coreOf[vb[v]!]!]!.push(verts[v]!)
+    vertsOf[coreOf[vb[v]!]!]!.push(v)
+  }
+  // Phase 2: the bones beyond the core, in the combined index (core first).
+  const extraIndex = new Map<number, number>()
+  const extraSrc: number[] = []
+  const extra: MocapExtraBone[] = []
+  for (let i = 0; i < n; i++) {
+    if ((MOCAP_BONES as readonly string[]).includes(src.bones[i]!.name)) continue
+    const par = src.bones[i]!.parent
+    const pk = (MOCAP_BONES as readonly string[]).indexOf(src.bones[par]!.name)
+    extraIndex.set(i, extra.length)
+    extraSrc.push(i)
+    extra.push({ name: src.bones[i]!.name, parent: pk >= 0 ? pk : MOCAP_BONES.length + extraIndex.get(par)!, offset: vscale(vsub(R[i]!, R[par]!), scale), restQ: W[i]! })
+  }
   const head = byBone[BONE_INDEX.Head]!
   const hb = head.reduce(
     (b, p) => ({ lo: v3(Math.min(b.lo.x, p.x), Math.min(b.lo.y, p.y), Math.min(b.lo.z, p.z)), hi: v3(Math.max(b.hi.x, p.x), Math.max(b.hi.y, p.y), Math.max(b.hi.z, p.z)) }),
@@ -448,7 +482,15 @@ export function fitMocapRig(src: MocapSource, height: number): MocapRig {
       })
       picked.add(best)
     }
-    for (const i of [...picked].sort((a, c) => a - c)) points.push({ frame, p: vsub(pts[i]!, origin[frame]) })
+    for (const i of [...picked].sort((a, c) => a - c)) {
+      const pt: MocapPoint = { frame, p: vsub(pts[i]!, origin[frame]), bone: k, off: vsub(pts[i]!, rest[k]!) }
+      const e = extraIndex.get(vb[vertsOf[k]![i]!]!)
+      if (e !== undefined) {
+        pt.sub = e
+        pt.subOff = vsub(pts[i]!, norm(R[extraSrc[e]!]!))
+      }
+      points.push(pt)
+    }
   })
 
   // Contact proxy: capsules along each limb, across the pelvis, up the neck and head.
@@ -508,6 +550,7 @@ export function fitMocapRig(src: MocapSource, height: number): MocapRig {
     shoulder: { L: vsub(at('LeftArm'), T0), R: vsub(at('RightArm'), T0) },
     points,
     capsules,
-    torso: { ys, rings }
+    torso: { ys, rings },
+    extra
   }
 }

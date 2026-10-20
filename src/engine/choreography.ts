@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror, routines recast to chosen bodies; see MODIFICATIONS.md.
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror, routines recast to chosen bodies, mocap clip runs on bots; see MODIFICATIONS.md.
 /**
  * Choreography engine: routines that read as REAL staged choreography —
  * timed dance phrases hit on the count and change formation with real walking;
@@ -18,7 +18,8 @@
 
 import { MOTION_PRESETS, type MotionPreset } from './motions'
 import { bodyLowY, motionRootY, type Body } from './floor'
-import type { GaitId } from './types'
+import type { GaitId, MarkClip } from './types'
+import { clipPlays, copyTag, tagPlay } from './mocap/library-clips'
 
 /* ----------------------------- public model ---------------------------- */
 
@@ -80,6 +81,8 @@ export interface ChoreoMarkSpec {
   arriveHeading?: number
   /** Fork: a motion-playback mark (types.ts `ActorMark.posedMove`). */
   posedMove?: boolean
+  /** Fork: a mocap clip run's mark on a bot (types.ts `ActorMark.clip`). */
+  clip?: MarkClip
 }
 
 export interface ChoreoEntitySpec {
@@ -161,7 +164,8 @@ const LR_PAIRS: readonly [string, string][] = [
   ['elbowL', 'elbowR'],
   ['hipLX', 'hipRX'],
   ['hipLZ', 'hipRZ'],
-  ['kneeL', 'kneeR']
+  ['kneeL', 'kneeR'],
+  ['handL', 'handR'] // fork: fists (renderer/mocap)
 ]
 /** Twist/lean channels whose sign flips under a mirror. */
 const NEGATE_ON_MIRROR = new Set(['torsoY', 'headY', 'torsoZ', 'headZ', 'rootY', 'rootZ']) // fork: root yaw / roll
@@ -202,11 +206,13 @@ function playMotion(
   opts: PlayOpts = {}
 ): number {
   const fwd = opts.facing !== undefined ? forwardOf(opts.facing) : { x: 0, z: 0 }
+  // Fork: one play, which a bot plays as a clip run (mocap/library-clips.ts).
+  const play = { presetId: preset.id, pos: { ...pos }, heading: opts.facing, startT, endT: startT + preset.duration, mirror: opts.mirror }
   for (const kf of preset.keyframes) {
     if (marks.length >= MAX_MARKS_PER_ENTITY) break
     const forward = kf.move?.forward ?? 0
     const up = kf.move?.up ?? 0
-    marks.push({
+    marks.push(tagPlay(play, {
       time: startT + kf.t,
       position: {
         x: pos.x + fwd.x * forward,
@@ -220,7 +226,7 @@ function playMotion(
       joints: opts.mirror ? mirrorJoints(kf.joints) : { ...kf.joints },
       arriveHeading: opts.facing,
       posedMove: true // fork: motion playback
-    })
+    }))
   }
   return startT + preset.duration
 }
@@ -236,12 +242,13 @@ function playLooped(
 ): void {
   let t = startT
   const cycle = Math.max(0.2, preset.duration)
+  const play = { presetId: preset.id, pos: { ...pos }, heading: opts.facing, startT, endT, mirror: opts.mirror } // fork: one clip run on a bot
   while (t < endT - 1e-6 && marks.length < MAX_MARKS_PER_ENTITY) {
     for (const kf of preset.keyframes) {
       const time = t + kf.t
       if (time > endT + 1e-6 || marks.length >= MAX_MARKS_PER_ENTITY) break
       const up = kf.move?.up ?? 0
-      marks.push({
+      marks.push(tagPlay(play, {
         time,
         position: { x: pos.x, y: pos.y + up, z: pos.z }, // fork: raw, see floorRoutine
         gait: opts.gait ?? 'stand',
@@ -251,7 +258,7 @@ function playLooped(
         joints: opts.mirror ? mirrorJoints(kf.joints) : { ...kf.joints },
         arriveHeading: opts.facing,
         posedMove: true // fork: motion playback
-      })
+      }))
     }
     t += cycle
   }
@@ -990,7 +997,7 @@ function dedupeSort(marks: ChoreoMarkSpec[]): ChoreoMarkSpec[] {
   const sorted = [...marks].sort((a, b) => a.time - b.time)
   const out: ChoreoMarkSpec[] = []
   for (const m of sorted) {
-    const clamped = { ...m, time: Math.max(0, m.time) }
+    const clamped = copyTag(m, { ...m, time: Math.max(0, m.time) }) // fork: keeps its play (mocap clip runs)
     const prev = out[out.length - 1]
     if (prev && Math.abs(prev.time - clamped.time) < 1e-4) out[out.length - 1] = clamped
     else out.push(clamped)
@@ -1057,6 +1064,8 @@ export function buildRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySp
   const specs = routineOf(spec, ctx)
   // Fork: recast before grounding, so posed marks rest each body on the floor.
   if (spec.bodies) for (const e of specs) e.assetId = e.assetId === 'person.man' ? spec.bodies[0] : e.assetId === 'person.woman' ? spec.bodies[1] : e.assetId
+  // Fork: a bot plays its motions as clip runs (mocap/library-clips.ts).
+  specs.forEach((e, i) => (e.marks = clipPlays(e.marks, ctx.bodies?.[i] ?? { assetId: e.assetId }, e.rotationY)))
   floorRoutine(specs, ctx.bodies)
   return specs
 }

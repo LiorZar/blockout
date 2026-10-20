@@ -26,6 +26,7 @@ import { ShotEvaluator } from './evaluate'
 import { SHOT_MOVES, strikeImpacts } from './fight/moves'
 import { solveFight, type FighterInput } from './fight/solve'
 import { MOTION_PRESETS, type MotionPreset } from './motions'
+import { clipMotionName } from './mocap/library-clips'
 import { LABEL_COLOR_NAMES } from './palette'
 import type { ShotSpec } from './shot'
 import type { ActorMark, Entity, FightBeat, FightOutcome, GaitId, RigId, Scene, Shot, ShotSizeId, V3 } from './types'
@@ -401,6 +402,13 @@ function recognizeMotions(marks: ActorMark[]): { t: number; preset: MotionPreset
   let i = 0
   while (i < marks.length) {
     const m = marks[i]!
+    // Fork: a mocap bot's clip run, named by its motion (mocap/library-clips.ts).
+    if (m.clip) {
+      const named = clipMotionName(m.clip.id)
+      if (named && found[found.length - 1]?.preset.id !== named.id) found.push({ t: m.time, preset: named })
+      i++
+      continue
+    }
     let best: MotionPreset | null = null
     let bestLen = 0
     for (const c of m.joints ? (index.get(jointKey(m.joints)) ?? []) : []) {

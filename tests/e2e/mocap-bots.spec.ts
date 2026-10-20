@@ -2,8 +2,10 @@
  * e2e for the mocap bots (docs/plans/2026-10-20-mocap-body.md): the built
  * app reads the user's local Mixamo library through a junction in a fresh
  * config dir, loads Y Bot / X Bot, renders them skinned in every pass, and
- * exports deterministically. Skipped without the library (it is never in the
- * repo); nothing from it is written into the repo.
+ * exports deterministically. Phase 2 (docs/plans/2026-10-20-mocap-clips.md):
+ * the clips load, the motion library plays them on bots, and a bot playing
+ * a clip exports deterministically. Skipped without the library (it is never
+ * in the repo); nothing from it is written into the repo.
  */
 
 import { _electron as electron, test, expect, type ElectronApplication, type Page } from '@playwright/test'
@@ -90,7 +92,7 @@ test.describe('mocap bots', () => {
   let bot = ''
 
   test('the library loads both bots and logs their bones and clips', async () => {
-    await expect.poll(() => logs.join('\n'), { timeout: 60_000 }).toMatch(/\[mocap\] library: 2 characters, \d+ clips/)
+    await expect.poll(() => logs.join('\n'), { timeout: 120_000 }).toMatch(/\[mocap\] library: 2 characters, \d+ clips/)
     expect(logs.join('\n')).toMatch(/\[mocap\] .+ as person\.mocapMale: \d+ bones/)
     expect(logs.join('\n')).toMatch(/\[mocap\] .+ as person\.mocapFemale: \d+ bones/)
   })
@@ -181,6 +183,61 @@ test.describe('mocap bots', () => {
       const res = await rpc<{ packagePath: string }>('export_shot', { passes: { clean: true, depth: true, normal: false } })
       expect(res.ok, res.error).toBe(true)
       pkgs.push(res.data!.packagePath)
+    }
+    const ffmpeg = process.env.BLOCKOUT_FFMPEG || 'ffmpeg'
+    for (const suffix of ['_reference.mp4', '_depth.mp4']) {
+      const [a, b] = pkgs.map((p) => join(p, readdirSync(p).find((f) => f.endsWith(suffix))!))
+      const md5 = (f: string): string => execFileSync(ffmpeg, ['-v', 'error', '-i', f, '-f', 'framemd5', '-']).toString().replace(/^#.*$/gm, '')
+      expect(md5(a!), suffix).toBe(md5(b!))
+      expect(readFileSync(a!).equals(readFileSync(b!)), `${suffix} bytes`).toBe(true)
+    }
+  })
+
+  test('the clips are sampled and the motion library plays them on bots (and keyframes on everyone else)', async () => {
+    const [, total, sampled] = logs.join('\n').match(/library: 2 characters, (\d+) clips, (\d+) sampled/) ?? []
+    expect(Number(total)).toBeGreaterThan(0)
+    expect(Number(sampled)).toBe(Number(total))
+    const presets = await rpc<{ id: string; mocap?: boolean; mocapOnly?: boolean }[]>('list_motion_presets')
+    expect(presets.data!.find((p) => p.id === 'push-ups')?.mocap).toBe(true)
+    expect(presets.data!.some((p) => p.id.startsWith('mocap-') && p.mocapOnly)).toBe(true)
+    expect((await rpc('apply_motion', { entityIds: [bot], presetId: 'push-ups' })).ok).toBe(true)
+    const marks = await rpc<{ clip?: { id: string; at: number } }[]>('list_marks', { lane: bot })
+    expect(marks.ok, marks.error).toBe(true)
+    expect(marks.data!.map((m) => m.clip?.id)).toEqual(['pushUp', 'pushUp'])
+    const man = await rpc<{ entityId: string }>('add_entity', { assetId: 'person.man', x: 3, z: 0 })
+    expect((await rpc('apply_motion', { entityIds: [man.data!.entityId], presetId: 'push-ups' })).ok).toBe(true)
+    const manMarks = await rpc<{ clip?: unknown }[]>('list_marks', { lane: man.data!.entityId })
+    expect(manMarks.data!.length).toBeGreaterThan(2)
+    expect(manMarks.data!.every((m) => !m.clip)).toBe(true)
+    const refused = await rpc('apply_motion', { entityIds: [man.data!.entityId], presetId: presets.data!.find((p) => p.mocapOnly)!.id })
+    expect(refused.ok).toBe(false)
+    expect(refused.error).toMatch(/Mocap man/)
+    expect((await rpc('delete_entity', { entityId: man.data!.entityId })).ok).toBe(true)
+  })
+
+  test('a bot sits down on a chair under it, and on the floor without one', async () => {
+    expect((await rpc('set_shot', { duration: 8 })).ok).toBe(true)
+    const sitMarks = async (): Promise<(string | undefined)[]> => {
+      expect((await rpc('apply_motion', { entityIds: [bot], presetId: 'sit-down' })).ok).toBe(true)
+      return (await rpc<{ clip?: { id: string } }[]>('list_marks', { lane: bot })).data!.map((m) => m.clip?.id)
+    }
+    expect(await sitMarks()).toEqual(['sitFloor', 'sitFloor'])
+    const chair = await rpc<{ entityId: string }>('add_entity', { assetId: 'furniture.chair', x: 0, z: 0, rotationDeg: 180 })
+    expect(chair.ok, chair.error).toBe(true)
+    expect(await sitMarks()).toEqual(['standToSit', 'standToSit', 'sitChair', 'sitChair'])
+    expect((await rpc('delete_entity', { entityId: chair.data!.entityId })).ok).toBe(true)
+  })
+
+  test('a double export of a bot dancing a clip run is byte-identical', async () => {
+    test.setTimeout(300_000)
+    expect((await rpc('set_shot', { duration: 3 })).ok).toBe(true)
+    expect((await rpc('apply_motion', { entityIds: [bot], presetId: 'salsa-step' })).ok).toBe(true)
+    const pkgs: string[] = []
+    for (let k = 0; k < 2; k++) {
+      const res = await rpc<{ packagePath: string; prompt: string }>('export_shot', { passes: { clean: true, depth: true, normal: false } })
+      expect(res.ok, res.error).toBe(true)
+      pkgs.push(res.data!.packagePath)
+      expect(res.data!.prompt.toLowerCase()).toContain('salsa')
     }
     const ffmpeg = process.env.BLOCKOUT_FFMPEG || 'ffmpeg'
     for (const suffix of ['_reference.mp4', '_depth.mp4']) {

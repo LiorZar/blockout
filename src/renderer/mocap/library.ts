@@ -4,16 +4,19 @@
  * the manifest; with one, it parses the first male and female character
  * (three's FBXLoader), registers each with the engine as
  * `person.mocapMale` / `person.mocapFemale` and keeps the parsed scene as the
- * template every bot visual clones. Without a library nothing loads and the
- * bots stay hidden. `mocapReady` resolves once loading is over (exports wait
- * for it), `onMocapLoaded` / `useMocapLoaded` tell the scene and the panels.
+ * template every bot visual clones; then it samples every clip (phase 2) and
+ * registers it. Without a library nothing loads and the bots stay hidden.
+ * `mocapReady` resolves once loading is over (exports wait for it),
+ * `onMocapLoaded` / `useMocapLoaded` tell the scene and the panels.
  */
 
 import { useSyncExternalStore } from 'react'
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
+import { registerMocapClip } from '@engine/mocap/clip'
 import { isMocapAsset, mocapRig, registerMocapBody } from '@engine/mocap/registry'
 import type { MocapManifest, MocapManifestClip } from '../../shared/mocap-library'
+import { readClipTake } from './clips'
 import { extractMocap, fileUnit, primaryBones } from './extract'
 
 const BODY_ASSET = { male: 'person.mocapMale', female: 'person.mocapFemale' } as const
@@ -72,6 +75,14 @@ export function mocapClips(): MocapManifestClip[] {
   return clips
 }
 
+/** Sample a parsed clip file and register it with the engine (the loader's way in, and the tests'). */
+export function registerClipTake(id: string, root: THREE.Object3D, source: string, opts: { fps?: number; loop?: boolean; inPlace?: boolean } = {}): void {
+  const t = TEMPLATES.get(source)
+  const take = (root as THREE.Object3D & { animations?: THREE.AnimationClip[] }).animations?.[0]
+  if (!t || !take) throw new Error(`clip ${id}: ${t ? 'no take in the file' : `${source} isn't loaded`}`)
+  registerMocapClip(id, readClipTake(root, take, { unit: t.unit, fps: opts.fps ?? 30, source, loop: opts.loop, inPlace: opts.inPlace }))
+}
+
 function notify(): void {
   loads++
   for (const l of LISTENERS) l()
@@ -101,7 +112,22 @@ export function loadMocapLibrary(): Promise<void> {
         console.warn(`[mocap] ${c.name} (${c.file}) didn't load: ${e instanceof Error ? e.message : String(e)}`)
       }
     }
-    console.log(`[mocap] library: ${manifest.characters.length} characters, ${manifest.clips.length} clips`)
+    notify()
+    // Phase 2: the clips, each sampled once into plain data (bots play them from the engine).
+    const byName = new Map(manifest.characters.map((c) => [c.name, BODY_ASSET[c.body]]))
+    let ok = 0
+    for (const c of manifest.clips) {
+      const source = (c.character && byName.get(c.character)) || BODY_ASSET.male
+      if (!TEMPLATES.has(source)) continue
+      try {
+        const root = new FBXLoader().parse(await api.mocapRead(c.file), '')
+        registerClipTake(c.key, root, source, { fps: c.fps, loop: c.loop, inPlace: c.inPlace })
+        ok++
+      } catch (e) {
+        console.warn(`[mocap] clip ${c.key} (${c.file}) didn't load: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    console.log(`[mocap] library: ${manifest.characters.length} characters, ${manifest.clips.length} clips, ${ok} sampled`)
     notify()
   })()
   return loading

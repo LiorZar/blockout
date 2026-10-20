@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views and routine bodies; see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies and mocap clip runs; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -24,6 +24,7 @@ import { newId } from '@engine/ids'
 import { generateSequence, choreographMotion } from '@engine/sequences'
 import { buildRoutine, mirrorJoints } from '@engine/choreography'
 import { mirrorForHolder } from '@engine/fight/moves'
+import { seatSpots } from '@engine/mocap/library-clips'
 import { ACTION_PRESETS } from '@engine/action-presets'
 import { ShotEvaluator } from '@engine/evaluate'
 import type { ShotSpec } from '@engine/shot'
@@ -81,7 +82,7 @@ interface BlockoutState {
   /** Asset id armed for click-to-place from the library. */
   placingAssetId: string | null
   /** Armed sequence: next floor click stages the crowd THERE. */
-  placingSequence: { type: import('@engine/sequences').SequenceType; count: number; style: string } | null
+  placingSequence: { type: import('@engine/sequences').SequenceType; count: number; style: string; bodies?: [string, string] } | null
   /** Armed choreography routine: next floor click stages the routine THERE. */
   placingChoreography: import('@engine/choreography').RoutineSpec | null
   /** Fight Director (fork): the fight armed for floor placement (staged by the next fight placement click). */
@@ -222,6 +223,8 @@ interface BlockoutState {
     count: number
     style: string
     origin?: { x: number; z: number; heading: number }
+    /** Fork: the bodies the men and the women are cast as. */
+    bodies?: [string, string]
   }): void
   /**
    * Drop a full choreography routine — a dance number, a paired fight, a
@@ -1438,7 +1441,8 @@ export const useStore = create<BlockoutState>((set, get) => ({
       count: opts.count,
       style: opts.style,
       origin,
-      duration
+      duration,
+      ...(opts.bodies ? { bodies: opts.bodies } : {}) // fork
     })
     const newIds: string[] = []
     get().mutate(`stage ${opts.type} sequence`, (doc) => {
@@ -1463,7 +1467,9 @@ export const useStore = create<BlockoutState>((set, get) => ({
               easeOut: m.easeOut,
               position: { ...m.position },
               gait: m.gait,
-              joints: m.joints ? { ...m.joints } : undefined
+              joints: m.joints ? { ...m.joints } : undefined,
+              // Fork: a bot's clip run (facing its heading, a posed move).
+              ...(m.clip ? { clip: { ...m.clip }, arriveHeading: m.arriveHeading, posedMove: m.posedMove } : {})
             }))
           })
         }
@@ -1526,7 +1532,8 @@ export const useStore = create<BlockoutState>((set, get) => ({
               gait: m.gait,
               arriveHeading: m.arriveHeading,
               posedMove: m.posedMove,
-              joints: m.joints ? { ...m.joints } : undefined
+              joints: m.joints ? { ...m.joints } : undefined,
+              ...(m.clip ? { clip: { ...m.clip } } : {}) // fork: a bot's clip run
             }))
           })
         }
@@ -1596,7 +1603,8 @@ export const useStore = create<BlockoutState>((set, get) => ({
           gait: m.gait,
           arriveHeading: m.arriveHeading,
           posedMove: m.posedMove,
-          joints: m.joints ? { ...m.joints } : undefined
+          joints: m.joints ? { ...m.joints } : undefined,
+          ...(m.clip ? { clip: { ...m.clip } } : {}) // fork: a bot's clip run
         }))
         applied++
       }
@@ -1618,17 +1626,19 @@ export const useStore = create<BlockoutState>((set, get) => ({
       for (const id of entityIds) {
         const entity = scene.entities.find((e) => e.id === id)
         if (!entity || !entity.assetId.startsWith('person.')) continue
+        // Fork: a weapon motion plays mirrored when the performer's weapon for it is in the other hand.
+        const mirror = mirrorForHolder(presetId, id, scene.entities)
         const specs = choreographMotion(
           presetId,
           { ...entity.transform.position },
           entity.transform.rotationY,
           duration,
           0,
-          { assetId: entity.assetId, params: entity.params, scale: entity.transform.scale } // fork: its own body on the floor
+          { assetId: entity.assetId, params: entity.params, scale: entity.transform.scale }, // fork: its own body on the floor
+          mirror, // fork: a bot's clip run mirrors its pose and travel
+          seatSpots(scene.entities) // fork: a bot's sit-down sits on a seat prop under it, else on the floor
         )
         if (!specs || specs.length === 0) continue
-        // Fork: a weapon motion plays mirrored when the performer's weapon for it is in the other hand.
-        const mirror = mirrorForHolder(presetId, id, scene.entities)
         let track = take.tracks.find((t) => t.entityId === id)
         if (!track) {
           track = { entityId: id, marks: [] }
@@ -1644,7 +1654,9 @@ export const useStore = create<BlockoutState>((set, get) => ({
           gait: m.gait,
           arriveHeading: m.arriveHeading,
           posedMove: m.posedMove,
-          joints: m.joints ? (mirror ? mirrorJoints(m.joints) : { ...m.joints }) : undefined
+          joints: m.joints ? (mirror ? mirrorJoints(m.joints) : { ...m.joints }) : undefined,
+          // Fork: a bot plays the motion's library clip (mocap/library-clips.ts).
+          ...(m.clip ? { clip: { ...m.clip } } : {})
         }))
         applied++
       }

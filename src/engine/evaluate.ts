@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc; see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts); see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -13,6 +13,7 @@ import { assetSpec, entityHeight } from './assets'
 import { verticalFov } from './camera'
 import { easedProgress, lerp, lerpAngle, smoothstep } from './easing'
 import { posedMoveY } from './floor'
+import { clipPosition, clipStateAt } from './mocap/clip-marks'
 import { GAITS, checkSpeed, type SpeedVerdict } from './gaits'
 import { Path, headingOf } from './path'
 import { RigNoise } from './rigs'
@@ -326,8 +327,12 @@ export class ShotEvaluator {
       // keyframe to keyframe, so a body folding onto the floor never dips through it.
       const from = posed ? locked?.from : undefined
       const to = posed ? locked?.to : undefined
-      const position =
-        from?.joints && to?.joints && entity.assetId.startsWith('person.')
+      // Fork: mocap clip marks (mocap/clip-marks.ts): the clip a bot plays, its root travel and floor line.
+      const u = r.leg ? easedProgress(r.legProgress, r.leg.from.easeOut, r.leg.to.easeIn) : 0
+      const clip = entity.assetId.startsWith('person.') ? clipStateAt(r, time, u, entity) : undefined
+      const position = clip
+        ? clipPosition(entity, r, u, heading, r.position)
+        : from?.joints && to?.joints && entity.assetId.startsWith('person.')
           ? {
               ...r.position,
               y: posedMoveY(
@@ -346,7 +351,8 @@ export class ShotEvaluator {
         gait: locked ? locked.to.gait : r.leg && spec.travels ? gait : r.leg ? 'walk' : gait,
         distanceTravelled: r.distanceTravelled,
         speed: r.speed,
-        joints
+        joints,
+        ...(clip ? { clip } : {})
       })
     }
 
@@ -574,7 +580,8 @@ export class ShotEvaluator {
         scale: e.transform.scale,
         position: es.position,
         heading: es.heading,
-        joints
+        joints,
+        ...(es.clip ? { clip: es.clip } : {})
       })
     }
     try {

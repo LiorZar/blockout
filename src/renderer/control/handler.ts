@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots) in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots and their clips) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -179,7 +179,7 @@ function markSummary(m: CameraMark | ActorMark): unknown {
       shot: m.shot
     }
   }
-  return { ...base, gait: m.gait }
+  return { ...base, gait: m.gait, ...(m.clip ? { clip: m.clip } : {}) } // fork: a mocap bot's clip run
 }
 
 const SHOT_SIDES: ShotSide[] = ['front', 'frontLeft', 'left', 'backLeft', 'back', 'backRight', 'right', 'frontRight', 'line']
@@ -1040,13 +1040,19 @@ async function execute(action: string, params: Params): Promise<unknown> {
 
     case 'list_motion_presets': {
       const { MOTION_PRESETS } = await import('@engine/motions')
+      // Fork: which motions a Mocap bot plays as a library clip, and the clips' own motions (mocap/library-clips.ts).
+      const { clipMotionPresets, motionHasClip } = await import('@engine/mocap/library-clips')
       const category = str(params, 'category')
-      return MOTION_PRESETS.filter((m) => !category || m.category === category).map((m) => ({
-        id: m.id,
-        name: m.name,
-        category: m.category,
-        duration: m.duration
-      }))
+      return [...MOTION_PRESETS, ...clipMotionPresets()]
+        .filter((m) => !category || m.category === category)
+        .map((m) => ({
+          id: m.id,
+          name: m.name,
+          category: m.category,
+          duration: m.duration,
+          ...(motionHasClip(m.id) ? { mocap: true } : {}),
+          ...(m.keyframes.length === 0 ? { mocapOnly: true } : {})
+        }))
     }
 
     case 'import_scan': {
@@ -1417,12 +1423,17 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const entityIds = strList(params, 'entityIds')
       const presetId = str(params, 'presetId') ?? ''
       const { MOTION_PRESETS } = await import('@engine/motions')
-      if (!MOTION_PRESETS.some((m) => m.id === presetId)) {
+      const { clipMotionPreset, motionClip } = await import('@engine/mocap/library-clips')
+      const clipOnly = !!clipMotionPreset(presetId)
+      if (!MOTION_PRESETS.some((m) => m.id === presetId) && !clipOnly) {
         throw new Error(`apply_motion: unknown presetId "${presetId}" — call list_motion_presets for ids.`)
       }
       const people = (s.scene()?.entities ?? []).filter(
-        (e) => entityIds.includes(e.id) && e.assetId.startsWith('person.')
+        (e) => entityIds.includes(e.id) && e.assetId.startsWith('person.') && (!clipOnly || !!motionClip(presetId, { assetId: e.assetId, params: e.params }))
       )
+      if (clipOnly && people.length === 0) {
+        throw new Error(`apply_motion: "${presetId}" is a mocap clip — it plays on Mocap man / Mocap woman bodies only (none of these entities is one).`)
+      }
       if (people.length === 0) {
         throw new Error('apply_motion: applied 0 — motions apply to people (person.* entity ids from get_state).')
       }

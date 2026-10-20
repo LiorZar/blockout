@@ -1,4 +1,4 @@
-// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons); see MODIFICATIONS.md.
+// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons), ActorMark.clip / EntityState.clip (mocap clips); see MODIFICATIONS.md.
 /**
  * Blockout document model.
  *
@@ -172,6 +172,34 @@ export interface ActorMark extends MarkBase {
    * out of a motion behave as upstream.
    */
   posedMove?: boolean
+  /**
+   * Fork (mocap clips): a mocap bot plays library clip `id` here, at clip
+   * time `at` (s), mirrored left / right on request. Between two marks on
+   * the same clip the clip time runs linearly; `joints` add on top as an
+   * overlay; the mark's y is the floor under the clip (src/engine/mocap/clip.ts).
+   * Other bodies ignore it.
+   */
+  clip?: MarkClip
+}
+
+/** Fork (mocap clips): a library clip at a clip time. */
+export interface MarkClip {
+  id: string
+  at: number
+  mirror?: boolean
+}
+
+/**
+ * Fork (mocap clips): a mocap bot's clip pose at t — clip `id` at clip time
+ * `t`, crossfaded from `from` (absent: the gait and joints pose) by `w`
+ * (default 1, all clip).
+ */
+export interface ClipState {
+  id: string
+  t: number
+  mirror?: boolean
+  w?: number
+  from?: { id: string; t: number; mirror?: boolean }
 }
 
 export interface CameraMark extends MarkBase {
@@ -375,6 +403,8 @@ export interface EntityState {
   speed: number
   /** Interpolated per-joint pose offsets from the marks (radians). */
   joints?: Record<string, number>
+  /** Fork (mocap clips): the clip a mocap bot plays now (joints add on top). */
+  clip?: ClipState
 }
 
 /** Result of evaluating the camera at time t (rig noise already applied). */

@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026, and in this fork (scene.fights and heldBy migration); see MODIFICATIONS.md.
+// Modified for cross-platform Windows support in 2026, and in this fork (scene.fights and heldBy migration, malformed mark clips dropped); see MODIFICATIONS.md.
 /**
  * Document creation, validation, and git-friendly serialization.
  * Projects are folders; this module owns the JSON shape. Serialization is
@@ -21,6 +21,7 @@ import type {
 } from './types'
 import { normalizeProjectRelativePath } from '../shared/portable-paths'
 import { sanitizeHolds } from './weapons'
+import { sanitizeClipMarks } from './mocap/clip-marks'
 
 export const SCHEMA_VERSION = 1 as const
 
@@ -253,6 +254,8 @@ function migrateProject(doc: ProjectDoc): ProjectDoc {
   for (const scene of doc.scenes) {
     // Fork: held weapons — drop dangling or impossible heldBy links.
     sanitizeHolds(scene.entities)
+    // Fork: mocap clip marks — a malformed optional `clip` is dropped.
+    sanitizeClipMarks(scene)
     // Fork: scripted fights (src/engine/fight/) — missing or malformed → [].
     const fights = (scene as { fights?: unknown }).fights
     scene.fights = Array.isArray(fights)

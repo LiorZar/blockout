@@ -136,7 +136,7 @@ export function castWorld(subjects: ShotSubject[], moving: ReadonlySet<string>, 
     const name = nameOf(s.id)
     if (isPerson(s)) {
       const dims = personDims(s.assetId, s.params)
-      const fx = poseEffectors(dims, s.joints)
+      const fx = poseEffectors(dims, s.joints, s.clip)
       const w = (p: V3): V3 => toWorld(p, s.position, s.heading, s.scale)
       const pelvis = w(fx.pelvis)
       const chest = w(fx.chest)
@@ -173,7 +173,7 @@ export function castWorld(subjects: ShotSubject[], moving: ReadonlySet<string>, 
 /** Points a camera must see on a subject, weighted: a person's head, chest and pelvis; a thing's middle and top. */
 export function subjectTargets(s: ShotSubject): { p: V3; w: number }[] {
   if (isPerson(s)) {
-    const fx = poseEffectors(personDims(s.assetId, s.params), s.joints)
+    const fx = poseEffectors(personDims(s.assetId, s.params), s.joints, s.clip)
     const w = (p: V3): V3 => toWorld(p, s.position, s.heading, s.scale)
     return [
       { p: w(fx.head), w: 0.4 },
@@ -351,7 +351,7 @@ export function shotSubjects(scene: Scene, states: EntityState[]): ShotSubject[]
         joints = { ...joints, [key.slice(6)]: (joints?.[key.slice(6)] ?? 0) + v }
       }
     }
-    out.push({ id: e.id, assetId: e.assetId, params: e.params, scale: e.transform.scale, position: es.position, heading: es.heading, joints })
+    out.push({ id: e.id, assetId: e.assetId, params: e.params, scale: e.transform.scale, position: es.position, heading: es.heading, joints, ...(es.clip ? { clip: es.clip } : {}) })
   }
   return out
 }
