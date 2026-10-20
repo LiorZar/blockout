@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { useStore } from '../store'
 import { LENS_SET, SHOT_SIZES } from '@engine/camera'
 import { parseShotWords } from '@engine/shot-words'
-import type { ShotAngle, ShotSide, ShotSpec } from '@engine/shot'
+import { framingCandidates, type ShotAngle, type ShotSide, type ShotSpec } from '@engine/shot'
 import type { CameraMark, Scene, Shot, ShotSizeId } from '@engine/types'
 
 const SIDES: { id: ShotSide; label: string }[] = [
@@ -78,7 +78,8 @@ export function ShotLockNote({ scene, mark }: { scene: Scene; mark: CameraMark }
 export function ShotPanel({ scene, shot }: { scene: Scene; shot: Shot }): JSX.Element {
   const time = useStore((s) => s.time)
   const setShotAtTime = useStore((s) => s.setShotAtTime)
-  const people = scene.entities
+  // People first (the default subject), then vehicles, animals and props; never the set kit.
+  const people = framingCandidates(scene.entities)
   const [words, setWords] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [size, setSize] = useState<ShotSizeId>('MCU')

@@ -22,7 +22,8 @@ import {
 import { assetSpec } from '@engine/assets'
 import { newId } from '@engine/ids'
 import { generateSequence, choreographMotion } from '@engine/sequences'
-import { buildRoutine } from '@engine/choreography'
+import { buildRoutine, mirrorJoints } from '@engine/choreography'
+import { mirrorForHolder } from '@engine/fight/moves'
 import { ACTION_PRESETS } from '@engine/action-presets'
 import { ShotEvaluator } from '@engine/evaluate'
 import type { ShotSpec } from '@engine/shot'
@@ -30,6 +31,9 @@ import { GUARD_DISTANCE, solveFight, type FighterInput, type FightSolution } fro
 import { nextLabelColor } from '@engine/palette'
 import { handFor, holdError, putInHand, setDown, weaponSpec, weaponsInHand } from '@engine/weapons'
 import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
+import { randomFightScript } from '@engine/fight/script'
+import { clearShift } from '@engine/fight/obstacles'
+import { fightObstacles } from './fight-obstacles'
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
 export type Mode = 'stage' | 'shoot' | 'deliver'
@@ -372,12 +376,27 @@ function cameraLineSide(scene: Scene, shot: Shot, fight: FightDoc): 1 | -1 {
   return (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x) < 0 ? -1 : 1
 }
 
+/** Each fighter's longest held weapon, grip to business end (m; 0 unarmed): coverage opens up to keep it in frame. */
+function fightReach(scene: Scene, fight: FightDoc): [number, number] {
+  const reach = (id: string): number =>
+    Math.max(
+      0,
+      ...scene.entities
+        .filter((w) => w.heldBy?.entityId === id)
+        .map((w) => {
+          const spec = weaponSpec(w.assetId)
+          return spec ? Math.hypot(spec.tip.x - spec.grip.x, spec.tip.y - spec.grip.y, spec.tip.z - spec.grip.z) * w.transform.scale : 0
+        })
+    )
+  return [reach(fight.fighterIds[0]), reach(fight.fighterIds[1])]
+}
+
 /** Replace the shot camera's marks with coverage of a fight (solved poses stored as fallback). */
 function writeCoverage(scene: Scene, shot: Shot, fight: FightDoc, report: FightSolution['report'], mode: CoverageMode, lineSide: 1 | -1): number {
   const cam = shot.camera
   const focal = [...cam.marks].sort((a, b) => a.time - b.time).at(-1)?.focalLength ?? 35
   const ev = new ShotEvaluator(scene, shot)
-  cam.marks = fightCoverage(fight, report, mode, lineSide).map((m) => {
+  cam.marks = fightCoverage(fight, report, mode, lineSide, { reach: fightReach(scene, fight) }).map((m) => {
     const solved = ev.solveShotAt(m.shot, m.time, focal)
     const mark = createCameraMark(solved ? { ...solved.position } : { x: 0, y: 1.6, z: 5 }, m.time, solved?.pan ?? 0, solved?.tilt ?? 0, solved?.focalLength ?? focal)
     mark.roll = solved?.roll ?? 0
@@ -405,6 +424,151 @@ function fightersOf(scene: Scene, ids: [string, string]): [Entity, Entity] {
   })
   if (pair[0]!.id === pair[1]!.id) throw new Error('A fight needs two different people.')
   return [pair[0]!, pair[1]!]
+}
+
+/** Solve a fight of `scene` for `shot`'s timing (`extra`: weapons about to be put in the fighters' hands). */
+export function solveInScene(
+  scene: Scene,
+  shot: Shot,
+  fight: FightDoc,
+  extra: Entity[] = [],
+  fighters: [Entity, Entity] = fightersOf(scene, fight.fighterIds),
+  free = false
+): FightSolution {
+  // Set props (fork, gap 8): the scene's static props, unless solving `free` (paths only, to place the fight).
+  const take = scene.blocking.find((b) => b.id === shot.blockingTakeId)
+  return solveFight(
+    fight,
+    [fighterInput(fighters[0], scene, extra), fighterInput(fighters[1], scene, extra)],
+    { duration: shot.duration, fps: shot.fps },
+    free ? { paths: true } : { obstacles: fightObstacles(scene, take) }
+  )
+}
+
+/** Set props (gap 8): the solver had to stop a push-back at a prop, or a path still runs into one. */
+const PROP_TROUBLE = /stopped at|runs into/
+
+/**
+ * Set props (gap 8): a fight that spawns its own fighters moves (≤ 3 m) to
+ * the nearest spot where its paths stay clear of the set's props, saying so
+ * in the report. Shifts the not-yet-added `movable` entities and the origin.
+ */
+function placeClearOfProps(scene: Scene, shot: Shot, fight: FightDoc, sol: FightSolution, extra: Entity[], fighters: [Entity, Entity], movable: Entity[]): FightSolution {
+  if (!sol.report.warnings.some((w) => PROP_TROUBLE.test(w))) return sol
+  const free = solveInScene(scene, shot, fight, extra, fighters, true)
+  const shift = clearShift(free.paths, fightObstacles(scene, scene.blocking.find((b) => b.id === shot.blockingTakeId)))
+  if (!shift || (shift.x === 0 && shift.z === 0)) return sol
+  for (const e of movable) {
+    e.transform.position.x += shift.x
+    e.transform.position.z += shift.z
+  }
+  fight.origin = { ...fight.origin, x: fight.origin.x + shift.x, z: fight.origin.z + shift.z }
+  const moved = solveInScene(scene, shot, fight, extra, fighters)
+  const d = Math.hypot(shift.x, shift.z)
+  moved.report.warnings.unshift(`Moved the fight ${d.toFixed(2)} m to (${fight.origin.x.toFixed(2)}, ${fight.origin.z.toFixed(2)}) so it keeps clear of the set's props`)
+  return moved
+}
+
+/** A fight's solved marks are in this take: both fighters have fight (lockFacing) marks there. */
+function fightInTake(take: BlockingTake, fight: FightDoc): boolean {
+  return fight.fighterIds.every((id) => take.tracks.find((t) => t.entityId === id)?.marks.some((m) => m.lockFacing))
+}
+
+/** The camera is still a fight's coverage: every mark is a shot-words mark on its fighters. */
+function cameraIsCoverage(shot: Shot, fight: FightDoc): boolean {
+  const marks = shot.camera.marks
+  return marks.length > 0 && marks.every((m) => !!m.shot && m.shot.subjectIds.every((id) => fight.fighterIds.includes(id)))
+}
+
+/**
+ * Re-solve every fight of a shot for its current fps and duration (gap 2):
+ * impacts move onto the new frame grid and beats past a shorter end drop
+ * out with a warning (they stay in the FightDoc and come back when the shot
+ * is long enough). Call inside the same mutate as the timing edit. The
+ * camera is re-covered only while it is still the fight's coverage.
+ */
+export function refightShot(scene: Scene, shot: Shot, except?: string): { fightId: string; report: FightSolution['report'] }[] {
+  const take = scene.blocking.find((b) => b.id === shot.blockingTakeId)
+  if (!take) return []
+  const out: { fightId: string; report: FightSolution['report'] }[] = []
+  for (const fight of scene.fights ?? []) {
+    if (fight.id === except || !fightInTake(take, fight)) continue
+    let sol: FightSolution
+    try {
+      sol = solveInScene(scene, shot, fight)
+    } catch {
+      continue
+    }
+    writeFightTracks(take, fight.fighterIds, sol)
+    if (fight.coverage && cameraIsCoverage(shot, fight)) {
+      writeCoverage(scene, shot, fight, sol.report, fight.coverage, cameraLineSide(scene, shot, fight))
+    }
+    out.push({ fightId: fight.id, report: sol.report })
+  }
+  return out
+}
+
+/**
+ * Gap 3 (fork): a two-person routine fight is the Fight Director's, where
+ * blows land: a seeded random script in the routine's style (brawl,
+ * martial-arts, sparring), ending on a KO unless the ending is 'sparring'.
+ */
+function routineFightBeats(seed: number, style: string | undefined, ending: string | undefined, duration: number): FightBeat[] {
+  const pool = style === 'martial-arts' || style === 'sparring' ? style : 'brawl'
+  return randomFightScript(seed, pool, duration, { ending: ending === 'sparring' ? 'standing' : 'ko' })
+}
+
+/** Stage a routine's two-person fight through stageFight (toasts the outcome); false if it couldn't. */
+function stageRoutineFight(input: StageFightInput): boolean {
+  const st = useStore.getState()
+  try {
+    const { report } = st.stageFight(input)
+    const warn = report.warnings.length ? `, ${report.warnings.length} warning${report.warnings.length > 1 ? 's' : ''} (see the Fight Director)` : ''
+    st.toast(`Fight staged by the Fight Director: ${report.beats.length} beats${warn}. ▶ to watch.`, 'success')
+    return true
+  } catch (e) {
+    st.toast((e as Error).message, 'error')
+    return false
+  }
+}
+
+/** The longest shot a fight lengthens it to (the Timeline's cap). */
+const MAX_FIT_DURATION = 60
+
+/**
+ * qa-fight bug 6: the shot a fight needs. When the shot is too short for a
+ * beat (the solver drops it), the shot grows to the whole fight's end + 0.5 s
+ * (rounded up to 0.5 s, at most 60 s); a fight whose beats all play leaves
+ * it alone. Returns the shot to solve with, and the solution when that is
+ * the shot as it was.
+ */
+function shotToFit(scene: Scene, shot: Shot, fight: FightDoc, extra: Entity[] = [], fighters?: [Entity, Entity]): { shot: Shot; sol?: FightSolution } {
+  const sol = solveInScene(scene, shot, fight, extra, fighters)
+  if (!sol.report.warnings.some((w) => /past the end of the shot/.test(w))) return { shot, sol }
+  const roomy = solveInScene(scene, { ...shot, duration: MAX_FIT_DURATION }, fight, extra, fighters)
+  const need = Math.min(MAX_FIT_DURATION, Math.ceil((roomy.report.endT + 0.5) * 2) / 2)
+  return need > shot.duration + 1e-9 ? { shot: { ...shot, duration: need } } : { shot, sol }
+}
+
+/** Grow a shot (inside a mutate) to a fitted length and re-solve the shot's other fights for it; the report notes it. */
+function growShot(sc: Scene, sh: Shot, sized: Shot, fightId: string, report: FightSolution['report']): void {
+  if (sized.duration <= sh.duration + 1e-9) return
+  report.warnings.unshift(`Lengthened the shot from ${sh.duration.toFixed(1)} s to ${sized.duration.toFixed(1)} s so every beat plays`)
+  sh.duration = sized.duration
+  refightShot(sc, sh, fightId)
+}
+
+/** Tell the user which beats a shorter shot left out (after refightShot). */
+export function toastRefight(results: ReturnType<typeof refightShot>): void {
+  const scene = useStore.getState().scene()
+  const lines = results
+    .map((r) => {
+      const n = r.report.warnings.filter((w) => /past the end of the shot/.test(w)).length
+      const name = scene?.fights?.find((f) => f.id === r.fightId)?.name ?? 'A fight'
+      return n > 0 ? `${name}: ${n} beat${n > 1 ? 's' : ''} past the end of the shot left out (lengthen the shot to bring ${n > 1 ? 'them' : 'it'} back)` : ''
+    })
+    .filter(Boolean)
+  if (lines.length > 0) useStore.getState().toast(lines.join('. '), 'info')
 }
 
 export const useStore = create<BlockoutState>((set, get) => ({
@@ -1072,10 +1236,11 @@ export const useStore = create<BlockoutState>((set, get) => ({
       exaggeration: Math.min(3, Math.max(1, input.exaggeration ?? 1.5)),
       ...(input.coverage ? { coverage: input.coverage } : {})
     }
-    const sol = solveFight(fight, [fighterInput(fighters[0], scene, arming), fighterInput(fighters[1], scene, arming)], {
-      duration: shot.duration,
-      fps: shot.fps
-    })
+    // qa-fight bug 6: the shot grows to fit the whole fight.
+    const fit = shotToFit(scene, shot, fight, arming, fighters)
+    const sized = fit.shot
+    let sol = fit.sol ?? solveInScene(scene, sized, fight, arming, fighters)
+    if (spawned.length > 0) sol = placeClearOfProps(scene, sized, fight, sol, arming, fighters, [...spawned, ...arming])
     get().mutate('stage fight', (doc) => {
       const sc = doc.scenes.find((x) => x.id === sceneId)
       const sh = sc?.shots.find((x) => x.id === shotId) ?? sc?.drafts?.find((x) => x.id === shotId)
@@ -1088,6 +1253,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       }
       sc.fights = [...(sc.fights ?? []), fight]
       writeFightTracks(take, fight.fighterIds, sol)
+      if (sh) growShot(sc, sh, sized, fight.id, sol.report)
       if (fight.coverage && sh) writeCoverage(sc, sh, fight, sol.report, fight.coverage, cameraLineSide(sc, sh, fight))
     })
     if (spawned.length > 0) set({ selection: { kind: 'entities', entityIds: spawned.map((e) => e.id) } })
@@ -1102,8 +1268,9 @@ export const useStore = create<BlockoutState>((set, get) => ({
     if (!scene || !shot || !current) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
     const fight: FightDoc = { ...structuredClone(current), ...structuredClone(patch) }
     fight.exaggeration = Math.min(3, Math.max(1, fight.exaggeration))
-    const fighters = fightersOf(scene, fight.fighterIds)
-    const sol = solveFight(fight, [fighterInput(fighters[0], scene), fighterInput(fighters[1], scene)], { duration: shot.duration, fps: shot.fps })
+    const fit = shotToFit(scene, shot, fight)
+    const sized = fit.shot
+    const sol = fit.sol ?? solveInScene(scene, sized, fight)
     get().mutate('update fight', (doc) => {
       const sc = doc.scenes.find((x) => x.id === sceneId)
       const sh = sc?.shots.find((x) => x.id === shotId) ?? sc?.drafts?.find((x) => x.id === shotId)
@@ -1111,6 +1278,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       if (!sc || !take) return
       sc.fights = (sc.fights ?? []).map((f) => (f.id === fightId ? fight : f))
       writeFightTracks(take, fight.fighterIds, sol)
+      if (sh) growShot(sc, sh, sized, fightId, sol.report)
       if (patch.coverage && sh) writeCoverage(sc, sh, fight, sol.report, patch.coverage, cameraLineSide(sc, sh, fight))
     })
     return sol.report
@@ -1131,8 +1299,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const shot = get().shot()
     const fight = scene?.fights?.find((f) => f.id === fightId)
     if (!scene || !shot || !fight) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
-    const fighters = fightersOf(scene, fight.fighterIds)
-    const sol = solveFight(fight, [fighterInput(fighters[0], scene), fighterInput(fighters[1], scene)], { duration: shot.duration, fps: shot.fps })
+    const sol = solveInScene(scene, shot, fight)
     const lineSide: 1 | -1 = side === 'right' ? 1 : side === 'left' ? -1 : cameraLineSide(scene, shot, fight)
     let cameraMarks = 0
     get().mutate('fight coverage', (doc) => {
@@ -1245,6 +1412,11 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const { sceneId, shotId } = get()
     const duration = get().shot()?.duration ?? 8
     const origin = opts.origin ?? { x: 0, z: 0, heading: 0 }
+    // Fork (gap 3): a two-performer fight goes through the fight solver.
+    if (opts.type === 'fight' && opts.count === 2) {
+      stageRoutineFight({ beats: routineFightBeats(Math.floor(Math.random() * 1_000_000_000), 'brawl', 'finish', duration), at: origin })
+      return
+    }
     const specs = generateSequence({
       type: opts.type,
       count: opts.count,
@@ -1306,6 +1478,11 @@ export const useStore = create<BlockoutState>((set, get) => ({
     }
     const { sceneId, shotId } = get()
     const duration = get().shot()?.duration ?? spec.durationS
+    // Fork (gap 3): a two-person fight goes through the fight solver.
+    if (spec.kind === 'fight' && spec.performers === 2) {
+      stageRoutineFight({ beats: routineFightBeats(spec.seed, spec.style, spec.ending, duration), at })
+      return
+    }
     const specs = buildRoutine({ ...spec, durationS: duration }, { origin: at })
     const newIds: string[] = []
     get().mutate(`choreograph ${spec.kind}`, (doc) => {
@@ -1331,6 +1508,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
               position: { ...m.position },
               gait: m.gait,
               arriveHeading: m.arriveHeading,
+              posedMove: m.posedMove,
               joints: m.joints ? { ...m.joints } : undefined
             }))
           })
@@ -1365,9 +1543,14 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const cz = people.reduce((s, e) => s + e.transform.position.z, 0) / people.length
     const heading = people[0]!.transform.rotationY
     const duration = get().shot()?.duration ?? spec.durationS
+    // Fork (gap 3): two people fight through the fight solver (their bodies and spots stay).
+    if (spec.kind === 'fight' && people.length === 2) {
+      const beats = routineFightBeats(spec.seed, spec.style, spec.ending, duration)
+      return stageRoutineFight({ beats, fighters: [people[0]!.id, people[1]!.id], at: { x: cx, z: cz, heading } }) ? 2 : 0
+    }
     const specs = buildRoutine(
       { ...spec, performers: people.length, durationS: duration },
-      { origin: { x: cx, z: cz, heading } }
+      { origin: { x: cx, z: cz, heading }, bodies: people.map((e) => ({ assetId: e.assetId, params: e.params, scale: e.transform.scale })) }
     )
     let applied = 0
     get().mutate(`apply choreography: ${spec.kind}`, (doc) => {
@@ -1394,6 +1577,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
           position: { ...m.position },
           gait: m.gait,
           arriveHeading: m.arriveHeading,
+          posedMove: m.posedMove,
           joints: m.joints ? { ...m.joints } : undefined
         }))
         applied++
@@ -1420,9 +1604,13 @@ export const useStore = create<BlockoutState>((set, get) => ({
           presetId,
           { ...entity.transform.position },
           entity.transform.rotationY,
-          duration
+          duration,
+          0,
+          { assetId: entity.assetId, params: entity.params, scale: entity.transform.scale } // fork: its own body on the floor
         )
         if (!specs || specs.length === 0) continue
+        // Fork: a weapon motion plays mirrored when the performer's weapon for it is in the other hand.
+        const mirror = mirrorForHolder(presetId, id, scene.entities)
         let track = take.tracks.find((t) => t.entityId === id)
         if (!track) {
           track = { entityId: id, marks: [] }
@@ -1436,7 +1624,9 @@ export const useStore = create<BlockoutState>((set, get) => ({
           easeOut: m.easeOut,
           position: { ...m.position },
           gait: m.gait,
-          joints: m.joints ? { ...m.joints } : undefined
+          arriveHeading: m.arriveHeading,
+          posedMove: m.posedMove,
+          joints: m.joints ? (mirror ? mirrorJoints(m.joints) : { ...m.joints }) : undefined
         }))
         applied++
       }

@@ -6,8 +6,8 @@
  */
 
 import { useMemo, useState } from 'react'
-import { fighterInput, useStore } from '../store'
-import { solveFight, type BeatReport } from '@engine/fight/solve'
+import { solveInScene, useStore } from '../store'
+import type { BeatReport } from '@engine/fight/solve'
 import { assetSpec } from '@engine/assets'
 import { WEAPON_SPECS } from '@engine/weapons'
 import { formatFightScript, parseFightScript, randomFightScript } from '@engine/fight/script'
@@ -82,7 +82,8 @@ export function FightDirector(): JSX.Element {
   const [ending, setEnding] = useState<'ko' | 'standing'>('ko')
   const [seed, setSeed] = useState(randomSeed)
   const [exaggeration, setExaggeration] = useState(fight?.exaggeration ?? 1.5)
-  const [coverage, setCoverage] = useState<NonNullable<FightDoc['coverage']> | ''>(fight?.coverage ?? '')
+  // A new fight comes with a master camera (one click, camera included); a staged one keeps its own.
+  const [coverage, setCoverage] = useState<NonNullable<FightDoc['coverage']> | ''>(fight ? (fight.coverage ?? '') : 'master')
   const [bodies, setBodies] = useState<(typeof BODIES)[number]['id']>('classic')
   const [arms, setArms] = useState<[string, string]>(['', ''])
 
@@ -92,13 +93,11 @@ export function FightDirector(): JSX.Element {
       ? selection.entityIds.filter((id) => scene?.entities.find((e) => e.id === id)?.assetId.startsWith('person.'))
       : []
 
-  // Live report for the staged fight (pure; re-solved when the scene changes).
+  // Live report for the staged fight (pure; re-solved when the scene changes, set props included).
   const report = useMemo(() => {
     if (!fight || !scene || !shot) return null
-    const ents = fight.fighterIds.map((id) => scene.entities.find((e) => e.id === id))
-    if (!ents[0] || !ents[1]) return null
-    const input = ents.map((e) => fighterInput(e!, scene))
-    return solveFight(fight, [input[0]!, input[1]!], { duration: shot.duration, fps: shot.fps }).report
+    if (fight.fighterIds.some((id) => !scene.entities.some((e) => e.id === id))) return null
+    return solveInScene(scene, shot, fight).report
   }, [fight, scene, shot])
 
   if (!scene || !shot) return <></>

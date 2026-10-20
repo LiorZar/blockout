@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook; see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts); see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -12,9 +12,11 @@
 import * as THREE from 'three'
 import type { GaitId } from '@engine/types'
 import { assetSpec } from '@engine/assets'
-import { personDims } from '@engine/skeleton'
+import { personDims, type PersonDims } from '@engine/skeleton'
+import { bodyShape, lowestY, type BodyShape } from '@engine/floor'
+import { GAITS } from '@engine/gaits'
 import { dressMannequin } from './mannequin-mesh'
-import { buildWeapon, isWeaponModel } from './weapon-builders'
+import { buildWeapon, isWeaponModel, onFloor } from './weapon-builders'
 
 export interface AnimInput {
   gait: GaitId
@@ -173,8 +175,8 @@ interface PersonJoints {
   elbowL: THREE.Group
   elbowR: THREE.Group
   legLen: number
-  scale: number
   baseLean: number // rest torso pitch (rotation.x; negative leans forward — the elderly stoop)
+  shape: BodyShape // fork: floor-contact proxy (engine floor.ts)
 }
 
 function buildPerson(assetId: string, params?: Record<string, number | string>): BuiltAsset {
@@ -282,8 +284,8 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
     elbowL: armL.elbow,
     elbowR: armR2.elbow,
     legLen,
-    scale: s,
-    baseLean
+    baseLean,
+    shape: bodyShape(assetId, params)
   }
 
   const setTint = makeSetTint(group)
@@ -324,7 +326,7 @@ function buildMannequin(assetId: string, params?: Record<string, number | string
   const build = Math.min(1.3, Math.max(0.8, numParam(params, 'build', 1)))
   const bones = { pelvis, torso, head, shoulderL, shoulderR, elbowL, elbowR, hipL, hipR, kneeL, kneeR }
   dressMannequin(bones, dims, assetId === 'person.mannequinFemale', build)
-  const j: PersonJoints = { root, torso, head, hipL, hipR, kneeL, kneeR, shoulderL, shoulderR, elbowL, elbowR, legLen, scale: s, baseLean: dims.baseLean }
+  const j: PersonJoints = { root, torso, head, hipL, hipR, kneeL, kneeR, shoulderL, shoulderR, elbowL, elbowR, legLen, baseLean: dims.baseLean, shape: bodyShape(assetId, params) }
   const setTint = makeSetTint(group)
   const animate = (input: AnimInput) => animatePerson(j, input)
   animate({ gait: 'stand', phase: 0, speed: 0, distance: 0, time: 0 })
@@ -344,6 +346,119 @@ function resetPersonPose(j: PersonJoints): void {
   j.shoulderR.rotation.set(0, 0, 0)
   j.elbowL.rotation.set(0, 0, 0)
   j.elbowR.rotation.set(0, 0, 0)
+}
+
+/**
+ * Fork: a leg's walk cycle (hip and knee rotation.x, positive hip = forward).
+ * Stance (0..duty): the foot plants `fwd` ahead and sweeps linearly to `back`
+ * behind, the knee bending at mid-stance. Swing: the thigh comes through
+ * (`peak` forward) with the knee folded, and reaches forward for the next plant.
+ */
+interface LegCycle {
+  duty: number
+  fwd: number
+  back: number
+  peak: number
+  kneeStance: number
+  kneeSwing: number
+}
+
+const WALK: LegCycle = { duty: 0.52, fwd: 0.45, back: 0.45, peak: 0.5, kneeStance: 0.1, kneeSwing: 1.0 }
+
+function legCycle(phase: number, c: LegCycle): { hip: number; knee: number } {
+  const f = ((phase % 1) + 1) % 1
+  if (f < c.duty) {
+    // The thigh takes up the knee bend, so the shin (and the rigid foot)
+    // follows the linear sweep: heel down at the plant, toe down at push-off.
+    const u = f / c.duty
+    const bend = c.kneeStance * Math.sin(Math.PI * u)
+    return { hip: c.fwd - (c.fwd + c.back) * u + bend, knee: -bend }
+  }
+  const v = (f - c.duty) / (1 - c.duty)
+  const ease = v * v * (3 - 2 * v)
+  const lift = Math.sin(Math.PI * v)
+  return { hip: -c.back + (c.fwd + c.back) * ease + (c.peak - c.fwd) * lift * lift, knee: -c.kneeSwing * lift }
+}
+
+/**
+ * Fork: jog and run. A leg plants for a contact length (a fraction of the
+ * leg) while the body travels the gait's stride per cycle, so the planted
+ * ankle moves back under the hip exactly as fast as the body moves forward
+ * (no slide). It toes off, kicks the heel up, drives the knee high and
+ * reaches for the next plant; between plants both feet are off the floor
+ * and the hips ride a short arc (the feet at most `maxLift` up).
+ */
+interface RunCycle {
+  contact: number // planted length, × legLen
+  hipH: number // hip height over the planted ankle, × legLen
+  drive: number // thigh forward at the knee drive (rad)
+  fold: number // knee bend at the heel kick (rad)
+  lift: number // hip rise over the flight (m)
+  maxLift: number // feet at most this far off the floor (m)
+  lean: number // torso forward (rad)
+  arm: number // shoulder swing (rad)
+  elbow: number // elbow bend (rad)
+}
+
+const RUN_CYCLES: Record<'jog' | 'run', RunCycle> = {
+  jog: { contact: 0.75, hipH: 0.91, drive: 0.85, fold: 1.5, lift: 0.035, maxLift: 0.04, lean: 0.08, arm: 0.55, elbow: 1.2 },
+  run: { contact: 0.86, hipH: 0.895, drive: 1.25, fold: 2.0, lift: 0.05, maxLift: 0.065, lean: 0.18, arm: 0.75, elbow: 1.5 }
+}
+
+const smooth = (u: number): number => u * u * (3 - 2 * u)
+const mix = (a: number, b: number, u: number): number => a + (b - a) * u
+
+/** Hip and knee rotation.x that put the ankle `fwd` ahead of and `down` below the hip (knee bent forward). */
+function legReach(d: PersonDims, fwd: number, down: number): { hip: number; knee: number } {
+  const U = d.upperLegLen
+  const L = d.lowerLegLen
+  const r = Math.min(Math.hypot(fwd, down), (U + L) * 0.999)
+  const acos = (c: number): number => Math.acos(Math.min(1, Math.max(-1, c)))
+  return { hip: Math.atan2(fwd, down) + acos((U * U + r * r - L * L) / (2 * U * r)), knee: acos((U * U + L * L - r * r) / (2 * U * L)) - Math.PI }
+}
+
+function runLeg(phase: number, c: RunCycle, d: PersonDims, duty: number): { hip: number; knee: number } {
+  const f = ((phase % 1) + 1) % 1
+  const C = c.contact * d.legLen
+  const down = c.hipH * d.legLen
+  if (f < duty) return legReach(d, C * (0.5 - f / duty), down)
+  const v = (f - duty) / (1 - duty)
+  const off = legReach(d, -C / 2, down)
+  const on = legReach(d, C / 2, down)
+  return {
+    hip: v < 0.7 ? mix(off.hip, c.drive, smooth(v / 0.7)) : mix(c.drive, on.hip, smooth((v - 0.7) / 0.3)),
+    knee: v < 0.4 ? mix(off.knee, -c.fold, smooth(v / 0.4)) : mix(-c.fold, on.knee, smooth((v - 0.4) / 0.6))
+  }
+}
+
+/** Fork: the gait pose's lowest point over the root (engine floor.ts proxy, before the manual joint offsets). */
+function gaitLowest(j: PersonJoints): number {
+  const joints = {
+    torsoX: j.baseLean - j.torso.rotation.x,
+    torsoY: j.torso.rotation.y,
+    torsoZ: -j.torso.rotation.z,
+    headX: -j.head.rotation.x,
+    headY: j.head.rotation.y,
+    headZ: -j.head.rotation.z,
+    shoulderLX: -j.shoulderL.rotation.x,
+    shoulderRX: -j.shoulderR.rotation.x,
+    shoulderLZ: -j.shoulderL.rotation.z,
+    shoulderRZ: j.shoulderR.rotation.z,
+    elbowL: j.elbowL.rotation.x,
+    elbowR: j.elbowR.rotation.x,
+    hipLX: -j.hipL.rotation.x,
+    hipRX: -j.hipR.rotation.x,
+    hipLZ: -j.hipL.rotation.z,
+    hipRZ: j.hipR.rotation.z,
+    kneeL: -j.kneeL.rotation.x,
+    kneeR: -j.kneeR.rotation.x
+  }
+  return lowestY(j.shape, joints, j.root.rotation.x)
+}
+
+/** Fork: set the root height so the gait pose's lowest point rests on the floor. */
+function groundOnFloor(j: PersonJoints): void {
+  j.root.position.y = -gaitLowest(j)
 }
 
 function animatePerson(j: PersonJoints, input: AnimInput): void {
@@ -368,31 +483,65 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
       }
       break
     }
-    case 'walk':
-    case 'jog':
-    case 'run': {
-      const amp = input.gait === 'walk' ? 0.5 : input.gait === 'jog' ? 0.8 : 1.1
-      const bobAmp = input.gait === 'walk' ? 0.02 : input.gait === 'jog' ? 0.04 : 0.06
-      const legAngle = swing * amp
-      j.hipL.rotation.x = legAngle
-      j.hipR.rotation.x = -legAngle
+    case 'walk': {
+      // Fork: stance + swing cycle. The leg moving back is the stance leg,
+      // nearly straight; the swinging leg bends its knee to clear the floor.
+      const l = legCycle(p, WALK)
+      const r = legCycle(p + 0.5, WALK)
+      j.hipL.rotation.x = l.hip
+      j.hipR.rotation.x = r.hip
+      j.kneeL.rotation.x = l.knee
+      j.kneeR.rotation.x = r.knee
       // Opposite arms counter-swing.
-      j.shoulderL.rotation.x = -legAngle * 0.8
-      j.shoulderR.rotation.x = legAngle * 0.8
-      // Lower legs bend on the back-swing.
-      j.kneeL.rotation.x = -Math.max(0, -Math.sin(p * TAU)) * 0.8
-      j.kneeR.rotation.x = -Math.max(0, -Math.sin(p * TAU + Math.PI)) * 0.8
+      j.shoulderL.rotation.x = -l.hip * 0.8
+      j.shoulderR.rotation.x = -r.hip * 0.8
       // Fork fix: elbows flex forward (positive), torso pitches forward
       // (negative); both used to play mirrored.
       j.elbowL.rotation.x = 0.3
       j.elbowR.rotation.x = 0.3
-      j.root.position.y = Math.abs(swing) * bobAmp
-      if (input.gait === 'run') j.torso.rotation.x = j.baseLean - 0.15
+      groundOnFloor(j) // fork: the lowest foot stays on the floor
+      break
+    }
+    case 'jog':
+    case 'run': {
+      // Fork: planted stance, knee drive, a short flight (RunCycle).
+      const c = RUN_CYCLES[input.gait]
+      const d = j.shape.dims
+      const duty = Math.min(0.45, Math.max(0.1, (c.contact * d.legLen) / GAITS[input.gait].strideLength))
+      const legsAt = (q: number): void => {
+        const l = runLeg(q, c, d, duty)
+        const r = runLeg(q + 0.5, c, d, duty)
+        j.hipL.rotation.x = l.hip
+        j.kneeL.rotation.x = l.knee
+        j.hipR.rotation.x = r.hip
+        j.kneeR.rotation.x = r.knee
+      }
+      // Bent arms swing against the legs: an arm is furthest back as its leg drives.
+      const drive = duty + 0.7 * (1 - duty)
+      j.shoulderL.rotation.x = -c.arm * Math.cos(TAU * (p - drive))
+      j.shoulderR.rotation.x = -c.arm * Math.cos(TAU * (p + 0.5 - drive))
+      j.elbowL.rotation.x = c.elbow
+      j.elbowR.rotation.x = c.elbow
+      j.torso.rotation.x = j.baseLean - c.lean
+      const f = ((p % 0.5) + 0.5) % 0.5
+      const lowAt = (q: number): number => {
+        legsAt(q)
+        return gaitLowest(j)
+      }
+      if (f < duty || input.speed <= 0) {
+        j.root.position.y = -lowAt(p) // planted (a held run mark stands)
+        break
+      }
+      // Flight: the hips arc from push-off to the next plant.
+      const v = (f - duty) / (0.5 - duty)
+      const y0 = -lowAt(p - f + duty)
+      const y1 = -lowAt(p - f + 0.5)
+      const low = lowAt(p)
+      const y = mix(y0, y1, v) + 4 * c.lift * v * (1 - v)
+      j.root.position.y = Math.min(-low + c.maxLift, Math.max(-low, y))
       break
     }
     case 'crouch': {
-      const drop = j.legLen * 0.3
-      j.root.position.y = -drop
       j.hipL.rotation.x = 0.9
       j.hipR.rotation.x = 0.9
       j.kneeL.rotation.x = -1.4
@@ -403,36 +552,42 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
         j.hipL.rotation.x += legAngle
         j.hipR.rotation.x -= legAngle
       }
+      // Fork fix: on the balls of the feet (a fixed drop sank the toes).
+      groundOnFloor(j)
       break
     }
     case 'sit': {
-      const chairH = 0.45 * j.scale
-      j.root.position.y = -(j.legLen - chairH)
       // Thighs horizontal and forward, lower legs vertical (fork fix: the
-      // thighs used to point backward).
+      // thighs used to point backward). Fork fix: the hips sit at shin
+      // height, so the soles rest on the floor on every body (a fixed 0.45 m
+      // seat floated the classic feet and sank the mannequins').
       j.hipL.rotation.x = Math.PI / 2
       j.hipR.rotation.x = Math.PI / 2
       j.kneeL.rotation.x = -Math.PI / 2
       j.kneeR.rotation.x = -Math.PI / 2
       j.torso.rotation.x = j.baseLean
+      groundOnFloor(j)
       break
     }
     case 'lie': {
-      // Tip the whole body flat; pelvis raised so body rests on ground.
+      // Tip the whole body flat. Fork fix: no stoop (it tipped the elderly
+      // torso into the floor), and the lowest point rests on the floor.
       j.root.rotation.x = -Math.PI / 2
-      j.root.position.y = 0.18 * j.scale
       j.root.position.z = j.legLen * 0.5
+      j.torso.rotation.x = 0
+      groundOnFloor(j)
       break
     }
     case 'fall': {
       // Fallen backward, arms up.
       j.root.rotation.x = 1.4
-      j.root.position.y = 0.25 * j.scale
       j.root.position.z = -j.legLen * 0.3
+      j.torso.rotation.x = 0
       j.shoulderL.rotation.x = -2.2
       j.shoulderR.rotation.x = -2.2
       j.hipL.rotation.x = 0.3
       j.hipR.rotation.x = -0.2
+      groundOnFloor(j)
       break
     }
   }
@@ -6179,7 +6334,7 @@ export function buildAsset(assetId: string, params?: Record<string, number | str
   }
   if (assetId.startsWith('furniture.')) return buildFurniture(assetId)
   if (isWeaponModel(assetId)) return buildWeapon(assetId)
-  if (assetId.startsWith('prop.')) return buildProp(assetId)
+  if (assetId.startsWith('prop.')) return onFloor(buildProp(assetId), assetId)
   if (assetId.startsWith('env.')) return buildEnv(assetId)
   if (assetId.startsWith('prim.')) return buildPrimitive(assetId)
   return buildFallback(assetId)

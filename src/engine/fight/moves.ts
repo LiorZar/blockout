@@ -14,13 +14,17 @@
  * keyframes are too sparse to measure it (their average is 2–4 m/s, a
  * tenth of a real kick).
  *
+ * A move whose upstream data reads wrong on camera plays a fork replacement
+ * (`FORK_REPLACEMENTS`, motions-fork.ts) under its upstream id, so scripts,
+ * saved fights, speeds and physics keep the id.
+ *
  * PURE: no DOM / three.js / Electron.
  */
 
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, type Effector } from '../skeleton'
-import type { V3 } from '../types'
-import { WEAPON_SPECS, type WeaponSpec } from '../weapons'
+import type { Entity, V3 } from '../types'
+import { WEAPON_SPECS, weaponSpec, type Hand, type WeaponKind, type WeaponSpec } from '../weapons'
 
 export interface StrikeImpact {
   effector: Effector
@@ -36,6 +40,9 @@ export const DEFENSES: Record<'block' | 'parry' | 'slip' | 'duck', { high: strin
   slip: { high: 'dodge-left', low: 'dodge-left', readyFraction: 0.5 },
   duck: { high: 'duck-under', low: 'weave-bob', readyFraction: 0.45 }
 }
+
+/** A shield holder's block and parry (fork, motions-fork.ts): the shield up with its face toward the attacker. */
+export const SHIELD_BLOCK = { high: 'shield-block-high', low: 'shield-block-face', readyFraction: 0.35 }
 
 export const REACTIONS = {
   head: 'hit-reaction-head',
@@ -74,7 +81,9 @@ export const MOVE_ALIASES: Record<string, string> = {
   shoot: 'pistol-aim-fire',
   shoots: 'pistol-aim-fire',
   fire: 'pistol-aim-fire',
-  shot: 'pistol-aim-fire'
+  shot: 'pistol-aim-fire',
+  // Upstream has the spinning backfist twice; the catalog lists one (DUPLICATE_MOVES).
+  'spinning-back-fist': 'spinning-backfist'
 }
 
 /** Fight-category motions that aren't melee strikes (ranged weapons, footwork, being hit). */
@@ -88,7 +97,8 @@ const NON_STRIKES = new Set([
   'bow-draw-loose',
   'pistol-aim-fire',
   'rifle-aim-sweep',
-  'rifle-aim-fire'
+  'rifle-aim-fire',
+  'shield-brace-face'
 ])
 
 /**
@@ -117,7 +127,6 @@ export const STRIKE_SPEED: Record<string, number[]> = {
   'side-kick': [8],
   'spinning-back-kick': [13],
   'low-sweep': [7],
-  'spinning-back-fist': [11],
   'tackle-lunge': [4],
   'shove-two-hands': [2.5],
   'sword-slash-combo': [9, 9],
@@ -153,6 +162,25 @@ const REFERENCE = personDims('person.man')
 const BY_ID = new Map(MOTION_PRESETS.map((m) => [m.id, m]))
 const memo = new Map<string, StrikeImpact[]>()
 
+/** Upstream fight move → the fork motion a fight plays for it (the twist follows the motions.ts header). */
+export const FORK_REPLACEMENTS: Record<string, string> = {
+  haymaker: 'haymaker-swing',
+  'elbow-strike': 'elbow-strike-across',
+  'sword-slash-combo': 'sword-slash-two-hand'
+}
+const REPLACEMENT_IDS = new Set(Object.values(FORK_REPLACEMENTS))
+
+/** Upstream strikes that duplicate another: not listed, and played (saved fights too) as the move they duplicate. */
+export const DUPLICATE_MOVES: Record<string, string> = {
+  'spinning-back-fist': 'spinning-backfist'
+}
+
+/** The keyframes a fight move plays: its fork replacement, else the motion itself (a duplicate plays its original). */
+export function fightMotion(id: string): MotionPreset | undefined {
+  const move = DUPLICATE_MOVES[id] ?? id
+  return BY_ID.get(FORK_REPLACEMENTS[move] ?? move)
+}
+
 const dist = (a: V3, b: V3): number => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
 
 /** Limb joints only: torso and head channels zeroed, so extension is the limb's own. */
@@ -160,7 +188,7 @@ function limbOnly(joints: Record<string, number>): Record<string, number> {
   return { ...joints, torsoX: 0, torsoY: 0, torsoZ: 0, headX: 0, headY: 0, headZ: 0 }
 }
 
-function detect(m: MotionPreset): StrikeImpact[] {
+function detect(m: MotionPreset, id: string): StrikeImpact[] {
   const kfs = m.keyframes
   if (kfs.length < 3) return []
   const full = kfs.map((k) => poseEffectors(REFERENCE, k.joints))
@@ -189,26 +217,30 @@ function detect(m: MotionPreset): StrikeImpact[] {
   }
   return kept
     .sort((a, b) => a.t - b.t)
-    .map((imp, k) => ({ ...imp, speed: STRIKE_SPEED[m.id]?.[k] ?? EFFECTOR_SPEED[imp.effector.replace(/[LR]$/, '')]! }))
+    .map((imp, k) => ({ ...imp, speed: STRIKE_SPEED[id]?.[k] ?? EFFECTOR_SPEED[imp.effector.replace(/[LR]$/, '')]! }))
 }
 
-/** Impacts of a strike motion (memoised); [] for unknown motions, defenses and reactions. */
+/** Impacts of a strike motion (memoised; a replaced move's from its fork data); [] for unknown motions, defenses and reactions. */
 export function strikeImpacts(motionId: string): StrikeImpact[] {
+  const same = DUPLICATE_MOVES[motionId]
+  if (same) return strikeImpacts(same)
   const hit = memo.get(motionId)
   if (hit) return hit
   const m = BY_ID.get(motionId)
-  const out = m && isStrikeCandidate(m) ? detect(m) : []
+  const out = m && isStrikeCandidate(m) ? detect(fightMotion(motionId)!, motionId) : []
   memo.set(motionId, out)
   return out
 }
 
 const DEFENSE_AND_REACTION_IDS = new Set<string>([
   ...Object.values(DEFENSES).flatMap((d) => [d.high, d.low]),
+  SHIELD_BLOCK.high,
+  SHIELD_BLOCK.low,
   ...Object.values(REACTIONS)
 ])
 
 function isStrikeCandidate(m: MotionPreset): boolean {
-  return m.category === 'fight' && !NON_STRIKES.has(m.id) && !DEFENSE_AND_REACTION_IDS.has(m.id)
+  return m.category === 'fight' && !NON_STRIKES.has(m.id) && !DEFENSE_AND_REACTION_IDS.has(m.id) && !REPLACEMENT_IDS.has(m.id) && !(m.id in DUPLICATE_MOVES)
 }
 
 export const STRIKE_IDS: string[] = MOTION_PRESETS.filter((m) => isStrikeCandidate(m) && strikeImpacts(m.id).length > 0).map(
@@ -217,39 +249,112 @@ export const STRIKE_IDS: string[] = MOTION_PRESETS.filter((m) => isStrikeCandida
 
 /* ----------------------------- gun shots (fork) ---------------------------- */
 
-/** Aim-and-fire motions a gun beat plays (held weapons; see src/engine/weapons.ts). */
-export const SHOT_MOVES = new Set(['pistol-aim-fire', 'rifle-aim-fire'])
+/** Aim-and-fire motions a gun or bow beat plays (held weapons; see src/engine/weapons.ts). */
+export const SHOT_MOVES = new Set(['pistol-aim-fire', 'rifle-aim-fire', 'bow-draw-loose'])
 
-/** The aim a gun beat plays, whichever shot the script names: long guns shoulder, pistols aim arms out. */
+/** The aim a gun or bow beat plays, whichever shot the script names: long guns shoulder, pistols aim arms out, a bow draws and looses. */
 export function gunAimMove(spec: WeaponSpec): string {
+  if (spec.kind === 'bow') return 'bow-draw-loose'
   return spec.mount === 'shoulder' ? 'rifle-aim-fire' : 'pistol-aim-fire'
 }
-/** A bullet: the physics sees the fastest blow there is. */
+
+/** The hand a shot motion fires from as authored: the bow arm is the left, guns fire from the right. */
+export function shotHand(moveId: string): 'L' | 'R' {
+  return moveId === 'bow-draw-loose' ? 'L' : 'R'
+}
+
+/** A bullet or an arrow: the physics sees the fastest blow there is. */
 const BULLET_SPEED = 15
 
 /**
- * The shot of an aim-and-fire motion: the keyframe just before the recoil
- * (the gun arm's highest raise), fired from the gun hand. [] for anything else.
+ * The shot of an aim-and-fire motion, fired from `hand`: a gun's keyframe
+ * just before the recoil (the gun arm's highest raise); a bow's loose (the
+ * draw arm opening after full draw). [] for anything else.
  */
-export function shotImpacts(moveId: string, hand: 'L' | 'R' = 'R'): StrikeImpact[] {
+export function shotImpacts(moveId: string, hand: 'L' | 'R' = shotHand(moveId)): StrikeImpact[] {
   const m = BY_ID.get(moveId)
   if (!m || !SHOT_MOVES.has(moveId)) return []
-  const raise = m.keyframes.map((k) => -(k.joints[`shoulder${hand}X`] ?? 0))
-  const recoil = raise.indexOf(Math.max(...raise))
-  const k = Math.max(1, recoil - 1)
+  let k: number
+  if (moveId === 'bow-draw-loose') {
+    const draw = m.keyframes.map((kf) => kf.joints.elbowR ?? 0)
+    k = Math.min(m.keyframes.length - 2, draw.indexOf(Math.max(...draw)) + 1)
+  }
+  else {
+    const raise = m.keyframes.map((kf) => -(kf.joints[`shoulder${hand}X`] ?? 0))
+    k = Math.max(1, raise.indexOf(Math.max(...raise)) - 1)
+  }
   return [{ effector: hand === 'L' ? 'handL' : 'handR', t: m.keyframes[k]!.t, speed: BULLET_SPEED }]
+}
+
+/** Moves played with both hands on one grip (fork): the solver pitches both arms alike, so the hands stay together. */
+export const TWO_HAND_GRIP = new Set(['sword-slash-combo'])
+
+/**
+ * The solver's pitch offsets for a blow, for a two-hand-grip move copied to
+ * the other arm's shoulder X: both shoulders turn about the torso's X axis,
+ * so equal pitches move both hands alike.
+ */
+export function gripPitch(moveId: string, pitch: Record<string, number>): Record<string, number> {
+  if (!TWO_HAND_GRIP.has(moveId)) return pitch
+  const out = { ...pitch }
+  for (const [side, other] of [['L', 'R'], ['R', 'L']]) {
+    const v = pitch[`shoulder${side}X`]
+    if (v !== undefined && pitch[`shoulder${other}X`] === undefined) out[`shoulder${other}X`] = v
+  }
+  return out
+}
+
+/* ------------------------- weapon motions by hand (fork) ------------------------ */
+
+/** Fork shield motions, authored with the shield in the left hand. */
+const SHIELD_MOTIONS = new Set(['shield-block-face', 'shield-brace-face', 'shield-block-high'])
+const MELEE: WeaponKind[] = ['blade', 'blunt', 'polearm']
+const REPLACED = new Map(Object.entries(FORK_REPLACEMENTS).map(([from, to]) => [to, from]))
+
+/**
+ * The hand a motion uses its weapon in as authored, and the weapons it is
+ * for: a shot's gun or bow hand, the shield motions' left, a strike whose
+ * blows all come from one hand (a fork replacement by its upstream move's
+ * blows); null for anything else.
+ */
+export function motionWeaponHand(motionId: string): { hand: Hand; kinds: WeaponKind[] } | null {
+  if (SHOT_MOVES.has(motionId)) return { hand: shotHand(motionId), kinds: motionId === 'bow-draw-loose' ? ['bow'] : ['gun'] }
+  if (SHIELD_MOTIONS.has(motionId)) return { hand: 'L', kinds: ['shield'] }
+  const sides = new Set(strikeImpacts(REPLACED.get(motionId) ?? motionId).map((imp) => imp.effector.slice(-1)))
+  return sides.size === 1 ? { hand: [...sides][0] as Hand, kinds: MELEE } : null
+}
+
+/**
+ * A motion plays mirrored on a performer whose weapon for it is only in the
+ * other hand (a left-hand rifle shoulders on the left, a left-hand sword
+ * slashes with the left arm), as fights already do.
+ */
+export function mirrorForHeld(motionId: string, held: { hand: Hand; kind: WeaponKind }[]): boolean {
+  const w = motionWeaponHand(motionId)
+  if (!w) return false
+  const fits = held.filter((h) => w.kinds.includes(h.kind))
+  return fits.length > 0 && fits.every((h) => h.hand !== w.hand)
+}
+
+/** `mirrorForHeld` for a performer in a scene: the weapons whose `heldBy` names it. */
+export function mirrorForHolder(motionId: string, holderId: string, entities: Entity[]): boolean {
+  const held = entities.flatMap((e) => {
+    const spec = e.heldBy?.entityId === holderId ? weaponSpec(e.assetId) : undefined
+    return spec ? [{ hand: e.heldBy!.hand, kind: spec.kind }] : []
+  })
+  return mirrorForHeld(motionId, held)
 }
 
 export function listFightMoves(): { id: string; name: string; impacts: StrikeImpact[] }[] {
   return STRIKE_IDS.map((id) => ({ id, name: BY_ID.get(id)!.name, impacts: strikeImpacts(id) }))
 }
 
-/** The gun shots a fight script can use (list_fight_moves adds them after the strikes), with the guns that play each. */
+/** The gun and bow shots a fight script can use (list_fight_moves adds them after the strikes), with the weapons that play each. */
 export function listShotMoves(): { id: string; name: string; impacts: StrikeImpact[]; guns: string[] }[] {
   return [...SHOT_MOVES].map((id) => ({
     id,
     name: BY_ID.get(id)!.name,
     impacts: shotImpacts(id),
-    guns: WEAPON_SPECS.filter((w) => w.kind === 'gun' && gunAimMove(w) === id).map((w) => w.assetId)
+    guns: WEAPON_SPECS.filter((w) => (w.kind === 'gun' || w.kind === 'bow') && gunAimMove(w) === id).map((w) => w.assetId)
   }))
 }

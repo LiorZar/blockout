@@ -8,10 +8,10 @@ import { MOTION_PRESETS } from '@engine/motions'
 import { createEntity, createProject } from '@engine/schema'
 import { personDims, poseEffectors, toWorld } from '@engine/skeleton'
 import type { EntityState, FightDoc, V3 } from '@engine/types'
-import { aimDirectionLocal, handFrame, heldPointLocal, holdJoints, weaponSpec, type Hand } from '@engine/weapons'
+import { aimDirectionLocal, handFrame, heldPointLocal, holdJoints, SUPPORT_SLACK, supportReach, weaponSpec, type Hand } from '@engine/weapons'
 
 const LONG_GUNS = ['prop.rifle', 'prop.shotgun']
-const BODIES = ['person.man', 'person.mannequinMale', 'person.mannequinFemale']
+const BODIES = ['person.man', 'person.woman', 'person.mannequinMale', 'person.mannequinFemale', 'person.child', 'person.elderly']
 const RIFLE_AIM = MOTION_PRESETS.find((m) => m.id === 'rifle-aim-fire')
 
 const sub = (a: V3, b: V3): V3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z })
@@ -100,8 +100,14 @@ describe('rifle-aim-fire', () => {
           const butt = heldPointLocal(dims, held, hand, spec, spec.stock!, 1)
           const shoulder = poseEffectors(dims, held)[hand === 'R' ? 'shoulderR' : 'shoulderL']
           expect(len(sub(butt, shoulder)), `${body} stock to shoulder`).toBeLessThanOrEqual(0.06)
-          const support = heldPointLocal(dims, held, hand, spec, spec.support!, 1)
-          expect(len(sub(handFrame(dims, held, off).p, support)), `${body} support hand`).toBeLessThanOrEqual(0.01)
+          // The support hand closes on the fore-end: on the support point, or slid back along the gun
+          // (at most halfway to the grip) when the arm can't reach it, and then reported.
+          const reach = supportReach(dims, held, hand, spec, 1)
+          expect(len(sub(handFrame(dims, held, off).p, reach.point)), `${body} support hand`).toBeLessThanOrEqual(0.01)
+          expect(reach.shortM, `${body} support hand short`).toBeLessThanOrEqual(0.01)
+          expect(reach.slideM, `${body} slide`).toBeLessThanOrEqual(len(sub(spec.grip, spec.support!)) / 2 + 1e-9)
+          if (body !== 'person.child') expect(reach.slideM, `${body} slide`).toBeLessThanOrEqual(SUPPORT_SLACK)
+          else expect(reach.slideM, 'a child slides the support hand back').toBeGreaterThan(SUPPORT_SLACK)
           // Upright: the gun's top within 10° of straight up.
           const top = sub(heldPointLocal(dims, held, hand, spec, { ...spec.grip, y: spec.grip.y + 1 }, 1), heldPointLocal(dims, held, hand, spec, spec.grip, 1))
           expect(deg(Math.acos(Math.min(1, top.y))), `${body} cant`).toBeLessThanOrEqual(10)
@@ -173,7 +179,10 @@ describe('gun beats pick the aim from the gun', () => {
   for (const [assetId, hand, attacker] of [
     ['prop.rifle', 'R', 'person.man'],
     ['prop.shotgun', 'R', 'person.mannequinMale'],
-    ['prop.rifle', 'L', 'person.mannequinFemale']
+    ['prop.rifle', 'L', 'person.mannequinFemale'],
+    ['prop.rifle', 'R', 'person.elderly'],
+    ['prop.shotgun', 'L', 'person.child'],
+    ['prop.rifle', 'R', 'person.woman']
   ] as [string, Hand, string][]) {
     it(`${assetId} in the ${hand} hand (${attacker}): a shouldered aim, the barrel line through the target within 3 cm`, () => {
       const gun = { assetId, hand, scale: 1 }
@@ -193,6 +202,10 @@ describe('gun beats pick the aim from the gun', () => {
       const dims = personDims(attacker)
       const butt = heldPointLocal(dims, a.joints, hand, spec, spec.stock!, 1)
       expect(len(sub(butt, poseEffectors(dims, a.joints)[hand === 'R' ? 'shoulderR' : 'shoulderL']))).toBeLessThanOrEqual(0.06)
+      // A body that can't reach the fore-end gets a report line.
+      const slid = supportReach(dims, a.joints, hand, spec, 1).slideM > SUPPORT_SLACK
+      expect(rep.warnings.some((w) => w.includes('fore-end')), rep.warnings.join('; ')).toBe(slid)
+      expect(slid).toBe(attacker === 'person.child')
     })
   }
 

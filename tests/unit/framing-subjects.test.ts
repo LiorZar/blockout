@@ -6,6 +6,7 @@ const car = { id: 'car1', assetId: 'vehicle.sedan' }
 const car2 = { id: 'car2', assetId: 'vehicle.suv' }
 const man = { id: 'man1', assetId: 'person.man' }
 const woman = { id: 'woman1', assetId: 'person.woman' }
+const chair = { id: 'chair1', assetId: 'prop.chair' }
 
 describe('pickFramingSubjectIds', () => {
   it('single selected vehicle with minSelected 1 → [car]', () => {
@@ -32,5 +33,25 @@ describe('pickFramingSubjectIds', () => {
   it('only an env kit → []', () => {
     expect(pickFramingSubjectIds([env], [], 2)).toEqual([])
     expect(pickFramingSubjectIds([], [], 1)).toEqual([])
+  })
+
+  // B5/B6 (qa-export): a just-placed set kit stays selected; camera moves must
+  // still be built around the cast.
+  it('a selected set kit is skipped when the scene has people → the people', () => {
+    expect(pickFramingSubjectIds([env, man, woman], ['env1'], 1)).toEqual(['man1', 'woman1'])
+    expect(pickFramingSubjectIds([env, man, woman], ['env1', 'woman1'], 1)).toEqual(['woman1'])
+  })
+
+  it('a selected set kit is skipped when the scene has vehicles → the vehicles', () => {
+    expect(pickFramingSubjectIds([env, car, car2], ['env1'], 1)).toEqual(['car1', 'car2'])
+  })
+
+  it('a set kit passed explicitly by id is honoured', () => {
+    expect(pickFramingSubjectIds([env, man], ['env1'], 1, { explicit: true })).toEqual(['env1'])
+  })
+
+  it('a selected set kit is honoured when there is no cast at all', () => {
+    expect(pickFramingSubjectIds([env], ['env1'], 1)).toEqual(['env1'])
+    expect(pickFramingSubjectIds([env, chair], ['env1'], 1)).toEqual(['env1'])
   })
 })

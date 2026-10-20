@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director; mannequin thumbs; Weapons group; see MODIFICATIONS.md.
+// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director (kept across remounts); mannequin thumbs; Weapons group; Sequences fight hint; see MODIFICATIONS.md.
 /**
  * Stage-mode asset palette. Browse the built-in catalog grouped by category,
  * filter by name, and arm click-to-place (the Viewport does the drop).
@@ -190,6 +190,14 @@ function Sequences(): JSX.Element {
           </select>
         </div>
       </div>
+      {/* Fork (gap 3): only a two-fighter fight is solved so blows land. */}
+      {type === 'fight' && (
+        <p style={{ color: 'var(--text-faint)', fontSize: 10.5, lineHeight: 1.4, margin: '0 0 6px' }}>
+          {count === 2
+            ? 'Two fighters: staged by the Fight Director, which lands the blows on their frames.'
+            : "A crowd brawl: blows don't connect. For a fight where blows land, use the Choreographer's 🥋 Fight (the Fight Director)."}
+        </p>
+      )}
       <button
         className={`btn primary${placingSequence ? ' active' : ''}`}
         style={{ width: '100%' }}
@@ -209,13 +217,20 @@ const randomSeed = (): number => Math.floor(Math.random() * 1_000_000_000)
 /** Fork: the Fight routine opens the Fight Director instead of the upstream fight options. */
 const isFightDirector = (kind: ChoreoKind): boolean => kind === 'fight'
 
+/** Fork: the routine picked last, so the Choreographer keeps it when the Library remounts (e.g. DELIVER → STAGE). */
+let lastKind: ChoreoKind = 'dance'
+
 /**
  * Choreographer: author a staged routine (dance number, paired fight, chase)
  * and either spawn fresh performers (click the floor) or apply it to the
  * currently selected characters.
  */
 function Choreographer(): JSX.Element {
-  const [kind, setKind] = useState<ChoreoKind>('dance')
+  const [kind, setKindState] = useState<ChoreoKind>(lastKind)
+  const setKind = (k: ChoreoKind): void => {
+    lastKind = k
+    setKindState(k)
+  }
   const [style, setStyle] = useState('mixed')
   const [performers, setPerformers] = useState(8)
   const [duration, setDuration] = useState(8)

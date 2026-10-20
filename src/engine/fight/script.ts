@@ -170,7 +170,8 @@ export function formatFightScript(beats: FightBeat[], fighterLabels: [string, st
   const names = whoNames(fighterLabels)
   return beats
     .map((b) => {
-      const parts = [names[b.attacker], b.move, 'to', b.target, '->', b.outcomes.join(', ')]
+      // A shot plays the held gun's or bow's own aim, whichever shot was named: echo the neutral word.
+      const parts = [names[b.attacker], SHOT_MOVES.has(b.move) ? 'shoot' : b.move, 'to', b.target, '->', b.outcomes.join(', ')]
       if (b.power !== DEFAULT_POWER) parts.push('power', fmt(b.power))
       if (b.at !== undefined) parts.push('at', `${fmt(b.at)}s`)
       return parts.join(' ')

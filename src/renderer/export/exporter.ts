@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's per-profile file-size cap in 2026; see MODIFICATIONS.md.
 /**
  * The Deliver pipeline. Exports are deterministic: the timeline is stepped
  * at exactly the shot's fps and every frame is rendered from the same
@@ -10,6 +10,7 @@ import * as THREE from 'three'
 import { ASPECT_RATIOS } from '@engine/camera'
 import { generatePrompt } from '@engine/prompt'
 import { getProfile, BUILTIN_PROFILES, type GeneratorProfile } from '@engine/profiles'
+import { encoderMaxKbps } from '@engine/profile-limits'
 import { ShotEvaluator } from '@engine/evaluate'
 import type { ProjectDoc, Scene, Shot } from '@engine/types'
 import { useStore } from '../store'
@@ -82,6 +83,19 @@ function getExportRenderer(): { canvas: HTMLCanvasElement; renderer: THREE.WebGL
   return { canvas: exportCanvas, renderer: exportRenderer }
 }
 
+/**
+ * Fork (qa-export B11): export names are stamped to the second, so two exports
+ * in one second would share a name; a repeat in this session gets -2, -3…
+ * instead of overwriting the first.
+ */
+const writtenPaths = new Set<string>()
+function freshPath(base: string, ext = ''): string {
+  let out = `${base}${ext}`
+  for (let n = 2; writtenPaths.has(out); n++) out = `${base}-${n}${ext}`
+  writtenPaths.add(out)
+  return out
+}
+
 async function canvasPng(canvas: HTMLCanvasElement): Promise<ArrayBuffer> {
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
   if (!blob) throw new Error('PNG encode failed')
@@ -109,7 +123,8 @@ async function renderPassToMp4(
   height: number,
   showLabels: boolean,
   progress: (frame: number) => void,
-  isCancelled: () => boolean
+  isCancelled: () => boolean,
+  maxKbps?: number
 ): Promise<{ ok: boolean; error?: string }> {
   const { canvas, renderer } = getExportRenderer()
   canvas.width = width
@@ -123,7 +138,9 @@ async function renderPassToMp4(
     fps: shot.fps,
     width,
     height,
-    framesExpected: totalFrames
+    framesExpected: totalFrames,
+    // Fork: the profile's file-size cap as a bitrate ceiling (profile-limits.ts).
+    ...(maxKbps ? { maxKbps } : {})
   })
   const gl = renderer.getContext()
   const pixels = new Uint8Array(width * height * 4)
@@ -260,7 +277,7 @@ export async function exportShot(opts: ExportOptions): Promise<ExportResult> {
   const { width, height } = exportDims(profile, shot.aspect, opts.resolution ?? 'auto')
 
   const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-  const pkg = `${folder}/exports/${sanitize(scene.name)}/Shot-${sanitize(shot.name)}/export-${stamp}`
+  const pkg = freshPath(`${folder}/exports/${sanitize(scene.name)}/Shot-${sanitize(shot.name)}/export-${stamp}`)
 
   const passes: ('clean' | 'depth' | 'normal')[] = []
   if (opts.passes.clean) passes.push('clean')
@@ -294,7 +311,8 @@ export async function exportShot(opts: ExportOptions): Promise<ExportResult> {
         (f) => {
           s.setExportProgress({ frame: done + f, label: `Rendering ${suffix} pass…` })
         },
-        isCancelled
+        isCancelled,
+        encoderMaxKbps(profile, shot.duration)
       )
       if (!result.ok) {
         s.setExportProgress({ running: false, error: result.error })
@@ -406,7 +424,7 @@ export async function exportStillAtPlayhead(
     manager.renderFrameAt(renderer, t, width, height, 'clean', { showLabels })
     const png = await canvasPng(canvas)
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
-    const out = `${folder}/exports/${sanitize(scene.name)}/Shot-${sanitize(shot.name)}/frames/${sanitize(shot.name)}_${t.toFixed(2)}s_${stamp}.png`
+    const out = freshPath(`${folder}/exports/${sanitize(scene.name)}/Shot-${sanitize(shot.name)}/frames/${sanitize(shot.name)}_${t.toFixed(2)}s_${stamp}`, '.png')
     await window.blockout.exportWriteFile(out, png)
     s.setExportProgress({ lastPackagePath: out })
     return { ok: true, packagePath: out }
@@ -456,7 +474,9 @@ export async function exportAnimatic(
   }
   if (originalShot) s.selectShot(originalShot)
 
-  const out = `${folder}/exports/${sanitize(scene.name)}/animatic.mp4`
+  // Fork: timestamped like export_shot, so a re-export never overwrites the last animatic.
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const out = freshPath(`${folder}/exports/${sanitize(scene.name)}/animatic-${stamp}`, '.mp4')
   const concat = await window.blockout.exportConcat(out, clips)
   if (!concat.ok) return { ok: false, error: concat.error }
   s.setExportProgress({ running: false, lastPackagePath: out })
@@ -526,7 +546,9 @@ export async function exportContactSheet(): Promise<ExportResult> {
 
   const blob = await new Promise<Blob | null>((r) => sheet.toBlob(r, 'image/png'))
   if (!blob) return { ok: false, error: 'PNG encode failed' }
-  const out = `${folder}/exports/${sanitize(scene.name)}/contact-sheet.png`
+  // Fork: timestamped like export_shot, so a re-export never overwrites the last sheet.
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const out = freshPath(`${folder}/exports/${sanitize(scene.name)}/contact-sheet-${stamp}`, '.png')
   await window.blockout.exportWriteFile(out, await blob.arrayBuffer())
   return { ok: true, packagePath: out }
 }

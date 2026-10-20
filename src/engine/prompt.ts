@@ -1,4 +1,4 @@
-// Modified in this fork (2026): held weapons are named with their holder's hand; see MODIFICATIONS.md.
+// Modified in this fork (2026): held weapons are named with their holder's hand; the proxy map, action and camera sections (prompt-scene.ts) and the previs directive; see MODIFICATIONS.md.
 /**
  * Prompt generation, v5: a SHORT, paste-ready prompt. The reference video
  * carries all the choreography — the prompt's job is only to say "use this
@@ -11,6 +11,7 @@
 
 import { assetSpec } from './assets'
 import type { GeneratorProfile } from './profiles'
+import { composePrompt, describeShot } from './prompt-scene'
 import type { LightingPresetId, Scene, Shot } from './types'
 import { heldWeaponWords } from './weapons'
 
@@ -28,6 +29,12 @@ const LIGHTING_WORDS: Record<LightingPresetId, string> = {
 
 export function generatePrompt(scene: Scene, shot: Shot, profile: GeneratorProfile): string {
   const lines: string[] = []
+  // Fork: what each grey shape is, the action and the camera (prompt-scene.ts).
+  const words = describeShot(scene, shot)
+  if (profile.kind === 'image') {
+    words.action = []
+    words.camera = []
+  }
   const marks = [...shot.camera.marks].sort((a, b) => a.time - b.time)
   const lens = Math.round(marks[0]?.focalLength ?? 35)
 
@@ -46,7 +53,7 @@ export function generatePrompt(scene: Scene, shot: Shot, profile: GeneratorProfi
       moves || e.label || e.heldBy || cat === 'people' || cat === 'vehicles' || cat === 'animals'
     )
   })
-  if (notable.length > 0) {
+  if (notable.length > 0 && words.proxies.length === 0) {
     const names = notable.map((e) => {
       const noun = assetSpec(e.assetId).promptNoun
       // Fork: "a sword (the green shape) in A's right hand".
@@ -65,13 +72,19 @@ export function generatePrompt(scene: Scene, shot: Shot, profile: GeneratorProfi
 
   // The core instruction. Video-reference generators get the simple
   // motion-reference directive; image-only profiles keep their own clause.
-  if (profile.refModes.includes('referenceVideo')) {
+  if (profile.promptStyle === 'previs') {
+    lines.push(profile.adherenceClause)
+  } else if (profile.refModes.includes('referenceVideo')) {
     lines.push(
-      'Use the attached video strictly as a motion reference: match the character blocking and movement, and the camera blocking, movement, and tracking, exactly as shown. The grey figures are placeholders — replace them with the real subjects and world while keeping every move the same.'
+      'Use the attached video strictly as a motion reference: match the character blocking and movement, and the camera blocking, movement, and tracking, exactly as shown. ' +
+        // Fork: labelled shapes are tinted, so "grey" is wrong once the proxy map names them.
+        (words.proxies.length > 0
+          ? 'The shapes are placeholders for the subjects named above — replace them with the real subjects and world while keeping every move the same.'
+          : 'The grey figures are placeholders — replace them with the real subjects and world while keeping every move the same.')
     )
   } else {
     lines.push(profile.adherenceClause)
   }
 
-  return lines.join('\n\n')
+  return composePrompt(lines, words, profile.maxPromptChars)
 }

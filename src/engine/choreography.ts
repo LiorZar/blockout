@@ -1,3 +1,4 @@
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves; see MODIFICATIONS.md.
 /**
  * Choreography engine: routines that read as REAL staged choreography —
  * timed dance phrases hit on the count and change formation with real walking;
@@ -16,6 +17,7 @@
  */
 
 import { MOTION_PRESETS, type MotionPreset } from './motions'
+import { bodyLowY, motionRootY, type Body } from './floor'
 import type { GaitId } from './types'
 
 /* ----------------------------- public model ---------------------------- */
@@ -59,6 +61,8 @@ export interface RoutineSpec {
 export interface RoutineCtx {
   /** Where to stage it and which way the group faces/travels. */
   origin: { x: number; z: number; heading: number }
+  /** Fork: the performers' own bodies (retargeted people), for the floor rule. */
+  bodies?: Body[]
 }
 
 /** A single blocking mark for one performer (superset of the sequence mark). */
@@ -72,6 +76,8 @@ export interface ChoreoMarkSpec {
   joints?: Record<string, number>
   /** Face this heading at/through this mark; else travel heading is used. */
   arriveHeading?: number
+  /** Fork: a motion-playback mark (types.ts `ActorMark.posedMove`). */
+  posedMove?: boolean
 }
 
 export interface ChoreoEntitySpec {
@@ -202,7 +208,7 @@ function playMotion(
       time: startT + kf.t,
       position: {
         x: pos.x + fwd.x * forward,
-        y: Math.max(0, pos.y + up),
+        y: pos.y + up, // fork: raw; `floorRoutine` applies the floor rule
         z: pos.z + fwd.z * forward
       },
       gait: opts.gait ?? 'stand',
@@ -210,7 +216,8 @@ function playMotion(
       easeOut: 0,
       hold: 0,
       joints: opts.mirror ? mirrorJoints(kf.joints) : { ...kf.joints },
-      arriveHeading: opts.facing
+      arriveHeading: opts.facing,
+      posedMove: true // fork: motion playback
     })
   }
   return startT + preset.duration
@@ -234,13 +241,14 @@ function playLooped(
       const up = kf.move?.up ?? 0
       marks.push({
         time,
-        position: { x: pos.x, y: Math.max(0, pos.y + up), z: pos.z },
+        position: { x: pos.x, y: pos.y + up, z: pos.z }, // fork: raw, see floorRoutine
         gait: opts.gait ?? 'stand',
         easeIn: 0,
         easeOut: 0,
         hold: 0,
         joints: opts.mirror ? mirrorJoints(kf.joints) : { ...kf.joints },
-        arriveHeading: opts.facing
+        arriveHeading: opts.facing,
+        posedMove: true // fork: motion playback
       })
     }
     t += cycle
@@ -1044,6 +1052,12 @@ export function choreoFormations(): { id: FormationId; name: string }[] {
  * active take as one undoable step.
  */
 export function buildRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {
+  const specs = routineOf(spec, ctx)
+  floorRoutine(specs, ctx.bodies)
+  return specs
+}
+
+function routineOf(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {
   switch (spec.kind) {
     case 'dance':
       return danceRoutine(spec, ctx)
@@ -1052,4 +1066,18 @@ export function buildRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySp
     case 'chase':
       return chaseRoutine(spec, ctx)
   }
+}
+
+/**
+ * Fork: posed marks on the floor (floor.ts rule, the ground at y = 0) with
+ * each performer's own body.
+ */
+function floorRoutine(specs: ChoreoEntitySpec[], bodies: Body[] | undefined): void {
+  specs.forEach((e, i) => {
+    const body = bodies?.[i] ?? { assetId: e.assetId }
+    for (const m of e.marks) {
+      if (!m.joints) continue
+      m.position.y = motionRootY(0, m.position.y, bodyLowY(body, m.joints))
+    }
+  })
 }

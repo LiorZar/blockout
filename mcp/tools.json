@@ -2,7 +2,7 @@
   {
     "name": "get_state",
     "title": "See the current scene",
-    "description": "Call FIRST. Returns a summary of the current project, scene, and active shot: the placed entities (id, asset, label, position) and the choreography marks on the timeline (actor + camera). Coordinates are in meters, +X is right, -Z is forward/away from the default camera; heading 0 faces -Z; rotationDeg is clockwise seen from above.",
+    "description": "Call FIRST. Returns a summary of the current project, scene, and active shot: the placed entities (id, asset, label, position) and the choreography marks on the timeline (actor + camera). Coordinates are in meters, +X is right, -Z is forward/away from the default camera; heading 0 faces -Z; rotationDeg turns counter-clockwise seen from above (90 faces -X).",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -33,7 +33,7 @@
   {
     "name": "add_entity",
     "title": "Place something",
-    "description": "Place a new entity on the ground. x/z in meters (+X right, -Z away); rotationDeg is clockwise from above with 0 facing -Z. A labelled entity gets its own colour automatically so the video model can tell people apart. Returns the new entity id and its colour.",
+    "description": "Place a new entity on the ground. x/z in meters (+X right, -Z away); rotationDeg turns counter-clockwise seen from above: 0 faces -Z, 90 faces -X. A labelled entity gets its own colour automatically so the video model can tell people apart. Returns the new entity id and its colour.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -55,7 +55,7 @@
         },
         "rotationDeg": {
           "type": "number",
-          "description": "Optional heading in degrees, clockwise from above; 0 faces -Z."
+          "description": "Optional heading in degrees, counter-clockwise seen from above; 0 faces -Z, 90 faces -X."
         },
         "color": {
           "type": "string",
@@ -95,7 +95,7 @@
         },
         "rotationDeg": {
           "type": "number",
-          "description": "Optional heading, clockwise from above; 0 faces -Z."
+          "description": "Optional heading in degrees, counter-clockwise seen from above; 0 faces -Z, 90 faces -X."
         }
       },
       "required": [
@@ -109,13 +109,17 @@
   {
     "name": "delete_entity",
     "title": "Remove a person or object",
-    "description": "Remove a person, vehicle or object from the scene, with its marks. Weapons it was holding are set down where its hands were.",
+    "description": "Remove a person, vehicle or object from the scene, with its marks. Weapons it was holding are set down where its hands were. Pass name so the approval card says what goes.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "entityId": {
           "type": "string",
           "description": "Entity id from get_state."
+        },
+        "name": {
+          "type": "string",
+          "description": "What it is in a few words, shown on the approval card, e.g. \"the spear\" or \"HERO\". Display only."
         }
       },
       "required": [
@@ -238,7 +242,7 @@
   {
     "name": "add_camera_mark",
     "title": "Add a camera mark",
-    "description": "Drop a camera mark at time t: camera at x,y,z (meters, y is height) looking with panDeg (clockwise from above, 0 faces -Z) and tiltDeg (positive looks up, negative down). focalLength in mm on Super 35 (24 wide, 35 normal, 50-85 tight).",
+    "description": "Drop a camera mark at time t: camera at x,y,z (meters, y is height) looking with panDeg (counter-clockwise seen from above: 0 faces -Z, 90 faces -X) and tiltDeg (positive looks up, negative down). focalLength in mm on Super 35 (24 wide, 35 normal, 50-85 tight).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -256,7 +260,7 @@
         },
         "panDeg": {
           "type": "number",
-          "description": "Pan in degrees, clockwise from above; 0 faces -Z."
+          "description": "Pan in degrees, counter-clockwise seen from above; 0 faces -Z, 90 faces -X (left)."
         },
         "tiltDeg": {
           "type": "number",
@@ -298,7 +302,7 @@
   {
     "name": "frame_shot",
     "title": "Frame the shot",
-    "description": "Frame the camera with shot words, e.g. \"MCU on B, over A's right shoulder, 50mm\" or \"two-shot of A and B, low angle, from the left at 2.5s\" — or the same fields structured. The camera mark is re-solved every frame from the subjects' live positions, so the framing holds while they move. Updates the camera mark at that time (±1 frame) or adds one. Names are entity labels or names from get_state.",
+    "description": "Frame the camera with shot words, e.g. \"MCU on B, over A's right shoulder, 50mm\" or \"two-shot of A and B, low angle, from the left at 2.5s\" — or the same fields structured. The camera mark is re-solved every frame from the subjects' live positions, so the framing holds while they move. Updates the camera mark at that time (±1 frame) or adds one. Names are entity labels or names from get_state. Over a shoulder: that shoulder stays in frame near the edge and the subject's eyes sit on the far third, as near the upper third as the size allows; size sets the distance (with no lens it sets the lens); angle raises or lowers the camera and backs it off when it must, so with a lens the frame can come out looser; overhead counts as high and side is ignored. When lens, size and angle can't all hold, the returned achievedSize says what the frame is.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -346,7 +350,7 @@
             "entityId"
           ],
           "additionalProperties": false,
-          "description": "Over-the-shoulder framing."
+          "description": "Over-the-shoulder framing: the camera sits behind this entity's shoulder, which stays in frame."
         },
         "side": {
           "type": "string",
@@ -372,7 +376,7 @@
             "overhead",
             "ground"
           ],
-          "description": "Camera height (default eye level)."
+          "description": "Camera height (default eye level). Over a shoulder, overhead counts as high and the camera rises or drops only as far as keeps the shoulder in frame (it backs off to get there)."
         },
         "lens": {
           "type": "number",
@@ -406,7 +410,7 @@
   {
     "name": "stage_fight",
     "title": "Stage a fight",
-    "description": "Stage a scripted two-person fight blow by blow: every hit lands on its frame, defenses are up in time, knockback follows the physics, and the report gives each blow's contact error (warnings flag blows the bodies can't reach). Spawns fighters A and B at x/z (facing each other across headingDeg) unless fighterIds names two people. weapons puts a weapon in each fighter's usual hand: blows from it land with the blade or point (\"A sword slash to head -> parry\"), blocks meet the defender's blade or shield, and \"A shoot to body -> hit\" fires a held gun along a line through the target. Fighters keep weapons they already hold. Returns the fight id, its script text and the report.",
+    "description": "Stage a scripted two-person fight blow by blow: every hit lands on its frame, defenses are up in time, knockback follows the physics, and the report gives each blow's contact error (warnings flag blows the bodies can't reach). Spawns fighters A and B at x/z (facing each other across headingDeg; assets and labels choose their bodies and names) unless fighterIds names two people. weapons puts a weapon in each fighter's usual hand: blows from it land with the blade or point (\"A sword slash to head -> parry\"), blocks meet the defender's blade or shield, and \"A shoot to body -> hit\" fires a held gun along a line through the target. Fighters keep weapons they already hold. Set props count: a fight that spawns its fighters moves up to 3 m to keep clear of them, push-backs stop at them, and the report warns when a path still runs into one. A shot too short for a beat grows to the whole fight (up to 60 s; the report says so). Returns the fight id, its script text and the report.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -507,7 +511,7 @@
         },
         "headingDeg": {
           "type": "number",
-          "description": "Facing of the staging, degrees clockwise from above; the fighters stand side by side across it."
+          "description": "Facing of the staging in degrees, counter-clockwise seen from above (0 faces -Z, 90 faces -X); the fighters stand side by side across it."
         },
         "fighterIds": {
           "type": "array",
@@ -515,6 +519,24 @@
             "type": "string"
           },
           "description": "Two person entity ids from get_state to fight (keeps their look and spots)."
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[A's, B's] body for the fighters it spawns: person asset ids from list_assets, e.g. [\"person.mannequinMale\", \"person.mannequinFemale\"] (default man and woman). Not with fighterIds."
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[A's, B's] label for the fighters it spawns (default \"A\", \"B\"); the script may name them by it. Not with fighterIds."
         },
         "exaggeration": {
           "type": "number",
@@ -528,7 +550,7 @@
             "over-shoulder",
             "follow"
           ],
-          "description": "Camera coverage built from live shot words: master (wide two-shot), punch-in (MCU on big hits), over-shoulder (per beat), follow (handheld on the attacker)."
+          "description": "Camera coverage built from live shot words: master (wide two-shot), punch-in (MCU on big hits), over-shoulder (per beat), follow (handheld on the attacker). Sizes open up for held weapons and falls (see fight_coverage)."
         },
         "weapons": {
           "type": "array",
@@ -628,7 +650,7 @@
             "over-shoulder",
             "follow"
           ],
-          "description": "Camera coverage built from live shot words: master (wide two-shot), punch-in (MCU on big hits), over-shoulder (per beat), follow (handheld on the attacker)."
+          "description": "Camera coverage built from live shot words: master (wide two-shot), punch-in (MCU on big hits), over-shoulder (per beat), follow (handheld on the attacker). Sizes open up for held weapons and falls (see fight_coverage)."
         }
       },
       "required": [
@@ -640,7 +662,7 @@
   {
     "name": "fight_coverage",
     "title": "Cover the fight with the camera",
-    "description": "Replace the active camera with beat-aware coverage of a staged fight, built from live shot words and kept on one side of the fight line: master (one wide two-shot), punch-in (medium two-shot that pushes in to an MCU on the defender at every big hit), over-shoulder (per beat, over the attacker's shoulder), follow (per beat, a medium on the attacker, handheld). Clears the camera's aim lock.",
+    "description": "Replace the active camera with beat-aware coverage of a staged fight, built from live shot words and kept on one side of the fight line: master (one wide two-shot), punch-in (a two-shot that pushes in on the defender at every big hit), over-shoulder (per beat, high over the attacker's shoulder so the guard stays under the defender's face), follow (per beat, a handheld two-shot led by the attacker). Every framing keeps the blow in frame: sized to the target (head MCU, body MS, legs FS), a knockdown or KO a wide two-shot of both fighters, and weapons wider (an armed punch-in still pushes in, to an MS two-shot); an over-shoulder beat with a weapon, a fall or a blow to the legs becomes a two-shot on the line (FS; WS for a sword, katana, spear or long gun). Clears the camera's aim lock.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -719,7 +741,7 @@
   {
     "name": "set_shot",
     "title": "Change shot settings",
-    "description": "Update the active shot settings. Omitted fields are unchanged.",
+    "description": "Update the active shot settings. Omitted fields are unchanged. A new fps or duration re-solves the shot's staged fights (impacts on the new frame grid; beats past a shorter end are left out and listed in the returned fights' warnings).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -843,7 +865,7 @@
   {
     "name": "spawn_sequence",
     "title": "Stage a crowd sequence",
-    "description": "Stage a whole choreographed crowd in one call: N dancers performing together, a paired brawl or mob fight, a foot chase, or a car chase. Creates the performers AND their choreography. Position with x/z/headingDeg (heading 0 faces -Z).",
+    "description": "Stage a whole choreographed crowd in one call: N dancers performing together, a paired brawl or mob fight, a foot chase, or a car chase. Creates the performers AND their choreography. Position with x/z/headingDeg (heading 0 faces -Z). A fight of count 2 is solved by the Fight Director (blows land; returns fightId); bigger fights are crowd choreography where blows don't connect. For a scripted fight where blows land, use stage_fight.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -900,7 +922,7 @@
   {
     "name": "spawn_choreography",
     "title": "Stage a dance, fight or chase",
-    "description": "Stage a full choreography routine — a dance number, a paired or one-vs-many fight, or a foot chase — spawning fresh performers AND their per-beat blocking in one call. Reads as real staged choreography: dances hit on the count and change formation, fights are paired attack→reaction exchanges that stay in range, chases run a serpentine path with near-misses. Position with x/z and headingDeg (heading 0 faces -Z). Call list_choreography_options for the vocabulary.",
+    "description": "Stage a full choreography routine — a dance number, a paired or one-vs-many fight, or a foot chase — spawning fresh performers AND their per-beat blocking in one call. Reads as real staged choreography: dances hit on the count and change formation, fights are paired attack→reaction exchanges that stay in range, chases run a serpentine path with near-misses. Position with x/z and headingDeg (heading 0 faces -Z). Call list_choreography_options for the vocabulary. A fight with 2 performers is solved by the Fight Director (blows land on their frame; returns fightId); with more it is crowd choreography where blows don't connect. For a scripted fight where blows land, use stage_fight.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -983,7 +1005,7 @@
   {
     "name": "choreograph_entities",
     "title": "Choreograph existing people",
-    "description": "Retarget existing PERSON entities into a choreography routine: keeps their assets and labels but replaces their timeline with a fresh dance/fight/chase built around the group. Same routine options as spawn_choreography, plus entityIds. The performer count comes from the list and the routine centers on the group, so there is no x/z.",
+    "description": "Retarget existing PERSON entities into a choreography routine: keeps their assets and labels but replaces their timeline with a fresh dance/fight/chase built around the group. Same routine options as spawn_choreography, plus entityIds. The performer count comes from the list and the routine centers on the group, so there is no x/z. A fight between exactly 2 people is solved by the Fight Director (blows land; returns fightId). For a scripted fight where blows land, use stage_fight with fighterIds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1298,7 +1320,7 @@
         },
         "rotationDeg": {
           "type": "number",
-          "description": "Yaw in degrees, clockwise from above."
+          "description": "Yaw in degrees, counter-clockwise seen from above."
         },
         "scale": {
           "type": "number",
@@ -1472,7 +1494,7 @@
   {
     "name": "set_entity_style",
     "title": "Change how something looks",
-    "description": "Change an entity's label, colour, name, height or build, or hide it from exports (it stays visible in the editor). Give each character a different colour and a short label so the video model can tell them apart. Colours: red, amber, green, blue, purple, pink, teal, orange, or a hex value. Omitted fields are unchanged; an empty label removes it. Returns the entity.",
+    "description": "Change an entity's label, colour, name, height or build (people only), or hide it from exports (it stays visible in the editor). Give each character a different colour and a short label so the video model can tell them apart. Colours: red, amber, green, blue, purple, pink, teal, orange, or a hex value. Omitted fields are unchanged; an empty label removes it. Returns the entity, with notes when a value was clamped or ignored.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1494,11 +1516,11 @@
         },
         "heightScale": {
           "type": "number",
-          "description": "Height scale 0.5..1.5 (1 = default)."
+          "description": "People only: height scale 0.8..1.2 (1 = default); values outside are clamped. Other assets ignore it."
         },
         "build": {
           "type": "number",
-          "description": "Build scale 0.5..1.5 (1 = default)."
+          "description": "People only: build 0.8..1.3 (1 = default); values outside are clamped. Other assets ignore it."
         },
         "hideInExports": {
           "type": "boolean",
@@ -1566,7 +1588,7 @@
   {
     "name": "update_mark",
     "title": "Edit a timeline mark",
-    "description": "Change one mark. Omitted fields are unchanged; time is kept inside the shot. Camera marks take panDeg/tiltDeg/rollDeg/focalLength/focusDistance; actor marks take gait. Mark ids come from list_marks.",
+    "description": "Change one mark. Omitted fields are unchanged; time is kept inside the shot. Camera marks take panDeg/tiltDeg/rollDeg/focalLength/focusDistance; actor marks take gait. Mark ids come from list_marks. A camera mark framed by shot words (it has a shot, from frame_shot) is re-solved every frame, so its pose (x/y/z/panDeg/tiltDeg/rollDeg, and focalLength when the words set the lens or an over-the-shoulder) needs release: true first; time, hold and eases don't.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1623,7 +1645,7 @@
         },
         "panDeg": {
           "type": "number",
-          "description": "Camera: pan in degrees, clockwise from above; 0 faces -Z."
+          "description": "Camera: pan in degrees, counter-clockwise seen from above; 0 faces -Z, 90 faces -X."
         },
         "tiltDeg": {
           "type": "number",
@@ -1640,6 +1662,10 @@
         "focusDistance": {
           "type": "number",
           "description": "Camera: focus distance in meters."
+        },
+        "release": {
+          "type": "boolean",
+          "description": "Camera marks framed by shot words: true freezes the current framing into a plain mark (drops the words), then applies the other fields. Undo brings the words back."
         }
       },
       "required": [
@@ -1737,7 +1763,7 @@
   {
     "name": "list_export_profiles",
     "title": "List export targets",
-    "description": "List the AI video and image models Blockout can export for, with their maximum and recommended shot length, aspect ratios and frame rate. Use an id with export_shot.",
+    "description": "List the AI video and image models Blockout can export for, with their maximum and recommended shot length, aspect ratios, frame rate, input-file and prompt caps, and what to attach where. Use an id with export_shot.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -1750,13 +1776,13 @@
   {
     "name": "export_shot",
     "title": "Export the shot",
-    "description": "Export the active shot as a clean blockout package for an AI video model: the reference video, a depth video, stills at every camera mark, and a prompt tailored to the target. Takes a while for long shots. Call screenshot first to check the framing. Returns the package folder, its path inside the project, and the prompt.",
+    "description": "Export the active shot as a clean blockout package for an AI video model: the reference video, a depth video, stills at every camera mark, and a prompt tailored to the target that says what each grey shape is, what happens and what the camera does. Takes a while for long shots. Call screenshot first to check the framing. Returns the package folder, its path inside the project, the prompt, and warnings for any limit of the target the shot breaks (too long, an aspect it does not take).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "profileId": {
           "type": "string",
-          "description": "Export target id from list_export_profiles (default \"seedance-2\")."
+          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video)."
         },
         "passes": {
           "type": "object",
@@ -1808,7 +1834,7 @@
       "properties": {
         "profileId": {
           "type": "string",
-          "description": "Export target id from list_export_profiles (default \"seedance-2\")."
+          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video)."
         },
         "resolution": {
           "type": "string",
@@ -1830,7 +1856,7 @@
   {
     "name": "export_contact_sheet",
     "title": "Export a contact sheet",
-    "description": "Export one PNG with the first frame of every shot in the current scene, captioned with lens, length and aspect. Returns the file path.",
+    "description": "Export one PNG with the first frame of every shot in the current scene, captioned with lens, length and aspect. Returns the file path (contact-sheet-<date-time>.png in the scene's exports folder, so an earlier sheet is never overwritten).",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -1840,13 +1866,13 @@
   {
     "name": "export_scene_animatic",
     "title": "Export the scene animatic",
-    "description": "Export every shot in the current scene in order and join them into one animatic video. Every shot must share the same aspect ratio and frame rate. Returns the video's path.",
+    "description": "Export every shot in the current scene in order and join them into one animatic video. Every shot must share the same aspect ratio and frame rate. Returns the video's path (animatic-<date-time>.mp4, so an earlier animatic is never overwritten).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "profileId": {
           "type": "string",
-          "description": "Export target id from list_export_profiles (default \"seedance-2\")."
+          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video)."
         },
         "resolution": {
           "type": "string",

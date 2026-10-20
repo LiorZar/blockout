@@ -1,4 +1,7 @@
-/* Modified for cross-platform Windows support and the fork's Clara button in 2026; see MODIFICATIONS.md. */
+/* Modified for cross-platform Windows support, the fork's Clara button and narrow layout in 2026; see MODIFICATIONS.md. */
+
+/* Fork: the narrow layout beside Clara; its rules are scoped to .app.narrow. */
+@import './narrow.css';
 
 /* Blockout design system — dark, quiet chrome; the viewport is the star. */
 

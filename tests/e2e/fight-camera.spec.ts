@@ -94,6 +94,41 @@ test.describe('shot words', () => {
     expect(marks.data![0]!.shot?.size).toBe('WS')
   })
 
+  test('a shot mark: get_state shows its shot; pose edits need release: true', async () => {
+    type Pose = CamMark & { x: number; y: number; panDeg: number; hold: number }
+    const state = await rpc<{ shot: { cameraMarks: Pose[] } }>('get_state')
+    const mark = state.data!.shot.cameraMarks[0]!
+    expect(mark.shot?.size).toBe('WS')
+    expect(mark.shot?.subjectIds).toEqual([a, b])
+    // A pose edit alone would be re-solved away every frame: refused, and the error says how to release.
+    const refused = await rpc('update_mark', { lane: 'camera', markId: mark.id, x: 2, panDeg: 10 })
+    expect(refused.ok).toBe(false)
+    expect(refused.error).toContain('release: true')
+    expect(refused.error).toContain('frame_shot')
+    // Timing edits keep the words.
+    const held = await rpc<Pose>('update_mark', { lane: 'camera', markId: mark.id, hold: 0.5 })
+    expect(held.ok, held.error).toBe(true)
+    expect(held.data!.shot?.size).toBe('WS')
+    expect(held.data!.hold).toBe(0.5)
+    // release: true freezes the solved pose, drops the words, then applies the edits.
+    const released = await rpc<Pose>('update_mark', { lane: 'camera', markId: mark.id, release: true, x: 2, panDeg: 10 })
+    expect(released.ok, released.error).toBe(true)
+    expect(released.data!.shot).toBeUndefined()
+    expect(released.data!.x).toBe(2)
+    expect(released.data!.panDeg).toBe(10)
+    expect(released.data!.y).toBeCloseTo(mark.y, 6)
+    const after = await rpc<{ shot: { cameraMarks: Pose[] } }>('get_state')
+    expect(after.data!.shot.cameraMarks[0]!.shot).toBeUndefined()
+    expect(after.data!.shot.cameraMarks[0]!.x).toBe(2)
+    // One undo brings the words back.
+    expect((await rpc('undo')).ok).toBe(true)
+    expect((await rpc<CamMark[]>('list_marks', { lane: 'camera' })).data![0]!.shot?.size).toBe('WS')
+    const plain = await rpc('update_mark', { lane: 'camera', markId: mark.id, release: true })
+    expect(plain.ok, plain.error).toBe(true)
+    expect((await rpc<CamMark[]>('list_marks', { lane: 'camera' })).data![0]!.shot).toBeUndefined()
+    expect((await rpc('undo')).ok).toBe(true)
+  })
+
   test("frame_shot words 'MCU on nobody' is an error", async () => {
     const res = await rpc('frame_shot', { words: 'MCU on nobody' })
     expect(res.ok).toBe(false)
@@ -179,6 +214,37 @@ test.describe('fight director', () => {
     expect(bad.error).toContain('get_state')
   })
 
+  test('set_shot fps / duration re-solves the fight (gap 2)', async () => {
+    type SetShot = { ok: boolean; fights?: { fightId: string; beats: number; warnings: string[] }[] }
+    const fps30 = await rpc<SetShot>('set_shot', { fps: 30 })
+    expect(fps30.ok, fps30.error).toBe(true)
+    expect(fps30.data!.fights?.map((f) => f.fightId)).toContain(fightId)
+    const at30 = (await rpc<Staged>('get_fight', { fightId })).data!.report
+    const times = at30.beats.flatMap((b) => b.impactTimes)
+    expect(times.length).toBeGreaterThan(4)
+    for (const t of times) expect(Math.abs(t * 30 - Math.round(t * 30)), `impact ${t}`).toBeLessThan(1e-6)
+
+    const short = await rpc<SetShot>('set_shot', { duration: 4 })
+    const mine = short.data!.fights!.find((f) => f.fightId === fightId)!
+    expect(mine.beats).toBeLessThan(4)
+    expect(mine.warnings.some((w) => w.includes('past the end of the shot'))).toBe(true)
+
+    const back = await rpc<SetShot>('set_shot', { duration: 12, fps: 24 })
+    expect(back.data!.fights!.find((f) => f.fightId === fightId)!.beats).toBe(4)
+  })
+
+  test('get_fight reports a rifle fight the way stage_fight did (qa-clara bug 2)', async () => {
+    const staged = await rpc<Staged>('stage_fight', { script: 'A shoot to body -> hit', weapons: ['prop.rifle', null], x: 12, z: -8 })
+    expect(staged.ok, staged.error).toBe(true)
+    expect(staged.data!.report.beats).toHaveLength(1)
+    const read = await rpc<Staged>('get_fight', { fightId: staged.data!.fightId })
+    expect(read.ok, read.error).toBe(true)
+    expect(read.data!.report.beats).toHaveLength(1)
+    expect(read.data!.report.warnings).toEqual(staged.data!.report.warnings)
+    expect(read.data!.report.beats[0]!.impactTimes).toEqual(staged.data!.report.beats[0]!.impactTimes)
+    expect((await rpc('delete_fight', { fightId: staged.data!.fightId })).ok).toBe(true)
+  })
+
   test('stage_fight random martial-arts with a KO ending ends on a ko', async () => {
     const res = await rpc<Staged>('stage_fight', { random: { seed: 7, style: 'martial-arts', ending: 'ko' }, x: 6, z: -8 })
     expect(res.ok, res.error).toBe(true)
@@ -217,5 +283,25 @@ test.describe('fight coverage', () => {
     const after = await rpc<{ shot: { rig: string; rigIntensity: number; trackEntityId: string | null } }>('get_state')
     expect(after.data!.shot.rig).toBe('handheld')
     expect(after.data!.shot.trackEntityId).toBeNull()
+  })
+})
+
+test.describe('fight director panel', () => {
+  test('a new fight defaults to master camera coverage (qa-export B12)', async () => {
+    expect((await rpc('new_scene', { name: 'Panel' })).ok).toBe(true)
+    const choreo = page.locator('.panel-section', { has: page.locator('.panel-title', { hasText: /^Choreographer$/ }) }).first()
+    await choreo.locator('select').first().selectOption({ label: '🥋 Fight' })
+    const cover = choreo.locator('.field', { has: page.locator('label', { hasText: 'Camera coverage' }) }).locator('select')
+    await expect(cover).toHaveValue('master')
+  })
+
+  test('the Choreographer keeps Fight after DELIVER → STAGE (qa-fight bug 7)', async () => {
+    const setMode = (mode: string): Promise<void> =>
+      page.evaluate((m) => (window as unknown as { __blockout: { store: { getState(): { setMode(x: string): void } } } }).__blockout.store.getState().setMode(m), mode)
+    await setMode('deliver')
+    await setMode('stage')
+    const choreo = page.locator('.panel-section', { has: page.locator('.panel-title', { hasText: /^Choreographer$/ }) }).first()
+    await expect(choreo.locator('select').first()).toHaveValue('fight')
+    await expect(choreo.locator('label', { hasText: 'Camera coverage' })).toBeVisible()
   })
 })

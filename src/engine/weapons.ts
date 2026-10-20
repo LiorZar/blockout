@@ -248,6 +248,38 @@ const GUARD_IDLE = { shoulderRX: 0, shoulderRZ: -0.2, elbowR: 0.65 }
 /** Long guns at low ready: grip at the chest, muzzle ~30° down, the off hand on the handguard. */
 const LONG_GUN_IDLE = { shoulderRX: 0.2, shoulderRZ: -0.6, elbowR: 2.4 }
 
+/**
+ * How far each model is lifted (m) so it rests on the floor unheld, its
+ * lowest point at y = 0 (the sword's pommel sat in the floor, the guns and
+ * the bow floated). The builders lift the geometry (`weaponRestLift`) and the
+ * specs' model points by the same amount, so the hand math doesn't change.
+ */
+const REST_LIFT: Record<string, number> = {
+  'prop.sword': 0.025,
+  'prop.shield': 0.014,
+  'prop.pistol': -0.006,
+  'prop.rifle': -0.0249,
+  'prop.shotgun': -0.0361,
+  'prop.bow': -0.0644
+}
+
+export function weaponRestLift(assetId: string): number {
+  return REST_LIFT[assetId] ?? 0
+}
+
+function onFloor(spec: WeaponSpec): WeaponSpec {
+  const y = weaponRestLift(spec.assetId)
+  if (y === 0) return spec
+  const up = (p: V3): V3 => ({ x: p.x, y: p.y + y, z: p.z })
+  return {
+    ...spec,
+    grip: up(spec.grip),
+    tip: up(spec.tip),
+    ...(spec.support ? { support: up(spec.support) } : {}),
+    ...(spec.stock ? { stock: up(spec.stock) } : {})
+  }
+}
+
 export const WEAPON_SPECS: WeaponSpec[] = [
   W('prop.sword', 'blade', 'edge', false, 'R', v(0, 0.075, 0), v(0, 0.95, 0), UP, bladeHold(BLADE), BLADE_IDLE),
   W('prop.katana', 'blade', 'edge', true, 'R', v(0, 0.22, 0), v(-0.015, 0.99, 0), UP, bladeHold(BLADE), GUARD_IDLE, v(0, 0.08, 0)),
@@ -274,7 +306,7 @@ export const WEAPON_SPECS: WeaponSpec[] = [
     shoulderRZ: 0.1,
     elbowR: 1.95
   })
-]
+].map(onFloor)
 
 const SPEC_BY_ID = new Map(WEAPON_SPECS.map((w) => [w.assetId, w]))
 
@@ -481,6 +513,101 @@ export function sanitizeHolds(entities: Entity[]): void {
   }
 }
 
+/* ------------------------- every body, one hold (fork) ------------------------- */
+
+const REFERENCE = personDims('person.man')
+const DIM_KEYS = Object.keys(REFERENCE) as (keyof PersonDims)[]
+const isReference = (d: PersonDims): boolean => DIM_KEYS.every((k) => Math.abs(d[k] - REFERENCE[k]) < 1e-12)
+
+/** Barrel pitch and yaw (rad) and grip-to-shoulder distance of a shouldered gun in a pose. */
+function gunHold(dims: PersonDims, joints: Record<string, number>, hand: Hand, spec: WeaponSpec): number[] {
+  const f = handFrame(dims, joints, hand)
+  const dir = unit(apply(weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder }), spec.aim))
+  return [Math.asin(clamp(dir.y, -1, 1)), Math.atan2(dir.x, -dir.z), len(sub(f.p, f.shoulder))]
+}
+
+/** Solve the 3×3 system m·x = b (row-major m) by Cramer's rule; null when singular. */
+function solve3(m: number[], b: number[]): number[] | null {
+  const det = (q: number[]): number =>
+    q[0]! * (q[4]! * q[8]! - q[5]! * q[7]!) - q[1]! * (q[3]! * q[8]! - q[5]! * q[6]!) + q[2]! * (q[3]! * q[7]! - q[4]! * q[6]!)
+  const d = det(m)
+  if (Math.abs(d) < 1e-12) return null
+  return [0, 1, 2].map((c) => det(m.map((val, i) => (i % 3 === c ? b[Math.floor(i / 3)]! : val))) / d)
+}
+
+/**
+ * A shouldered long gun on a body other than the reference man: offsets on
+ * the gun arm (shoulder X, shoulder Z, elbow) that give the barrel his pitch
+ * and yaw and the grip his distance from the shoulder for the same joints. A
+ * stooped body still aims level, a short-armed one still has the stock in the
+ * shoulder (the gun's length of pull doesn't change with the body), less
+ * `pull` when the off hand needs the gun nearer. Newton on the three
+ * channels; each offset stays within ±0.8 rad.
+ */
+function longGunRetarget(dims: PersonDims, joints: Record<string, number>, hand: Hand, spec: WeaponSpec, pull: number): Record<string, number> {
+  const keys = [`shoulder${hand}X`, `shoulder${hand}Z`, `elbow${hand}`]
+  const goal = gunHold(REFERENCE, joints, hand, spec)
+  goal[2] = Math.max(0.05, goal[2]! - pull)
+  const err = (x: number[]): number[] => {
+    const j = { ...joints }
+    keys.forEach((k, i) => (j[k] = (j[k] ?? 0) + x[i]!))
+    return gunHold(dims, j, hand, spec).map((g, i) => g - goal[i]!)
+  }
+  const norm = (e: number[]): number => Math.hypot(...e)
+  const H = 1e-5
+  let x = [0, 0, 0]
+  let e = err(x)
+  for (let it = 0; it < 8 && norm(e) > 1e-9; it++) {
+    const cols = keys.map((_, c) => err(x.map((v, i) => (i === c ? v + H : v))).map((v, r) => (v - e[r]!) / H))
+    const step = solve3([0, 1, 2].flatMap((r) => cols.map((col) => col[r]!)), e)
+    if (!step) break
+    const next = x.map((v, i) => clamp(v - step[i]!, -0.8, 0.8))
+    const en = err(next)
+    if (norm(en) >= norm(e)) break
+    x = next
+    e = en
+  }
+  return Object.fromEntries(keys.map((k, i) => [k, x[i]!]))
+}
+
+/** The off arm stops just short of locking straight. */
+const REACH = 0.995
+
+/** How far (m) the support hand may slide along a fore-end before a fight report mentions it. */
+export const SUPPORT_SLACK = 0.03
+
+/**
+ * Where the off hand closes on a two-handed weapon held in `hand` (holder-
+ * local): its support point, or — when the off arm can't reach it (a child
+ * with an adult rifle) — the farthest point it can reach sliding back along
+ * the weapon toward the grip, at most halfway. `slideM` is how far it slid,
+ * `shortM` how far it is still out of reach (0 when the hand gets there).
+ */
+export function supportReach(
+  dims: PersonDims,
+  joints: Record<string, number> | undefined,
+  hand: Hand,
+  spec: WeaponSpec,
+  weaponScale: number
+): { point: V3; slideM: number; shortM: number } {
+  const support = spec.support ?? spec.grip
+  const shoulder = handFrame(dims, joints, hand === 'R' ? 'L' : 'R').shoulder
+  const arm = (dims.upperArmLen + dims.lowerArmLen) * REACH
+  const at = (s: number): V3 => heldPointLocal(dims, joints, hand, spec, add(support, scale(sub(spec.grip, support), s)), weaponScale)
+  const gap = (s: number): number => len(sub(at(s), shoulder)) - arm
+  const along = len(sub(spec.grip, support)) * weaponScale
+  if (gap(0) <= 0) return { point: at(0), slideM: 0, shortM: 0 }
+  if (gap(0.5) > 0) return { point: at(0.5), slideM: 0.5 * along, shortM: gap(0.5) }
+  let lo = 0
+  let hi = 0.5
+  for (let it = 0; it < 40; it++) {
+    const mid = (lo + hi) / 2
+    if (gap(mid) > 0) lo = mid
+    else hi = mid
+  }
+  return { point: at(hi), slideM: hi * along, shortM: 0 }
+}
+
 /** A weapon in one hand, as `holdJoints` needs it. */
 export interface HeldWeapon {
   spec: WeaponSpec
@@ -514,8 +641,29 @@ export function holdJoints(
     const posed = Math.max(0, ...ARM_CHANNELS[hand].map((k) => Math.abs(combined[k] ?? 0)))
     const w = clamp(1 - posed / IDLE_FADE, 0, 1)
     rest[hand] = w
+    if (h.spec.kind === 'shield' && dims.baseLean !== 0) {
+      // A stoop pitches the arm with the torso: raise the shield arm as much, so its face stays on the threat.
+      out[`shoulder${hand}X`] = (out[`shoulder${hand}X`] ?? 0) + dims.baseLean
+      touched = true
+    }
     if (w <= 0) continue
     for (const [k, val] of Object.entries(idleJoints(h.spec, hand))) out[k] = (out[k] ?? 0) + val * w
+    touched = true
+  }
+  for (const hand of ['R', 'L'] as Hand[]) {
+    const h = hands[hand]
+    if (h?.spec.mount !== 'shoulder' || isReference(dims)) continue
+    const base = sumJoints(out, fixed)
+    let fix = longGunRetarget(dims, base, hand, h.spec, 0)
+    // An arm too short for the fore-end even slid back (a child): pull the gun back along the shoulder line until it reaches.
+    let pull = 0
+    for (let it = 0; it < 6 && h.spec.support && !hands[hand === 'R' ? 'L' : 'R']; it++) {
+      const short = supportReach(dims, sumJoints(base, fix), hand, h.spec, h.scale).shortM
+      if (short <= 1e-4) break
+      pull += short
+      fix = longGunRetarget(dims, base, hand, h.spec, pull)
+    }
+    for (const [k, val] of Object.entries(fix)) out[k] = (out[k] ?? 0) + val
     touched = true
   }
   for (const hand of ['R', 'L'] as Hand[]) {
@@ -525,7 +673,7 @@ export function holdJoints(
     const reach = h.spec.restOneHanded ? 1 - (rest[hand] ?? 0) : 1
     if (reach <= 0) continue
     const combined = sumJoints(out, fixed)
-    const target = heldPointLocal(dims, combined, hand, h.spec, h.spec.support, h.scale)
+    const target = supportReach(dims, combined, hand, h.spec, h.scale).point
     for (const [k, val] of Object.entries(solveArmIK(dims, combined, off, target))) {
       const from = out[k] ?? 0
       out[k] = from + (val - (fixed[k] ?? 0) - from) * reach

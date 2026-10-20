@@ -6,10 +6,13 @@
  * engine's hand math and the rendered prop agree. Unheld, every weapon is an
  * ordinary static prop: blades, shafts and the bow stand on their butt (+Y to
  * the tip), guns stand level on their grip (muzzle toward −Z), the shield
- * stands on its rim facing −Z. Deterministic, origin on the ground.
+ * stands on its rim facing −Z. Deterministic, origin on the ground: `onFloor`
+ * lifts each model (and `prop.sword` from builders.ts) so its lowest point
+ * rests on it.
  */
 
 import * as THREE from 'three'
+import { weaponRestLift } from '@engine/weapons'
 import type { BuiltAsset } from './builders'
 
 const STEEL = 0xc0c4cc
@@ -170,9 +173,9 @@ const BUILDERS: Record<string, { height: number; build: (g: THREE.Group) => void
   'prop.staff': { height: 1.7, build: staff },
   'prop.shield': { height: 0.7, build: shield },
   'prop.pistol': { height: 0.17, build: pistol },
-  'prop.rifle': { height: 0.25, build: rifle },
-  'prop.shotgun': { height: 0.25, build: shotgun },
-  'prop.bow': { height: 1.44, build: bow }
+  'prop.rifle': { height: 0.21, build: rifle },
+  'prop.shotgun': { height: 0.17, build: shotgun },
+  'prop.bow': { height: 1.37, build: bow }
 }
 
 /** True for the weapons this file builds (prop.sword and prop.baseballBat stay in builders.ts). */
@@ -185,5 +188,12 @@ export function buildWeapon(assetId: string): BuiltAsset {
   const group = new THREE.Group()
   group.name = assetId
   def.build(group)
-  return { group, height: def.height, setTint: makeSetTint(group) }
+  return onFloor({ group, height: def.height, setTint: makeSetTint(group) }, assetId)
+}
+
+/** Lift a weapon model so it rests on the floor unheld (`weaponRestLift`; its spec points moved with it). Other assets pass through. */
+export function onFloor(built: BuiltAsset, assetId: string): BuiltAsset {
+  const y = weaponRestLift(assetId)
+  if (y !== 0) for (const child of built.group.children) child.position.y += y
+  return built
 }

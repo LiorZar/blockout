@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { ASPECT_RATIOS, verticalFov } from '@engine/camera'
+import { ASPECT_RATIOS, SHOT_SIZES, verticalFov } from '@engine/camera'
 import { personDims, poseEffectors, toWorld } from '@engine/skeleton'
-import { solveShot, type ShotSetup, type ShotSubject, type SolvedShot } from '@engine/shot'
+import { framingCandidates, solveShot, type ShotSetup, type ShotSubject, type SolvedShot } from '@engine/shot'
 import type { V3 } from '@engine/types'
 
 const SETUP: ShotSetup = { sensorId: 'super35', aspect: '16:9', focalLength: 35 }
@@ -47,6 +47,12 @@ function landmarks(s: ShotSubject): { headTop: V3; head: V3; shoulderL: V3; shou
     shoulderL: w(fx.shoulderL),
     shoulderR: w(fx.shoulderR)
   }
+}
+
+/** A point on the subject's axis at the bottom of a size's visible region (visibleFraction of its height, from the top). */
+function chest(s: ShotSubject, visible: number): V3 {
+  const lm = landmarks(s)
+  return { x: lm.head.x, y: s.position.y + (lm.headTop.y - s.position.y) * (1 - visible), z: lm.head.z }
 }
 
 const GUARD = { shoulderLX: -0.9, shoulderRX: -0.9, elbowL: 1.8, elbowR: 1.8, torsoX: 0.15 }
@@ -157,18 +163,53 @@ describe('solveShot over the shoulder', () => {
 
   it('OTS over A\'s right shoulder', () => {
     const cam = solveShot({ size: 'MCU', subjectIds: ['b'], over: { entityId: 'a', shoulder: 'right' }, lens: 50 }, [a, b], SETUP)
-    const shoulder = landmarks(a).shoulderR
-    const d = Math.hypot(cam.position.x - shoulder.x, cam.position.y - shoulder.y, cam.position.z - shoulder.z)
-    expect(d).toBeLessThan(0.7)
-    // A faces −Z, so A's right is +X.
-    expect(cam.position.x - a.position.x).toBeGreaterThan(0)
-    // Behind A, away from B.
+    // A faces −Z, so A's right is +X: the camera sits outside that shoulder, behind A (away from B).
+    expect(cam.position.x).toBeGreaterThan(landmarks(a).shoulderR.x)
     expect(cam.position.z).toBeGreaterThan(a.position.z)
     const head = project(landmarks(b).head, cam, SETUP)
     expect(head.depth).toBeGreaterThan(0)
-    expect(Math.abs(head.x)).toBeLessThan(0.02)
     expect(cam.focalLength).toBe(50)
-    expect(cam.achievedSize).toBeDefined()
+    expect(cam.achievedSize).toBe('MCU')
+  })
+
+  // Gap 6: long lenses used to push the foreground shoulder out of frame.
+  for (const shoulder of ['right', 'left'] as const) {
+    for (const lens of [35, 50, 85]) {
+      it(`MCU over A's ${shoulder} shoulder at ${lens}mm: shoulder inside |NDC| ≤ 0.95, B's eyes on the far third`, () => {
+        const cam = solveShot({ size: 'MCU', subjectIds: ['b'], over: { entityId: 'a', shoulder }, lens }, [a, b], SETUP)
+        const lm = landmarks(a)
+        const s = project(shoulder === 'right' ? lm.shoulderR : lm.shoulderL, cam, SETUP)
+        const eyes = project(landmarks(b).head, cam, SETUP)
+        expect(s.depth).toBeGreaterThan(0.3)
+        expect(Math.abs(s.x)).toBeLessThanOrEqual(0.95)
+        expect(Math.abs(s.y)).toBeLessThanOrEqual(0.95)
+        // Behind A's right shoulder, A fills frame left and B sits on the right third (mirrored for left).
+        expect(Math.sign(s.x)).toBe(shoulder === 'right' ? -1 : 1)
+        expect(Math.abs(eyes.x + Math.sign(s.x) / 3)).toBeLessThan(0.02)
+        expect(eyes.depth).toBeGreaterThan(s.depth)
+        expect(cam.focalLength).toBe(lens)
+        if (lens >= 50) {
+          // The size holds too: chest-up in frame, head-top no higher than the MCU fill line.
+          expect(project(landmarks(b).headTop, cam, SETUP).y).toBeLessThanOrEqual(0.93)
+          expect(project(chest(b, 0.3), cam, SETUP).y).toBeGreaterThanOrEqual(-1.01)
+          expect(cam.achievedSize).toBe('MCU')
+        }
+      })
+    }
+  }
+
+  it('keeps the shoulder when lens and size cannot both hold (WS at 85mm, CU at 18mm)', () => {
+    for (const [size, lens] of [['WS', 85], ['CU', 18]] as const) {
+      for (const shoulder of ['right', 'left'] as const) {
+        const cam = solveShot({ size, subjectIds: ['b'], over: { entityId: 'a', shoulder }, lens }, [a, b], SETUP)
+        const s = project(shoulder === 'right' ? landmarks(a).shoulderR : landmarks(a).shoulderL, cam, SETUP)
+        expect(s.depth).toBeGreaterThan(0.3)
+        expect(Math.abs(s.x)).toBeLessThanOrEqual(0.95)
+        expect(Math.abs(s.y)).toBeLessThanOrEqual(0.95)
+        expect(cam.position.z).toBeGreaterThan(a.position.z)
+        expect(cam.achievedSize).toBeDefined()
+      }
+    }
   })
 
   it('OTS without a lens solves the focal length for the size', () => {
@@ -178,10 +219,93 @@ describe('solveShot over the shoulder', () => {
     expect(mcu.position.x - a.position.x).toBeLessThan(0)
     const cu = solveShot({ size: 'CU', subjectIds: ['b'], over: { entityId: 'a', shoulder: 'left' } }, [a, b], SETUP)
     expect(cu.focalLength).toBeGreaterThan(mcu.focalLength)
+    for (const cam of [mcu, cu]) {
+      const s = project(landmarks(a).shoulderL, cam, SETUP)
+      expect(Math.abs(s.x)).toBeLessThanOrEqual(0.95)
+      expect(Math.abs(s.y)).toBeLessThanOrEqual(0.95)
+    }
+    expect(mcu.achievedSize).toBe('MCU')
+    expect(cu.achievedSize).toBe('CU')
+  })
+
+  // Bug 5 (qa-clara): an OTS MCU centred the eyes and left a third of the frame empty above the head.
+  for (const [size, lens, visible] of [['MCU', 50, 0.3], ['CU', 85, 0.18], ['MS', 35, 0.45], ['WS', 24, 1]] as const) {
+    it(`${size} over the shoulder at ${lens}mm: eyes as near the upper third as the size allows`, () => {
+      const cam = solveShot({ size, subjectIds: ['b'], over: { entityId: 'a', shoulder: 'right' }, lens }, [a, b], SETUP)
+      const eyes = project(landmarks(b).head, cam, SETUP).y
+      expect(eyes).toBeGreaterThanOrEqual(1 / 3 - 0.12)
+      expect(eyes).toBeLessThanOrEqual(0.7)
+      expect(project(landmarks(b).headTop, cam, SETUP).y).toBeLessThanOrEqual(0.95)
+      // When the size holds (the frame at the eyes is the size's), its visible region stays in frame.
+      const lm = landmarks(b)
+      const atEyes = 2 * project(lm.head, cam, SETUP).depth * Math.tan(verticalFov(SETUP.sensorId, cam.focalLength, SETUP.aspect) / 2)
+      const sizeFrame = ((lm.headTop.y - b.position.y) * visible) / SHOT_SIZES[size].fillFraction
+      if (atEyes >= sizeFrame * 0.99) expect(project(chest(b, visible), cam, SETUP).y).toBeGreaterThanOrEqual(-1.01)
+    })
+  }
+
+  it('MCU over the shoulder: eyes between the third and the fill line (chest-up keeps them above 1/3)', () => {
+    const cam = solveShot({ size: 'MCU', subjectIds: ['b'], over: { entityId: 'a', shoulder: 'left' }, lens: 50 }, [a, b], SETUP)
+    const eyes = project(landmarks(b).head, cam, SETUP).y
+    // An MCU shows chest-up, so its eyes can't come all the way down to 1/3 without cutting the chest.
+    expect(eyes).toBeGreaterThan(1 / 3)
+    expect(eyes).toBeLessThan(0.5)
+  })
+
+  // Bug 4 (qa-clara): angle did nothing over a shoulder.
+  for (const lens of [35, 50, 85]) {
+    it(`angle raises and lowers an OTS camera at ${lens}mm, shoulder still in frame`, () => {
+      const solve = (angle?: 'eye' | 'high' | 'low' | 'overhead'): SolvedShot =>
+        solveShot({ size: 'MCU', subjectIds: ['b'], over: { entityId: 'a', shoulder: 'right' }, lens, angle }, [a, b], SETUP)
+      const eye = solve()
+      const high = solve('high')
+      const low = solve('low')
+      expect(solve('eye')).toEqual(eye)
+      expect(solve('overhead')).toEqual(high)
+      expect(high.position.y).toBeGreaterThan(eye.position.y + 0.1)
+      expect(high.tilt).toBeLessThan(eye.tilt)
+      expect(low.position.y).toBeLessThan(eye.position.y - 0.1)
+      expect(low.tilt).toBeGreaterThan(eye.tilt)
+      for (const cam of [high, low]) {
+        const s = project(landmarks(a).shoulderR, cam, SETUP)
+        expect(s.depth).toBeGreaterThan(0.3)
+        expect(Math.abs(s.x)).toBeLessThanOrEqual(0.95)
+        expect(Math.abs(s.y)).toBeLessThanOrEqual(0.95)
+        expect(Math.abs(project(landmarks(b).head, cam, SETUP).x - 1 / 3)).toBeLessThan(0.02)
+      }
+    })
+  }
+
+  it('without a lens, an OTS angle keeps the size and lengthens the lens', () => {
+    const eye = solveShot({ size: 'MCU', subjectIds: ['b'], over: { entityId: 'a', shoulder: 'left' } }, [a, b], SETUP)
+    for (const angle of ['high', 'low'] as const) {
+      const cam = solveShot({ size: 'MCU', subjectIds: ['b'], over: { entityId: 'a', shoulder: 'left' }, angle }, [a, b], SETUP)
+      expect(cam.achievedSize).toBe('MCU')
+      expect(cam.focalLength).toBeGreaterThan(eye.focalLength)
+      if (angle === 'high') expect(cam.position.y).toBeGreaterThan(eye.position.y + 0.2)
+      else expect(cam.position.y).toBeLessThan(eye.position.y - 0.2)
+    }
   })
 
   it('throws on a missing subject or an over entity that is the subject', () => {
     expect(() => solveShot({ size: 'MS', subjectIds: ['zzz'] }, [a, b], SETUP)).toThrow()
     expect(() => solveShot({ size: 'MS', subjectIds: ['b'], over: { entityId: 'b', shoulder: 'left' } }, [a, b], SETUP)).toThrow()
+  })
+})
+
+// qa-export B7: the Shot panel's Subject list started with the set kit when it was placed first.
+describe('framingCandidates', () => {
+  it('drops set kits and lists people first, then vehicles and animals, then the rest, in scene order', () => {
+    const ents = [
+      { id: 'street', assetId: 'env.cityStreet' },
+      { id: 'crate', assetId: 'prop.crate' },
+      { id: 'car', assetId: 'vehicle.sedan' },
+      { id: 'b', assetId: 'person.woman' },
+      { id: 'dog', assetId: 'animal.dog' },
+      { id: 'a', assetId: 'person.mannequinMale' },
+      { id: 'custom', assetId: 'custom.thing' }
+    ]
+    expect(framingCandidates(ents).map((e) => e.id)).toEqual(['b', 'a', 'car', 'dog', 'crate', 'custom'])
+    expect(framingCandidates([{ id: 'street', assetId: 'env.cityStreet' }])).toEqual([])
   })
 })

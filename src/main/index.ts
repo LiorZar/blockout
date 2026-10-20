@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's HTTP MCP server and Clara in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's HTTP MCP server, Clara and the export file-size cap in 2026; see MODIFICATIONS.md.
 /**
  * Electron main process: window lifecycle, project folder I/O, ffmpeg
  * export orchestration. All filesystem access lives here; the renderer
@@ -292,7 +292,7 @@ ipcMain.handle(
     _e,
     jobId: string,
     outPath: string,
-    opts: { fps: number; width: number; height: number; framesExpected: number }
+    opts: { fps: number; width: number; height: number; framesExpected: number; maxKbps?: number }
   ) => {
     const ffmpegPath = await resolveFfmpeg()
     await mkdir(dirname(outPath), { recursive: true })
@@ -309,6 +309,8 @@ ipcMain.handle(
       '-c:v', 'libx264',
       '-preset', 'medium',
       '-crf', '18',
+      // Fork: capped CRF keeps a clip under the profile's file-size cap (profile-limits.ts).
+      ...(opts.maxKbps ? ['-maxrate', `${opts.maxKbps}k`, '-bufsize', `${2 * opts.maxKbps}k`] : []),
       '-pix_fmt', 'yuv420p',
       '-movflags', '+faststart',
       outPath

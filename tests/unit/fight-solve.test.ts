@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { ShotEvaluator } from '@engine/evaluate'
+import { torsoShape, torsoSurface } from '@engine/fight/contact'
 import { DEFENSES, REACTIONS, strikeImpacts } from '@engine/fight/moves'
 import { parseFightScript } from '@engine/fight/script'
 import { CLINCH_MOVES, MAX_FIGHT_MARKS, solveFight, type FighterInput } from '@engine/fight/solve'
 import { MOTION_PRESETS } from '@engine/motions'
 import { createEntity, createProject } from '@engine/schema'
+import { bodyLowY } from '@engine/floor'
 import { personDims, poseEffectors, toWorld } from '@engine/skeleton'
 import type { ActorMark, EntityState, FightDoc, V3 } from '@engine/types'
 
@@ -131,13 +133,8 @@ function blow(st: { entities: EntityState[] }, fight: FightDoc, fighters: [Fight
     const lead = Math.hypot(l.x - ref.x, l.z - ref.z) <= Math.hypot(r.x - ref.x, r.z - ref.z) ? l : r
     T = push(lead, 0.08)
   }
-  else if (effector.startsWith('knee')) {
-    const chest = w(fx.chest)
-    const base = w({ x: 0, y: dDims.legLen + 0.08 * dDims.s, z: 0 })
-    const f = 0.2 / 0.55
-    T = push({ x: base.x + (chest.x - base.x) * f, y: base.y + (chest.y - base.y) * f, z: base.z + (chest.z - base.z) * f }, 0.3 * dDims.bodyW * dIn.scale)
-  }
-  else T = push(w(fx.chest), 0.3 * dDims.bodyW * dIn.scale)
+  // Body (fork, contact.ts): the torso's surface — chest, lower torso for a knee, midsection for a kick.
+  else T = torsoSurface(torsoShape(dIn.assetId, dIn.params, dDims), dDims, dIn.scale, d.joints, d.position, d.heading, toward, effector.startsWith('knee') ? 0.2 : effector.startsWith('foot') ? 0.3 : 0.55)
   const head = w(fx.head)
   return {
     E,
@@ -302,10 +299,12 @@ A knee to body -> hit`)
     const st = ev.evaluate(t)
     const b = blow(st, fight, fighters, 0, 0)
     expect(b.error).toBeLessThanOrEqual(0.03)
-    expect(b.a.position.y).toBeCloseTo(kick!.liftM[0]!, 6)
+    // Floor contact (fork, ground.ts): the lift is the lowest body point's height off the floor.
+    const low = (e: EntityState): number => e.position.y + bodyLowY({ assetId: 'person.woman' }, e.joints)
+    expect(low(b.a)).toBeCloseTo(kick!.liftM[0]!, 6)
     // Ramped in and landed: on the ground at the beat's start and after it.
-    expect(ev.evaluate(kick!.startT).entities.find((e) => e.entityId === 'ent_b')!.position.y).toBeCloseTo(0, 9)
-    expect(ev.evaluate(t + 1.2).entities.find((e) => e.entityId === 'ent_b')!.position.y).toBeCloseTo(0, 9)
+    expect(Math.abs(low(ev.evaluate(kick!.startT).entities.find((e) => e.entityId === 'ent_b')!))).toBeLessThanOrEqual(0.015)
+    expect(Math.abs(low(ev.evaluate(t + 1.2).entities.find((e) => e.entityId === 'ent_b')!))).toBeLessThanOrEqual(0.015)
     // Only as much as needed: a reachable kick doesn't lift.
     expect(body!.liftM).toEqual([0])
   })

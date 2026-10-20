@@ -1,4 +1,4 @@
-// Modified for the fork (shared label palette, shot words box, pose-slider directions, held weapons) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (shared label palette, shot words box, pose-slider directions, held weapons, fight re-solve, camera-move subject hint) in 2026; see MODIFICATIONS.md.
 /**
  * Context-sensitive right panel. Content is driven by store.selection and the
  * current mode: nothing selected → scene/lighting/shot; an entity, the shot
@@ -7,7 +7,7 @@
  * degrees where a filmmaker expects degrees.
  */
 
-import { useStore, releaseHeldBy } from '../store'
+import { useStore, refightShot, releaseHeldBy, toastRefight, selectedEntityIds } from '../store'
 import { emit } from '../bus'
 import { useState } from 'react'
 import { SENSORS, LENS_SET } from '@engine/camera'
@@ -15,6 +15,7 @@ import { GAITS } from '@engine/gaits'
 import { RIGS } from '@engine/rigs'
 import { MOTION_PRESETS, type MotionPreset } from '@engine/motions'
 import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
+import { pickFramingSubjectIds } from '@engine/framing'
 import { ACTION_PRESETS } from '@engine/action-presets'
 import { ShotEvaluator } from '@engine/evaluate'
 import { newId } from '@engine/ids'
@@ -517,6 +518,7 @@ function ShotSection({ scene, shot }: { scene: Scene; shot: Shot }): JSX.Element
             const v = num(e.target.value)
             if (v === null) return
             const next = clamp(v, 0.5, 60)
+            let fights: ReturnType<typeof refightShot> = []
             mutate('shot duration', (doc) => {
               const sh = findShot(doc, scene.id, shot.id)
               if (!sh) return
@@ -524,7 +526,11 @@ function ShotSection({ scene, shot }: { scene: Scene; shot: Shot }): JSX.Element
               // shared across shots (coverage model) and out-of-range marks
               // are harmless to the evaluator.
               sh.duration = next
+              // Fork: staged fights follow the new end.
+              const sc = doc.scenes.find((s) => s.id === scene.id)
+              if (sc) fights = refightShot(sc, sh)
             })
+            toastRefight(fights)
             if (time > next) setTime(next)
           }}
         />
@@ -1536,10 +1542,9 @@ function CameraMovesSection({ scene }: { scene: Scene }): JSX.Element {
   const preset = CAMERA_MOVE_PRESETS.find((p) => p.id === presetId)
 
   const categories = [...new Set(CAMERA_MOVE_PRESETS.map((p) => p.category))]
-  const subjectHint =
-    selection?.kind === 'entity'
-      ? scene.entities.find((e) => e.id === selection.entityId)
-      : scene.entities.find((e) => e.assetId.startsWith('person.'))
+  // Fork: the same pick as SceneManager.applyCameraMove (a selected set kit is skipped while there is cast).
+  const hintId = pickFramingSubjectIds(scene.entities, selectedEntityIds(selection), 1)[0]
+  const subjectHint = scene.entities.find((e) => e.id === hintId)
 
   return (
     <div className="panel-section">

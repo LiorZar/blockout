@@ -268,9 +268,9 @@ export const ASSET_CATALOG: AssetSpec[] = [
   A('prop.staff', 'Staff', 'weapons', 1.7, 0.05, 0, 'static', 'a fighting staff'),
   A('prop.shield', 'Shield', 'weapons', 0.7, 0.35, 0, 'static', 'a round shield'),
   A('prop.pistol', 'Pistol', 'weapons', 0.17, 0.12, 0, 'static', 'a pistol'),
-  A('prop.rifle', 'Rifle', 'weapons', 0.25, 0.55, 0, 'static', 'a rifle'),
-  A('prop.shotgun', 'Shotgun', 'weapons', 0.25, 0.55, 0, 'static', 'a shotgun'),
-  A('prop.bow', 'Bow', 'weapons', 1.44, 0.2, 0, 'static', 'a bow'),
+  A('prop.rifle', 'Rifle', 'weapons', 0.21, 0.55, 0, 'static', 'a rifle'),
+  A('prop.shotgun', 'Shotgun', 'weapons', 0.17, 0.55, 0, 'static', 'a shotgun'),
+  A('prop.bow', 'Bow', 'weapons', 1.37, 0.2, 0, 'static', 'a bow'),
 
   // Primitives
   A('prim.cube', 'Cube', 'primitives', 1, 0.5, 0, 'static', 'a box'),

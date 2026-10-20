@@ -1,3 +1,4 @@
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and apply_motion marks are posed moves; see MODIFICATIONS.md.
 /**
  * Crowd & sequence director: one-click choreographed groups. Generates the
  * ENTITIES (people, cars) and their TRACKS (marks with gaits, altitude, and
@@ -11,6 +12,7 @@
  */
 
 import { MOTION_PRESETS, type MotionPreset } from './motions'
+import { bodyLowY, motionRootY, type Body } from './floor'
 
 export type SequenceType = 'dance' | 'fight' | 'footChase' | 'carChase'
 
@@ -38,6 +40,9 @@ export interface SequenceMarkSpec {
   easeOut: number
   hold: number
   joints?: Record<string, number>
+  /** Fork: face this heading through the motion (with `posedMove`). */
+  arriveHeading?: number
+  posedMove?: boolean
 }
 
 export interface SequenceEntitySpec {
@@ -112,7 +117,8 @@ function appendMotion(
         time,
         position: {
           x: pos.x + fwd.x * forward,
-          y: Math.max(0, pos.y + up),
+          // Fork: raw; `floorMarks` applies the floor rule (it used to clamp at 0).
+          y: pos.y + up,
           z: pos.z + fwd.z * forward
         },
         gait: 'stand',
@@ -126,6 +132,15 @@ function appendMotion(
     t += cycle
   }
   return t
+}
+
+/**
+ * Fork: the floor rule (floor.ts `motionRootY`) on posed marks laid on a
+ * floor at `baseY`: a keyframe that doesn't lift the body rests its lowest
+ * point on it, and nothing goes below it.
+ */
+function floorMarks(marks: SequenceMarkSpec[], baseY: number, body: Body | undefined): void {
+  for (const m of marks) if (m.joints) m.position.y = motionRootY(baseY, m.position.y - baseY, bodyLowY(body, m.joints))
 }
 
 /* ------------------------------- dance --------------------------------- */
@@ -389,16 +404,30 @@ export function choreographMotion(
   pos: { x: number; y: number; z: number },
   heading: number,
   duration: number,
-  startT = 0
+  startT = 0,
+  body?: Body
 ): SequenceMarkSpec[] | null {
   const preset = MOTION_PRESETS.find((p) => p.id === presetId)
   if (!preset) return null
   const marks: SequenceMarkSpec[] = []
   appendMotion(marks, preset, pos, startT, duration, heading)
+  // Fork: on the performer's floor, as a posed move that keeps its facing
+  // (no walk cycle between keyframes, no turn toward a vertical move).
+  floorMarks(marks, pos.y, body)
+  for (const m of marks) {
+    m.arriveHeading = heading
+    m.posedMove = true
+  }
   return marks
 }
 
 export function generateSequence(opts: SequenceOptions): SequenceEntitySpec[] {
+  const specs = sequenceOf(opts)
+  for (const e of specs) floorMarks(e.marks, 0, { assetId: e.assetId }) // fork
+  return specs
+}
+
+function sequenceOf(opts: SequenceOptions): SequenceEntitySpec[] {
   switch (opts.type) {
     case 'dance':
       return danceSequence(opts)

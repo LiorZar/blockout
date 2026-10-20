@@ -1,3 +1,4 @@
+// Modified in this fork (2026): MiniMax H3 Max profile, maxFileMB / maxPromptChars / promptStyle; see MODIFICATIONS.md.
 /**
  * Generator profiles — data, not code. Each profile describes how a target
  * AI generator consumes references and constrains exports (duration,
@@ -27,6 +28,12 @@ export interface GeneratorProfile {
   attachHint: string
   /** Extra prompt clause instructing the model to follow the reference. */
   adherenceClause: string
+  /** Fork: the model's input-video size cap (MB); the encoder caps its bitrate to fit (profile-limits.ts). */
+  maxFileMB?: number
+  /** Fork: the model's prompt length cap (characters); the prompt trims its scene sections to fit. */
+  maxPromptChars?: number
+  /** Fork: 'previs' ends the prompt with this profile's adherenceClause (the clip IS the input video). */
+  promptStyle?: 'previs'
 }
 
 export const BUILTIN_PROFILES: GeneratorProfile[] = [
@@ -45,6 +52,26 @@ export const BUILTIN_PROFILES: GeneratorProfile[] = [
       'Attach the reference MP4 as the motion/video reference and the first-frame still as the image reference.',
     adherenceClause:
       'Precisely match the camera movement, framing, and subject blocking of the attached reference video. Keep subject positions, screen direction, and timing identical to the reference.'
+  },
+  // Fork: the model built for this job — a grey-box previs clip in, the finished shot out (CLAUDE.md).
+  {
+    id: 'minimax-h3-max',
+    name: 'MiniMax H3 Max',
+    vendor: 'MiniMax',
+    kind: 'video',
+    maxDuration: 15,
+    recommendedDuration: 10,
+    aspects: ['16:9', '9:16', '1:1'],
+    exportWidth: 1920,
+    fps: 24,
+    refModes: ['referenceVideo', 'firstFrame'],
+    attachHint:
+      'Attach the reference MP4 as the video input of H3 Max (≤ 15 s, ≤ 50 MB; the output is as long as the clip) and paste prompt.txt; look references go in as images.',
+    adherenceClause:
+      'The attached video is a grey-box 3D previs of this shot. Keep its layout, where every subject stands and how it moves, the camera path, framing and lens, and the timing exactly. Render each placeholder shape as the subject named above, with real materials, lighting and detail, and add nothing that is not in the previs.',
+    maxFileMB: 50,
+    maxPromptChars: 2000,
+    promptStyle: 'previs'
   },
   {
     id: 'veo-3.1',

@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's Clara button in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's Clara button and export file-size cap in 2026; see MODIFICATIONS.md.
 /**
  * Typed IPC bridge. The renderer sees exactly this surface as
  * window.blockout — nothing else from Node.
@@ -37,7 +37,7 @@ export interface BlockoutAPI {
   exportBegin(
     jobId: string,
     outPath: string,
-    opts: { fps: number; width: number; height: number; framesExpected: number }
+    opts: { fps: number; width: number; height: number; framesExpected: number; maxKbps?: number }
   ): Promise<boolean>
   exportFrame(jobId: string, png: ArrayBuffer): Promise<boolean>
   exportEnd(jobId: string): Promise<boolean>

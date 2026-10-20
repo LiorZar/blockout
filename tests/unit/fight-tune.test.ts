@@ -189,7 +189,10 @@ B roundhouse to head -> ko power 1`)
     const marks = fightCoverage(fight, sol.report, 'punch-in', 1)
     for (const beat of sol.report.beats.slice(1)) {
       const t = beat.impactTimes[beat.impactTimes.length - 1]!
-      const push = marks.find((m) => m.shot.size === 'MCU' && Math.abs(m.time - (t - 0.2)) < 1e-9)
+      // Sized to show the blow: a KO a wide two-shot (qa-clara bug 3), a body blow medium, a head blow MCU (qa-fight bug 10).
+      const doc = fight.beats[beat.index]!
+      const size = doc.outcomes.includes('ko') ? 'WS' : doc.target === 'body' ? 'MS' : 'MCU'
+      const push = marks.find((m) => m.shot.size === size && Math.abs(m.time - (t - 0.2)) < 1e-9)
       expect(push, `beat ${beat.index + 1} at ${t.toFixed(2)} s`).toBeDefined()
     }
   })

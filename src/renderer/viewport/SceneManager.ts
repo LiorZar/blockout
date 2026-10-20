@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -64,6 +64,11 @@ interface EntityVisual {
 }
 
 export type RenderPass = 'clean' | 'depth' | 'normal'
+
+/** Fork: a placement waiting for its floor click (asset, sequence, routine, fight). */
+function isPlacementArmed(s: { placingAssetId: unknown; placingSequence: unknown; placingChoreography: unknown }): boolean {
+  return !!(s.placingAssetId || s.placingSequence || s.placingChoreography)
+}
 
 export class SceneManager {
   readonly scene = new THREE.Scene()
@@ -295,6 +300,11 @@ export class SceneManager {
         }
         if (state.selection !== prev.selection || state.mode !== prev.mode) {
           this.syncSelection()
+        }
+        // Fork: TransformControls hears pointerdown before onPointerDown, so an
+        // armed placement disables it — the click must place, not grab a gizmo.
+        if (isPlacementArmed(state) !== isPlacementArmed(prev)) {
+          this.transform.enabled = !isPlacementArmed(state)
         }
         if (state.showMarks !== prev.showMarks || state.showPaths !== prev.showPaths) {
           this.applyOverlayToggles()
@@ -864,10 +874,13 @@ export class SceneManager {
 
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0) return
+    const s = this.currentState()
     // Pointer is on the transform gizmo (axis set on hover) — the gizmo owns
     // this interaction; running selection logic would detach it mid-grab.
-    if (this.transform.dragging || this.transform.axis) return
-    const s = this.currentState()
+    // Fork: an armed placement owns the click instead (the gizmo is disabled
+    // while armed — see the store subscription), so a just-placed set's gizmo
+    // can't swallow it.
+    if (!isPlacementArmed(s) && (this.transform.dragging || this.transform.axis)) return
     if (s.mode === 'deliver') return
     // While recording a performance, clicks must not change the selection.
     if (s.recording) return
@@ -1439,12 +1452,10 @@ export class SceneManager {
 
   private autoFrame(size: Parameters<typeof frameSubjectMath>[0]): void {
     const s = this.currentState()
-    // Frame the selected entity, or the first person in the scene.
-    let subjectId: string | null = s.selection?.kind === 'entity' ? s.selection.entityId : null
-    if (!subjectId) {
-      const person = this.docScene?.entities.find((e) => e.assetId.startsWith('person.'))
-      subjectId = person?.id ?? this.docScene?.entities[0]?.id ?? null
-    }
+    // Frame the selected entity, or the first person in the scene. Fork: a
+    // selected set kit is skipped while there is cast (engine/framing.ts).
+    const selected = s.selection?.kind === 'entity' ? [s.selection.entityId] : []
+    const subjectId = pickFramingSubjectIds(this.docScene?.entities ?? [], selected, 1)[0] ?? null
     if (!subjectId || !this.shot || !this.evaluator) {
       s.toast('Place a subject first, then auto-frame.', 'info')
       return
@@ -1510,7 +1521,9 @@ export class SceneManager {
     const s = this.currentState()
     const state = this.evaluator.evaluate(s.time)
     const selected = explicitIds ?? selectedEntityIds(s.selection)
-    const ids = pickFramingSubjectIds(this.docScene.entities, selected, minSelected)
+    const ids = pickFramingSubjectIds(this.docScene.entities, selected, minSelected, {
+      explicit: explicitIds !== undefined
+    })
     const entities = this.docScene.entities.filter((e) => ids.includes(e.id))
     const out: { id: string; pos: THREE.Vector3; height: number }[] = []
     for (const e of entities) {

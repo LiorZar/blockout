@@ -123,7 +123,7 @@ export function personDims(assetId: string, params?: Record<string, number | str
 /* --------------------------- tiny 3×3 rigid math -------------------------- */
 
 /** Row-major 3×3 rotation. */
-type M3 = [number, number, number, number, number, number, number, number, number]
+export type M3 = [number, number, number, number, number, number, number, number, number]
 
 const IDENTITY: M3 = [1, 0, 0, 0, 1, 0, 0, 0, 1]
 
@@ -163,7 +163,8 @@ function apply(m: M3, v: V3): V3 {
   }
 }
 
-interface Frame {
+/** A bone frame: its origin and rotation, entity-local. */
+export interface Frame {
   p: V3
   r: M3
 }
@@ -174,22 +175,26 @@ function child(parent: Frame, offset: V3, rot: M3): Frame {
   return { p: { x: parent.p.x + o.x, y: parent.p.y + o.y, z: parent.p.z + o.z }, r: mul(parent.r, rot) }
 }
 
-function point(f: Frame, local: V3): V3 {
+/** A bone-local point in entity-local coordinates. */
+export function framePoint(f: Frame, local: V3): V3 {
   const o = apply(f.r, local)
   return { x: f.p.x + o.x, y: f.p.y + o.y, z: f.p.z + o.z }
 }
 
+const point = framePoint
+
 const v = (x: number, y: number, z: number): V3 => ({ x, y, z })
 
+export type Bone = 'pelvis' | 'torso' | 'head' | 'shoulderL' | 'shoulderR' | 'elbowL' | 'elbowR' | 'hipL' | 'hipR' | 'kneeL' | 'kneeR'
+
 /**
- * Effector positions for a pose, entity-local (ground origin, facing −Z).
- * Mirrors `animatePerson`'s stand gait + override mapping exactly (the
- * motions.ts conventions on a −Z-facing body): shoulder / hip / torso / head
- * X channels and the left abduction channels are subtracted, the right
- * abduction channels and elbow bends added, knee bends and torso/head Z
- * channels subtracted.
+ * The rig's bone frames for a pose (fork): the hierarchy and joint mapping
+ * of `animatePerson`'s stand gait (the motions.ts conventions on a −Z-facing
+ * body): shoulder / hip / torso / head X channels and the left abduction
+ * channels are subtracted, the right abduction channels and elbow bends
+ * added, knee bends and torso/head Z channels subtracted.
  */
-export function poseEffectors(dims: PersonDims, joints: Record<string, number> | undefined): Record<Effector, V3> {
+export function poseFrames(dims: PersonDims, joints: Record<string, number> | undefined): Record<Bone, Frame> {
   const j = (k: string): number => joints?.[k] ?? 0
   const root: Frame = { p: v(0, 0, 0), r: IDENTITY }
   const pelvis = child(root, v(0, dims.legLen, 0), IDENTITY)
@@ -203,6 +208,15 @@ export function poseEffectors(dims: PersonDims, joints: Record<string, number> |
   const hipR = child(pelvis, v(dims.hipX, 0, 0), euler(-j('hipRX'), 0, j('hipRZ')))
   const kneeL = child(hipL, v(0, -dims.upperLegLen, 0), euler(-j('kneeL'), 0, 0))
   const kneeR = child(hipR, v(0, -dims.upperLegLen, 0), euler(-j('kneeR'), 0, 0))
+  return { pelvis, torso, head, shoulderL, shoulderR, elbowL, elbowR, hipL, hipR, kneeL, kneeR }
+}
+
+/**
+ * Effector positions for a pose, entity-local (ground origin, facing −Z),
+ * from `poseFrames`.
+ */
+export function poseEffectors(dims: PersonDims, joints: Record<string, number> | undefined): Record<Effector, V3> {
+  const { pelvis, torso, head, shoulderL, shoulderR, elbowL, elbowR, kneeL, kneeR } = poseFrames(dims, joints)
   const toe = v(0, -dims.lowerLegLen + 0.03 * dims.s, -0.16 * dims.s)
   return {
     handL: point(elbowL, v(0, -dims.lowerArmLen, 0)),

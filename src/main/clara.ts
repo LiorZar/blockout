@@ -38,6 +38,9 @@ export function buildAttachOptions(folder: string, mcpUrl: string): IClaraAttach
     folder,
     mcp: { type: 'http', url: mcpUrl },
     access: 'read-files',
+    // The delete card names the thing ("Remove the spear?") from the agent's `name` argument;
+    // without one Clara falls back to the tool title.
+    tools: { delete_entity: { label: 'Remove {name}' } },
     instructions: CLARA_INSTRUCTIONS
   }
 }

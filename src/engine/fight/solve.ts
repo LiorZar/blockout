@@ -28,9 +28,12 @@ import { ShotEvaluator } from '../evaluate'
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, toWorld, type Effector, type PersonDims } from '../skeleton'
 import type { EntityState, FightBeat, FightDoc, FightOutcome, GaitId, Scene, Shot, V3 } from '../types'
-import { heldPointLocal, holdJoints, weaponContact, weaponSpec, type HeldWeapon } from '../weapons'
-import { DEFENSES, REACTIONS, SHOT_MOVES, gunAimMove, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
+import { SUPPORT_SLACK, heldPointLocal, holdJoints, supportReach, weaponContact, weaponSpec, type HeldWeapon } from '../weapons'
+import { DEFENSES, REACTIONS, SHIELD_BLOCK, SHOT_MOVES, fightMotion, gripPitch, gunAimMove, shotHand, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
 import { impact, snapAmplitude, snapCurve, weaponHeft, type ImpactResult } from './physics'
+import { BODY_RADIUS, clearRun, pathCrossings, type FightObstacle, type PathSample } from './obstacles'
+import { floorBody, groundBetween, groundY, type FloorBody } from './ground'
+import { bodyClearance, torsoShape, torsoSurface, type TorsoShape } from './contact'
 
 export interface FighterInput {
   entityId: string
@@ -58,11 +61,23 @@ export interface BeatReport {
   liftM: number[]
   physics: ImpactResult[]
   warnings: string[]
+  /** The motion the beat played: a shot's gun or bow aim, a replaced move's fork motion. */
+  plays: string
 }
 
 export interface FightSolution {
   tracks: [FightMarkSpec[], FightMarkSpec[]]
   report: { beats: BeatReport[]; warnings: string[]; endT: number }
+  /** Set props (fork): each fighter's evaluated path, one sample per frame (empty unless props or `paths` were asked for). */
+  paths: [PathSample[], PathSample[]]
+}
+
+/** Set props (fork): solver options. */
+export interface FightSolveOptions {
+  /** Static set props: push-backs stop at them, and paths that still run into one are warned about. */
+  obstacles?: FightObstacle[]
+  /** Sample the evaluated paths even without props (to place a fight clear of them). */
+  paths?: boolean
 }
 
 export const MAX_FIGHT_MARKS = 400
@@ -71,6 +86,8 @@ export const MAX_STEP_SPEED = 2.5
 export const MIN_SEPARATION = 0.35
 export const CONTACT_TOLERANCE = 0.03
 export const MIN_CLEARANCE = 0.25
+/** A body or legs blow that's avoided clears the whole body by this much (fork). */
+export const MIN_BODY_CLEARANCE = 0.1
 export const CLINCH_MOVES = new Set(['knee-strike', 'elbow-strike', 'shove-two-hands', 'tackle-lunge', 'grapple-shove'])
 /** Lateral blows: the head snap turns (headY) instead of nodding back (headX). */
 const HOOK_MOVES = new Set([
@@ -86,8 +103,12 @@ const HOOK_MOVES = new Set([
 const ARM_PITCH = 1.0
 const LEG_PITCH = 0.9
 const ABDUCT_PITCH = 0.6
+/** Reach (fork): a blow that can't land tries again with those pitch ranges this much wider. */
+const WIDE_REACH = 1.8
 /** A kick that can't reach rises onto the toes / hops — at most this high (m). */
 export const MAX_KICK_LIFT = 0.5
+/** A body kick lands this far up the torso (fork): the midsection, between the belt and the lower ribs. */
+const KICK_MIDSECTION = 0.3
 /** A blocking arm reaches toward the blow: elbow first, then abduction (shoulders stay in the block). */
 const BLOCK_ELBOW = 0.8
 /** An armed blow that can't reach the target height by pitch alone bends the elbow by up to this. */
@@ -167,6 +188,10 @@ interface Fighter {
   held: HeldWeapon[]
   /** While a gun beat is solved: how far down the barrel line its contact point sits (m; 0 = none). */
   shotRange: number
+  /** Floor contact (fork, ground.ts): every mark rests the body's lowest point on the floor. */
+  floor: FloorBody
+  /** Body blows land on this torso's surface (fork, contact.ts). */
+  torso: TorsoShape
 }
 
 function fighterOf(input: FighterInput): Fighter {
@@ -188,7 +213,9 @@ function fighterOf(input: FighterInput): Fighter {
     heading: 0,
     down: false,
     held,
-    shotRange: 0
+    shotRange: 0,
+    floor: floorBody(input.assetId, input.params, input.scale > 0 ? input.scale : 1, input.start.y),
+    torso: torsoShape(input.assetId, input.params, personDims(input.assetId, input.params))
   }
 }
 
@@ -260,7 +287,8 @@ export function fightTarget(
   heading: number,
   toward: XZ,
   zone: FightBeat['target'],
-  effector: Effector
+  effector: Effector,
+  torso: TorsoShape
 ): V3 {
   const fx = poseEffectors(dims, joints)
   const w = (p: V3): V3 => toWorld(p, position, heading, scale)
@@ -273,14 +301,11 @@ export function fightTarget(
     const lead = flat(sub(l, add(position, t))) <= flat(sub(r, add(position, t))) ? l : r
     return push(lead, 0.08)
   }
-  // Body: the chest; a knee comes in under it, at the lower torso.
-  const chest = w(fx.chest)
-  if (effector.startsWith('knee')) {
-    const base = w({ x: 0, y: dims.legLen + 0.08 * dims.s, z: 0 })
-    const f = 0.2 / 0.55
-    return push({ x: base.x + (chest.x - base.x) * f, y: base.y + (chest.y - base.y) * f, z: base.z + (chest.z - base.z) * f }, 0.3 * dims.bodyW * scale)
-  }
-  return push(chest, 0.3 * dims.bodyW * scale)
+  // Body (fork, contact.ts): on the torso's surface toward the attacker — the
+  // chest for fists and elbows, the lower torso for a knee, the midsection
+  // (belt to lower ribs) for a kick.
+  const yFrac = effector.startsWith('knee') ? 0.2 : effector.startsWith('foot') ? KICK_MIDSECTION : 0.55
+  return torsoSurface(torso, dims, scale, joints, position, heading, t, yFrac)
 }
 
 /**
@@ -294,12 +319,19 @@ function guardHand(attackerLocalX: number): 'handL' | 'handR' {
 
 /** Weapons: an armed defender takes a blocked blow on its blade or shield, whichever hand holds it. */
 function guardSide(f: Fighter, side: 'handL' | 'handR'): 'handL' | 'handR' {
+  const shield = shieldHand(f)
+  if (shield) return shield === 'L' ? 'handL' : 'handR'
   const guards = (e: 'handL' | 'handR'): boolean => {
     const w = weaponOf(f, e)
     return !!w && w.spec.kind !== 'gun' && w.spec.kind !== 'bow'
   }
   const other = side === 'handL' ? 'handR' : 'handL'
   return !guards(side) && guards(other) ? other : side
+}
+
+/** Shields (fork): the hand a fighter's shield is in — it blocks and parries with it — or null. */
+function shieldHand(f: Fighter): 'L' | 'R' | null {
+  return f.held.find((h) => h.spec.kind === 'shield')?.hand ?? null
 }
 
 /** Weapons: a one-handed weapon move (all blows from one hand), mirrored onto the other hand. */
@@ -370,13 +402,13 @@ function solveChannel(
  * y: the shoulder or hip X channel first; if that alone can't reach (a hook's
  * forearm runs sideways), the abduction (Z) channel on top of it.
  */
-function solvePitch(f: Fighter, joints: Joints, e: Effector, rootY: number, targetY: number): Joints {
+function solvePitch(f: Fighter, joints: Joints, e: Effector, rootY: number, targetY: number, wide = 1): Joints {
   const x = pitchJoint(e)
-  const first = solveChannel(f, joints, e, rootY, targetY, x, x.startsWith('hip') ? LEG_PITCH : ARM_PITCH)
+  const first = solveChannel(f, joints, e, rootY, targetY, x, (x.startsWith('hip') ? LEG_PITCH : ARM_PITCH) * wide)
   if (first.err <= 1e-3) return { [x]: first.delta }
   const z = x.replace(/X$/, 'Z')
   const withX = { ...joints, [x]: (joints[x] ?? 0) + first.delta }
-  const second = solveChannel(f, withX, e, rootY, targetY, z, ABDUCT_PITCH)
+  const second = solveChannel(f, withX, e, rootY, targetY, z, ABDUCT_PITCH * wide)
   const out = second.err < first.err ? { [x]: first.delta, [z]: second.delta } : { [x]: first.delta }
   // A weapon that still falls short (a short axe, a low follow-through) bends the elbow too.
   const err = Math.min(first.err, second.err)
@@ -447,9 +479,11 @@ function eventPose(ev: DefEvent, t: number, guard: Joints): { joints: Joints; of
 export function solveFight(
   fight: FightDoc,
   fighters: [FighterInput, FighterInput],
-  shot: { duration: number; fps: number }
+  shot: { duration: number; fps: number },
+  opts: FightSolveOptions = {}
 ): FightSolution {
   const fps = shot.fps > 0 ? shot.fps : 24
+  const obstacles = opts.obstacles ?? []
   const onGrid = (x: number): number => Math.round(x * fps) / fps
   const upGrid = (x: number): number => Math.ceil(x * fps - 1e-9) / fps
   const exaggeration = clamp(fight.exaggeration ?? 1.5, 1, 3)
@@ -464,13 +498,13 @@ export function solveFight(
 
   F[0].heading = facing(F[0].spot, F[1].spot)
   F[1].heading = facing(F[1].spot, F[0].spot)
-  for (const f of F) addMark(f, 0, f.spot, f.y, 'stand', guard, f.heading)
+  for (const f of F) addMark(f, 0, f.spot, groundY(f.floor, guard), 'stand', guard, f.heading)
   let prevEnd = 0
 
   for (let n = 0; n < fight.beats.length; n++) {
     const beat = fight.beats[n]!
     const name = `Beat ${n + 1}`
-    const label = `${name} (${beat.attacker === 0 ? 'A' : 'B'} ${beat.move} → ${beat.target})`
+    const label = `${name} (${beat.attacker === 0 ? 'A' : 'B'} ${SHOT_MOVES.has(beat.move) ? 'shoot' : beat.move} → ${beat.target})`
     const atk = F[beat.attacker]
     const def = F[beat.attacker === 0 ? 1 : 0]
     if (atk.down || def.down) {
@@ -481,19 +515,20 @@ export function solveFight(
     // mirrored onto a left-hand gun; a one-hand strike mirrors onto the weapon hand when only the
     // other hand is armed; a blow from a hand on a two-hander comes from its holding hand.
     const shotBeat = SHOT_MOVES.has(beat.move)
-    const gun = shotBeat ? atk.held.find((h) => h.spec.kind === 'gun') : undefined
+    // A bow shoots too (its loose); a gun in the other hand goes first.
+    const gun = shotBeat ? (atk.held.find((h) => h.spec.kind === 'gun') ?? atk.held.find((h) => h.spec.kind === 'bow')) : undefined
     const move = gun ? gunAimMove(gun.spec) : beat.move
-    const raw = shotBeat ? (gun ? shotImpacts(move, 'R') : []) : strikeImpacts(beat.move)
+    const raw = shotBeat ? (gun ? shotImpacts(move) : []) : strikeImpacts(beat.move)
     const mirror = shotBeat
-      ? gun?.hand === 'L'
+      ? !!gun && gun.hand !== shotHand(move)
       : raw.length > 0 && raw.every((imp) => !weaponOf(atk, imp.effector) && !!weaponOf(atk, MIRROR_EFFECTOR[imp.effector]))
-    const preset0 = BY_ID.get(move)
+    const preset0 = fightMotion(move)
     const preset = preset0 && mirror ? mirroredMove(preset0) : preset0
     const impacts: StrikeImpact[] = !preset
       ? []
       : raw.map((imp) => ({ ...imp, effector: strikeEffector(atk, mirror ? MIRROR_EFFECTOR[imp.effector] : imp.effector) }))
     if (!preset || impacts.length === 0) {
-      warnings.push(shotBeat ? `${label} dropped: ${beat.attacker === 0 ? 'A' : 'B'} has no gun in hand` : `${label} dropped: ${beat.move} is not a strike`)
+      warnings.push(shotBeat ? `${label} dropped: ${beat.attacker === 0 ? 'A' : 'B'} has no gun or bow in hand` : `${label} dropped: ${beat.move} is not a strike`)
       continue
     }
     const beatWarnings: string[] = []
@@ -501,6 +536,13 @@ export function solveFight(
     if (shotBeat && outcomes.some((o) => o === 'block' || o === 'parry')) {
       outcomes = outcomes.map((o): FightOutcome => (o === 'block' || o === 'parry' ? 'miss' : o))
       beatWarnings.push(`${label}: a shot can't be blocked or parried, so it misses`)
+    }
+    if (gun?.spec.support && !atk.held.some((h) => h.hand !== gun.hand)) {
+      // An arm too short for the fore-end (weapons.ts supportReach) holds the gun further back: say so.
+      const aim = preset.keyframes.find((kf) => Math.abs(kf.t - impacts[0]!.t) < 1e-9)!.joints
+      const r = supportReach(atk.dims, holdJoints(atk.dims, aim, atk.held), gun.hand, gun.spec, gun.scale)
+      const who = beat.attacker === 0 ? 'A' : 'B'
+      if (r.slideM > SUPPORT_SLACK) beatWarnings.push(`${label}: ${who} can't reach the ${gun.spec.assetId.replace('prop.', '')}'s fore-end; the support hand holds it ${(r.slideM * 100).toFixed(0)} cm further back`)
     }
     const power = clamp(beat.power ?? 0.7, 0.2, 1)
     const clinch = CLINCH_MOVES.has(beat.move)
@@ -544,6 +586,7 @@ export function solveFight(
     })
 
     const plan = (desiredStart: number, ceil: boolean) => {
+      const notes: string[] = []
       const tf0 = desiredStart + last.t
       // On the frame grid, never earlier than asked.
       let tf = ceil ? upGrid(tf0) : onGrid(tf0)
@@ -568,15 +611,18 @@ export function solveFight(
         const T = times[i]!
         const zoneHigh = beat.target === 'head'
         if (o === 'block' || o === 'parry' || o === 'slip' || o === 'duck') {
-          const d = DEFENSES[o]
+          // A shield blocks and parries with the shield blocks (authored in the left hand).
+          const shield = o === 'block' || o === 'parry' ? shieldHand(def) : null
+          const d = shield ? SHIELD_BLOCK : DEFENSES[o]
           const m = BY_ID.get(zoneHigh ? d.high : d.low)!
           const start = T - d.readyFraction * m.duration
           // Slip away from the striking side.
-          const mirror = o === 'slip' && impacts[i]!.effector.endsWith('R')
+          const mirror = shield ? shield === 'R' : o === 'slip' && impacts[i]!.effector.endsWith('R')
           const ev = constantEvent(start, start + m.duration, m, base, mirror)
           const ph = physics[i]!
           if ((o === 'block' || o === 'parry') && (ph.result === 'stagger' || ph.result === 'knockdown')) {
-            const back = ph.result === 'stagger' ? ph.stepBack : Math.min(0.6, ph.slide * 0.5)
+            let back = ph.result === 'stagger' ? ph.stepBack : Math.min(0.6, ph.slide * 0.5)
+            back = propStop(notes, label, beat.attacker === 0 ? 'B' : 'A', 'push-back', base, away, back, 0, obstacles)
             const dur = ph.result === 'stagger' ? ph.stepDuration : 0.4
             ev.root = (t) => ({ off: { x: away.x * back * clamp((t - T) / dur, 0, 1), z: away.z * back * clamp((t - T) / dur, 0, 1) }, up: 0 })
             // The guard holds while the blow rocks the body back (torso, then head) and the feet give ground.
@@ -659,6 +705,11 @@ export function solveFight(
               return { off: { x: away.x * travel * f, z: away.z * travel * f }, up: s.up * def.k }
             }
           }
+          // Set props (fork): the stagger / slide stops where the body (fallen: its full length) meets one.
+          if (travel > 0) {
+            const what = ph.result === 'knockdown' ? 'slide' : 'stagger'
+            travel = propStop(notes, label, beat.attacker === 0 ? 'B' : 'A', what, base, away, travel, ph.result === 'knockdown' ? fallReach(def, m) : 0, obstacles)
+          }
           const ev: DefEvent = { start: T, end, motion: m, mirror: false, anchors, root, base, times: [], extra: () => null }
           if (beat.target !== 'legs') {
             const A = snapAmplitude(ph.impulse, exaggeration)
@@ -689,13 +740,13 @@ export function solveFight(
       const defAt = (t: number): { pos: XZ; y: number; joints: Joints } => {
         let ev: DefEvent | null = null
         for (const e of events) if (t >= e.start - 1e-9) ev = e
-        if (!ev) return { pos: { ...D }, y: def.y, joints: { ...guard } }
+        if (!ev) return { pos: { ...D }, y: groundY(def.floor, guard), joints: { ...guard } }
         const p = eventPose(ev, t, guard)
-        return { pos: add(ev.base, p.off), y: def.y + p.up, joints: p.joints }
+        return { pos: add(ev.base, p.off), y: groundY(def.floor, p.joints), joints: p.joints }
       }
 
       // 3. Attacker placement per impact, iterated so "toward the attacker" is self-consistent.
-      const place: { root: XZ; heading: number; pitch: Joints; lift: number; base: XZ; target: V3; error: number }[] = []
+      const place: { root: XZ; heading: number; pitch: Joints; lift: number; base: XZ; target: V3; error: number; rootY: number }[] = []
       for (let i = 0; i < impacts.length; i++) {
         const imp = impacts[i]!
         const kf = preset.keyframes[kIdx[i]!]!
@@ -704,61 +755,84 @@ export function solveFight(
         const dState = defAt(T)
         const dPos: V3 = { x: dState.pos.x, y: dState.y, z: dState.pos.z }
         const aimJoints = o === 'slip' || o === 'duck' || o === 'miss' ? guard : dState.joints
-        const aimPos: V3 = o === 'slip' || o === 'duck' || o === 'miss' ? { x: D.x, y: def.y, z: D.z } : dPos
-        const rootUp = (kf.move?.up ?? 0) * atk.k
-        const rootY = atk.y + rootUp
-        let R: XZ = add(aimPos, unit(sub(A0, aimPos)), 0.8)
+        const aimPos: V3 = o === 'slip' || o === 'duck' || o === 'miss' ? { x: D.x, y: groundY(def.floor, guard), z: D.z } : dPos
         const kick = imp.effector.startsWith('foot') || imp.effector.startsWith('knee')
-        let result = { root: R, heading: 0, pitch: {} as Joints, lift: 0, base: R, target: aimPos, error: Infinity }
-        let armFix: Joints = {}
-        for (let it = 0; it < 4; it++) {
-          const toward = unit(sub(R, aimPos))
-          let T3 = fightTarget(def.dims, def.scale, aimJoints, aimPos, hd, toward, beat.target, imp.effector)
-          if (o === 'block' || o === 'parry') {
-            // The blow lands on the guard hand on its side, and that arm reaches
-            // to the height the blow comes in at (elbow, then abduction).
-            const aimPitch = solvePitch(atk, kf.joints, imp.effector, rootY, T3.y)
-            const aimed = withOffsets(kf.joints, aimPitch)
-            const e0 = contactLocal(atk, aimed, imp.effector)
-            const side = guardSide(def, guardHand(e0.x))
-            const h = rootY + e0.y * atk.scale
-            const s = strikeEffector(def, side).endsWith('L') ? 'L' : 'R'
-            const first = solveChannel(def, aimJoints, side, aimPos.y, h, `elbow${s}`, BLOCK_ELBOW, 'guard')
-            armFix = { [`elbow${s}`]: first.delta }
-            let guardErr = first.err
-            if (first.err > 1e-3) {
-              const second = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}Z`, ABDUCT_PITCH, 'guard')
-              if (second.err < first.err) {
-                armFix = { ...armFix, [`shoulder${s}Z`]: second.delta }
-                guardErr = second.err
+        // One placement; `wide` scales the limbs' pitch ranges (fork: the reach retry below).
+        const placeAt = (wide: number) => {
+          // Floor contact (fork): the root height rests the pitched pose's lowest point on the floor.
+          let rootY = groundY(atk.floor, kf.joints)
+          let R: XZ = add(aimPos, unit(sub(A0, aimPos)), 0.8)
+          let result = { root: R, heading: 0, pitch: {} as Joints, lift: 0, base: R, target: aimPos, error: Infinity, rootY }
+          let armFix: Joints = {}
+          for (let it = 0; it < 8; it++) {
+            const toward = unit(sub(R, aimPos))
+            let T3 = fightTarget(def.dims, def.scale, aimJoints, aimPos, hd, toward, beat.target, imp.effector, def.torso)
+            if (o === 'block' || o === 'parry') {
+              // The blow lands on the guard hand on its side, and that arm reaches
+              // to the height the blow comes in at (elbow, then abduction).
+              const aimPitch = solvePitch(atk, kf.joints, imp.effector, rootY, T3.y, wide)
+              const aimed = withOffsets(kf.joints, aimPitch)
+              const e0 = contactLocal(atk, aimed, imp.effector)
+              const side = guardSide(def, guardHand(e0.x))
+              const h = rootY + e0.y * atk.scale
+              const s = strikeEffector(def, side).endsWith('L') ? 'L' : 'R'
+              // A shield doesn't reach: the blow meets its face where it is (reaching would turn the face away).
+              const reach = weaponOf(def, side)?.spec.kind === 'shield' ? 0 : 1
+              const first = solveChannel(def, aimJoints, side, aimPos.y, h, `elbow${s}`, BLOCK_ELBOW * reach, 'guard')
+              armFix = { [`elbow${s}`]: first.delta }
+              let guardErr = first.err
+              if (first.err > 1e-3) {
+                const second = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}Z`, ABDUCT_PITCH * reach, 'guard')
+                if (second.err < first.err) {
+                  armFix = { ...armFix, [`shoulder${s}Z`]: second.delta }
+                  guardErr = second.err
+                }
               }
+              if (guardErr > 1e-3 && weaponOf(def, side)) {
+                // A blade or shield held high (a parry) also swings the shoulder to meet the blow's height.
+                const third = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}X`, ARM_PITCH * reach, 'guard')
+                if (third.err < guardErr) armFix = { ...armFix, [`shoulder${s}X`]: third.delta }
+              }
+              const hand = effectorWorld(def, withOffsets(aimJoints, armFix), aimPos, aimPos.y, hd, side, 'guard')
+              T3 = { x: hand.x + toward.x * 0.05 * def.scale, y: hand.y, z: hand.z + toward.z * 0.05 * def.scale }
             }
-            if (guardErr > 1e-3 && weaponOf(def, side)) {
-              // A blade or shield held high (a parry) also swings the shoulder to meet the blow's height.
-              const third = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}X`, ARM_PITCH, 'guard')
-              if (third.err < guardErr) armFix = { ...armFix, [`shoulder${s}X`]: third.delta }
-            }
-            const hand = effectorWorld(def, withOffsets(aimJoints, armFix), aimPos, aimPos.y, hd, side, 'guard')
-            T3 = { x: hand.x + toward.x * 0.05 * def.scale, y: hand.y, z: hand.z + toward.z * 0.05 * def.scale }
+            // A two-hand grip pitches both arms alike, so the off hand stays on the grip.
+            const pitch = gripPitch(beat.move, solvePitch(atk, kf.joints, imp.effector, rootY, T3.y, wide))
+            const joints = withOffsets(kf.joints, pitch)
+            const e = contactLocal(atk, joints, imp.effector)
+            // A kick still short of the target lifts the kicker, only as much as needed.
+            const short = T3.y - (rootY + e.y * atk.scale)
+            const lift = kick && short > 1e-3 ? Math.min(MAX_KICK_LIFT, short) : 0
+            const ex = e.x * atk.scale
+            const ez = e.z * atk.scale
+            const r = Math.hypot(ex, ez)
+            const phi = Math.atan2(-ex, -ez)
+            const uA = unit(sub(A0, T3), unit(sub(A0, aimPos)))
+            R = add(T3, uA, r)
+            if (!clinch && flat(sub(R, dState.pos)) < MIN_SEPARATION) R = add(dState.pos, unit(sub(R, dState.pos), uA), MIN_SEPARATION)
+            const heading = Math.atan2(uA.x, uA.z) - phi
+            const E = effectorWorld(atk, joints, R, rootY + lift, heading, imp.effector)
+            const fwd = fwdOf(heading)
+            const base = add(R, fwd, -(kf.move?.forward ?? 0) * atk.k)
+            result = { root: R, heading, pitch, lift, base, target: T3, error: dist3(E, T3), rootY }
+            // Floor contact (fork): re-solve until the pitched pose's root height holds.
+            const y = groundY(atk.floor, joints)
+            if (it >= 3 && Math.abs(y - rootY) < 1e-5) break
+            rootY = y
           }
-          const pitch = solvePitch(atk, kf.joints, imp.effector, rootY, T3.y)
-          const joints = withOffsets(kf.joints, pitch)
-          const e = contactLocal(atk, joints, imp.effector)
-          // A kick still short of the target lifts the kicker, only as much as needed.
-          const short = T3.y - (rootY + e.y * atk.scale)
-          const lift = kick && short > 1e-3 ? Math.min(MAX_KICK_LIFT, short) : 0
-          const ex = e.x * atk.scale
-          const ez = e.z * atk.scale
-          const r = Math.hypot(ex, ez)
-          const phi = Math.atan2(-ex, -ez)
-          const uA = unit(sub(A0, T3), unit(sub(A0, aimPos)))
-          R = add(T3, uA, r)
-          if (!clinch && flat(sub(R, dState.pos)) < MIN_SEPARATION) R = add(dState.pos, unit(sub(R, dState.pos), uA), MIN_SEPARATION)
-          const heading = Math.atan2(uA.x, uA.z) - phi
-          const E = effectorWorld(atk, joints, R, rootY + lift, heading, imp.effector)
-          const fwd = fwdOf(heading)
-          const base = add(R, fwd, -(kf.move?.forward ?? 0) * atk.k)
-          result = { root: R, heading, pitch, lift, base, target: T3, error: dist3(E, T3) }
+          return { result, armFix }
+        }
+        let { result, armFix } = placeAt(1)
+        // Reach (fork): a blow that still misses, or a body or legs kick that has to lift the kicker, tries
+        // again with the limb pitched wider, which brings the attacker in closer (spacing rules still hold).
+        // Head kicks keep their lift.
+        if ((o === 'hit' || o === 'ko') && (result.error > CONTACT_TOLERANCE || (kick && beat.target !== 'head' && result.lift > 0))) {
+          const wider = placeAt(WIDE_REACH)
+          const better = wider.result.error <= CONTACT_TOLERANCE ? result.error > CONTACT_TOLERANCE || wider.result.lift < result.lift - 1e-3 : wider.result.error < result.error - 1e-3
+          if (better) {
+            result = wider.result
+            armFix = wider.armFix
+          }
         }
         const ev = blockEvents.get(i)
         if (ev && Object.keys(armFix).length > 0) {
@@ -804,7 +878,7 @@ export function solveFight(
         return lift
       }
       const stepDist = flat(sub(kfRoot(0), A0))
-      return { startT, times, warp, events, avoidIdx, defAt, place, owner, kfRoot, kfLift, stepDist }
+      return { startT, times, warp, events, avoidIdx, defAt, place, owner, kfRoot, kfLift, stepDist, notes }
     }
 
     // 4. Step-in at ≤ 2.5 m/s: push the beat later rather than teleport.
@@ -816,6 +890,7 @@ export function solveFight(
       p = plan(need, true)
       beatWarnings.push(`${label} delayed ${delay.toFixed(2)} s so the step-in stays under ${MAX_STEP_SPEED} m/s`)
     }
+    beatWarnings.push(...p.notes)
     if (p.times[p.times.length - 1]! > shot.duration - 0.3 + 1e-9) {
       warnings.push(`${name} dropped: past the end of the shot`)
       continue
@@ -845,7 +920,7 @@ export function solveFight(
         const v = d / Math.max(1e-6, t - lastMark.time)
         gait = d < 0.05 ? 'stand' : v <= 2.0 ? 'walk' : 'jog'
       }
-      addMark(atk, t, pos, atk.y + (kf.move?.up ?? 0) * atk.k + p.kfLift(j), gait, joints, pl.heading)
+      addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j)), gait, joints, pl.heading)
     }
     const atkEnd = p.startT + preset.duration
     atk.spot = p.kfRoot(kfs.length - 1)
@@ -856,30 +931,39 @@ export function solveFight(
     const effectorAt = (i: number): V3 => {
       const kf = kfs[kIdx[i]!]!
       const joints = withOffsets(kf.joints, p.place[i]!.pitch)
-      return effectorWorld(atk, joints, p.place[i]!.root, atk.y + (kf.move?.up ?? 0) * atk.k + p.place[i]!.lift, p.place[i]!.heading, impacts[i]!.effector)
+      return effectorWorld(atk, joints, p.place[i]!.root, p.place[i]!.rootY + p.place[i]!.lift, p.place[i]!.heading, impacts[i]!.effector)
     }
     const headClear = (i: number, extra: XZ): number => {
       const st = p.defAt(p.times[i]!)
       const head = toWorld(poseEffectors(def.dims, st.joints).head, { x: st.pos.x + extra.x, y: st.y, z: st.pos.z + extra.z }, hd, def.scale)
       return dist3(effectorAt(i), head) - def.dims.headR * def.scale
     }
+    // Body / legs blows (fork, contact.ts): an avoided blow clears the whole body (2 cm over the
+    // minimum for the body model), so the defender steps back from it, or aside.
+    const bodyClear = (i: number, extra: XZ): number => {
+      const st = p.defAt(p.times[i]!)
+      return bodyClearance(def.torso, def.dims, def.build, def.scale, st.joints, { x: st.pos.x + extra.x, y: st.y, z: st.pos.z + extra.z }, hd, effectorAt(i))
+    }
+    const high = beat.target === 'head'
+    const clearOf = high ? headClear : bodyClear
+    const clearNeed = high ? MIN_CLEARANCE + 0.002 : MIN_BODY_CLEARANCE + 0.02
     for (const i of p.avoidIdx) {
       const T = p.times[i]!
       const ev = [...p.events].reverse().find((e) => e.start <= T + 1e-9)
       if (!ev) continue
       const line = unit(sub(A0, D))
       const perp = { x: -line.z, z: line.x }
+      const back = { x: -line.x, z: -line.z }
       let best: { m: number; n: XZ } | null = null
-      if (headClear(i, { x: 0, z: 0 }) >= MIN_CLEARANCE + 0.002) best = { m: 0, n: perp }
+      if (clearOf(i, { x: 0, z: 0 }) >= clearNeed) best = { m: 0, n: perp }
       else {
-        for (const sgn of [1, -1]) {
-          const n = { x: perp.x * sgn, z: perp.z * sgn }
-          if (headClear(i, { x: n.x, z: n.z }) < MIN_CLEARANCE + 0.002) continue
+        for (const n of high ? [perp, { x: -perp.x, z: -perp.z }] : [back, perp, { x: -perp.x, z: -perp.z }]) {
+          if (clearOf(i, { x: n.x, z: n.z }) < clearNeed) continue
           let lo = 0
           let hi = 1
           for (let it = 0; it < 40; it++) {
             const mid = (lo + hi) / 2
-            if (headClear(i, { x: n.x * mid, z: n.z * mid }) >= MIN_CLEARANCE + 0.002) hi = mid
+            if (clearOf(i, { x: n.x * mid, z: n.z * mid }) >= clearNeed) hi = mid
             else lo = mid
           }
           if (!best || hi < best.m) best = { m: hi, n }
@@ -897,9 +981,9 @@ export function solveFight(
         }
         ev.times = [...ev.times, rampIn, T, rampOut]
         ev.end = Math.max(ev.end, rampOut)
-        beatWarnings.push(`${label}: added a ${(m * 100).toFixed(0)} cm sidestep so blow ${i + 1} clears the head`)
+        beatWarnings.push(`${label}: added a ${(m * 100).toFixed(0)} cm ${n === back ? 'step back' : 'sidestep'} so blow ${i + 1} clears the ${high ? 'head' : 'body'}`)
       }
-      clearance[i] = headClear(i, { x: 0, z: 0 })
+      clearance[i] = clearOf(i, { x: 0, z: 0 })
     }
     for (const ev of p.events) {
       truncate(def, ev.start)
@@ -914,7 +998,7 @@ export function solveFight(
       const sorted = [...ts].filter((t) => t >= ev.start - 1e-9 && t <= ev.end + 1e-9).sort((a, b) => a - b)
       for (const t of sorted) {
         const pose = eventPose(ev, t, guard)
-        addMark(def, t, add(ev.base, pose.off), def.y + pose.up, 'stand', pose.joints, hd)
+        addMark(def, t, add(ev.base, pose.off), groundY(def.floor, pose.joints), 'stand', pose.joints, hd)
       }
     }
     const lastDef = def.marks[def.marks.length - 1]!
@@ -922,12 +1006,13 @@ export function solveFight(
     let defEnd = lastDef.time
     const koed = outcomes.includes('ko')
     const downed = physics.some((ph, i) => ph.result === 'knockdown' && (outcomes[i] === 'hit' || outcomes[i] === 'ko'))
-    if (koed) def.down = true
-    else if (downed && n < fight.beats.length - 1) {
+    // A knockdown on the last beat stays down, like a KO (fork: it used to walk from the floor back to guard).
+    if (koed || (downed && n === fight.beats.length - 1)) def.down = true
+    else if (downed) {
       const getUp = BY_ID.get(REACTIONS.getUp)!
       const t0 = defEnd + 0.2
       for (const kf of getUp.keyframes) {
-        addMark(def, t0 + kf.t, def.spot, def.y + (kf.move?.up ?? 0) * def.k, 'stand', kf.joints, hd)
+        addMark(def, t0 + kf.t, def.spot, groundY(def.floor, kf.joints), 'stand', kf.joints, hd)
       }
       defEnd = t0 + getUp.duration
     }
@@ -943,8 +1028,8 @@ export function solveFight(
       const moveA = flat(sub(aRest, atk.spot))
       const moveD = flat(sub(dRest, def.spot))
       restT = recoveryEnd + clamp(Math.max(moveA, moveD) / 1.5, 0.25, 1.5)
-      addMark(atk, restT, aRest, atk.y, moveA > 0.05 ? 'walk' : 'stand', guard, facing(aRest, dRest))
-      addMark(def, restT, dRest, def.y, moveD > 0.05 ? 'walk' : 'stand', guard, facing(dRest, aRest))
+      addMark(atk, restT, aRest, groundY(atk.floor, guard), moveA > 0.05 ? 'walk' : 'stand', guard, facing(aRest, dRest))
+      addMark(def, restT, dRest, groundY(def.floor, guard), moveD > 0.05 ? 'walk' : 'stand', guard, facing(dRest, aRest))
       atk.spot = aRest
       def.spot = dRest
       atk.heading = facing(aRest, dRest)
@@ -952,8 +1037,14 @@ export function solveFight(
     }
     else {
       restT = recoveryEnd + 0.25
-      addMark(atk, restT, atk.spot, atk.y, 'stand', guard, facing(atk.spot, def.spot))
+      addMark(atk, restT, atk.spot, groundY(atk.floor, guard), 'stand', guard, facing(atk.spot, def.spot))
     }
+    // Floor contact (fork): grounded marks where this beat's in-between poses would float or sink.
+    F.forEach((f, q) => {
+      let k = 0
+      while (k < f.marks.length && f.marks[k] === saved[q]!.marks[k]) k++
+      groundBetween(f.floor, f.marks, k - 1, MAX_FIGHT_MARKS)
+    })
 
     if (F[0].marks.length > MAX_FIGHT_MARKS || F[1].marks.length > MAX_FIGHT_MARKS) {
       F.forEach((f, q) => {
@@ -975,7 +1066,8 @@ export function solveFight(
       clearanceM: clearance,
       liftM: p.place.map((pl) => pl.lift),
       physics,
-      warnings: beatWarnings
+      warnings: beatWarnings,
+      plays: preset.id
     })
     impacts.forEach((imp, i) =>
       hits.push({ beat: beats.length - 1, i, time: p.times[i]!, attacker: beat.attacker, zone: beat.target, effector: imp.effector, outcome: outcomes[i]!, shotRange: atk.shotRange })
@@ -1043,7 +1135,58 @@ export function solveFight(
     }
   }
   for (const b of beats) warnings.push(...b.warnings)
-  return { tracks, report: { beats, warnings, endT } }
+  // Set props (fork): every stretch of a solved path that still runs into one.
+  const paths: [PathSample[], PathSample[]] = obstacles.length > 0 || opts.paths ? samplePaths(ev, F, endT, fps) : [[], []]
+  const crossings = pathCrossings(paths, obstacles).sort((a, b) => a.fighter - b.fighter || a.t0 - b.t0)
+  for (let i = 0; i < crossings.length; i++) {
+    // One warning per stretch: pieces of one prop (or touching props) hit together merge.
+    const c = { ...crossings[i]! }
+    while (i + 1 < crossings.length && crossings[i + 1]!.fighter === c.fighter && crossings[i + 1]!.t0 <= c.t1 + 1e-9) c.t1 = Math.max(c.t1, crossings[++i]!.t1)
+    const when = c.t1 > c.t0 ? `${c.t0.toFixed(2)}–${c.t1.toFixed(2)} s` : `${c.t0.toFixed(2)} s`
+    warnings.push(`${c.fighter === 0 ? 'A' : 'B'} runs into ${c.obstacle.name} at ${when}`)
+  }
+  return { tracks, report: { beats, warnings, endT }, paths }
+}
+
+/** Set props (fork): shorten a push-back so the body stops at the first prop in its way (noting it). */
+function propStop(notes: string[], label: string, who: string, what: string, from: XZ, dir: XZ, travel: number, reach: number, obstacles: FightObstacle[]): number {
+  if (travel <= 0 || obstacles.length === 0) return travel
+  const { run, hit } = clearRun(from, dir, travel + reach, BODY_RADIUS, obstacles)
+  if (!hit || run - reach >= travel) return travel
+  const stop = Math.max(0, run - reach)
+  notes.push(`${label}: ${who}'s ${what} stopped at ${hit.name} (${travel.toFixed(2)} → ${stop.toFixed(2)} m)`)
+  return stop
+}
+
+/** How far a fall carries the body behind its root (m): head, chest, knees or feet, whichever ends furthest back. */
+function fallReach(f: Fighter, m: MotionPreset): number {
+  let reach = 0
+  for (const kf of m.keyframes) {
+    const fx = poseEffectors(f.dims, kf.joints)
+    reach = Math.max(reach, fx.head.z, fx.chest.z, fx.kneeL.z, fx.kneeR.z, fx.footL.z, fx.footR.z)
+  }
+  return reach * f.scale
+}
+
+/** Each fighter's evaluated root and body points (head, chest, pelvis, feet), one sample per frame to the end of the fight. */
+function samplePaths(ev: ShotEvaluator, F: [Fighter, Fighter], endT: number, fps: number): [PathSample[], PathSample[]] {
+  const out: [PathSample[], PathSample[]] = [[], []]
+  const n = Math.ceil(endT * fps - 1e-9)
+  for (let k = 0; k <= n; k++) {
+    const t = Math.min(endT, k / fps)
+    const st = ev.evaluate(t)
+    F.forEach((f, q) => {
+      const e = st.entities.find((x) => x.entityId === f.input.entityId)
+      if (!e) return
+      const fx = poseEffectors(f.dims, e.joints)
+      const body = [fx.head, fx.chest, fx.pelvis, fx.footL, fx.footR].map((p) => {
+        const w = toWorld(p, e.position, e.heading, f.scale)
+        return { x: w.x, z: w.z }
+      })
+      out[q]!.push({ t, root: { x: e.position.x, z: e.position.z }, body })
+    })
+  }
+  return out
 }
 
 /** Contact error of one blow from evaluated states (block/parry: on the guard hand or its weapon). */
@@ -1059,7 +1202,7 @@ function measuredError(
   const strike = contactLocal(atk, a.joints, effector, 'strike', true)
   const E = toWorld(strike, a.position, a.heading, atk.scale)
   const toward = sub(a.position, d.position)
-  let T = fightTarget(def.dims, def.scale, d.joints, d.position, d.heading, toward, zone, effector)
+  let T = fightTarget(def.dims, def.scale, d.joints, d.position, d.heading, toward, zone, effector, def.torso)
   if (outcome === 'block' || outcome === 'parry') {
     const side = guardSide(def, guardHand(strike.x))
     const hand = toWorld(contactLocal(def, d.joints, side, 'guard', true), d.position, d.heading, def.scale)

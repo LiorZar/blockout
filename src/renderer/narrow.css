@@ -1,0 +1,42 @@
+/* Fork: the narrow layout used while Blockout is docked beside Clara (window
+   below 1000 px; the breakpoint lives in layout/narrow.tsx). Every rule is
+   scoped to .app.narrow, so the wide layout is untouched. */
+
+/* Titlebar: one line. The brand hides, the project name ellipsizes, the mode
+   switch tightens, and no button wraps its label. */
+.app.narrow .titlebar { gap: 8px; padding-right: 10px; }
+.app.narrow:not(.platform-macos) .titlebar { padding-left: 10px; }
+.app.narrow .titlebar .app-name { display: none; }
+.app.narrow .titlebar .doc-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.app.narrow .titlebar > button,
+.app.narrow .titlebar > .mode-switch { flex-shrink: 0; }
+.app.narrow .titlebar button { white-space: nowrap; }
+.app.narrow .mode-switch button { padding: 6px 12px; }
+
+.app.narrow .titlebar .panel-toggle { width: 28px; padding: 3px 0; font-size: 15px; line-height: 1; }
+.app.narrow .titlebar .panel-toggle.active { border-color: var(--accent); color: var(--accent); }
+
+/* The viewport (and the Shoot timeline) take the full width; the side
+   panels float over its edges while their toggle is on. */
+.app.narrow .main { grid-template-columns: 1fr; position: relative; }
+
+.app.narrow .main > .panel {
+  display: none;
+  position: absolute; top: 0; bottom: 0; left: 0;
+  width: 200px; max-width: 85%;
+  z-index: 20;
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+.app.narrow .main > .panel.right {
+  left: auto; right: 0; width: 264px;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.45);
+}
+
+.app.narrow .main > .panel.open { display: block; }
+
+/* Deliver keeps its panel docked (settings + Export are the mode), narrower,
+   so the preview stays the largest area. */
+.app.narrow .deliver-layout { grid-template-columns: 1fr clamp(280px, 40vw, 380px); }

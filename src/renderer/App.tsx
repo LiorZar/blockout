@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's Clara button in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's Clara button and narrow layout in 2026; see MODIFICATIONS.md.
 /**
  * App shell: welcome screen, titlebar with the three-mode switch, the
  * Stage/Shoot/Deliver layouts, global keyboard map, and autosave.
@@ -15,6 +15,7 @@ import { DeliverPanel } from './panels/DeliverPanel'
 import { Toasts } from './panels/Toasts'
 import { HelpOverlay, BlockingCoach } from './panels/Help'
 import { ClaraButton } from './panels/ClaraButton'
+import { useNarrowLayout, useOverlayPanels, PanelToggle } from './layout/narrow'
 import logoUrl from './assets/logo.png'
 import { DISTRIBUTION } from '../shared/distribution'
 
@@ -213,6 +214,10 @@ export function App(): JSX.Element {
   const dirty = useStore((s) => s.dirty)
   const markSaved = useStore((s) => s.markSaved)
   const folder = useStore((s) => s.projectFolder)
+  const narrow = useNarrowLayout()
+  const panels = useOverlayPanels(narrow)
+  const appClass = `app ${PLATFORM_CLASS}${narrow ? ' narrow' : ''}`
+  const panelToggles = narrow && mode !== 'deliver'
 
   useAutosave()
   useKeyboard()
@@ -227,7 +232,7 @@ export function App(): JSX.Element {
 
   if (!doc) {
     return (
-      <div className={`app ${PLATFORM_CLASS}`}>
+      <div className={appClass}>
         <div className="titlebar">
           <span className="app-name">BLOCKOUT</span>
         </div>
@@ -239,10 +244,11 @@ export function App(): JSX.Element {
   }
 
   return (
-    <div className={`app ${PLATFORM_CLASS}`}>
+    <div className={appClass}>
       <div className="titlebar">
+        {panelToggles && <PanelToggle side="left" panels={panels} />}
         <span className="app-name">BLOCKOUT</span>
-        <span style={{ color: 'var(--text-faint)', fontSize: 12 }}>
+        <span className="doc-name" style={{ color: 'var(--text-faint)', fontSize: 12 }}>
           {doc.name}
           {dirty ? ' •' : ''}
         </span>
@@ -265,9 +271,10 @@ export function App(): JSX.Element {
           title="Help: quick start, how-do-I answers, shortcuts (?)"
           onClick={() => useStore.getState().setHelpOpen(true)}
         >
-          ? Help
+          {narrow ? '?' : '? Help'}
         </button>
         <ClaraButton />
+        {panelToggles && <PanelToggle side="right" panels={panels} />}
       </div>
 
       {mode === 'deliver' ? (
@@ -279,7 +286,7 @@ export function App(): JSX.Element {
         </div>
       ) : (
         <div className="main">
-          <div className="panel">
+          <div className={`panel${panels.left ? ' open' : ''}`}>
             <ProjectRail />
             {mode === 'stage' && <Library />}
             <Credits compact />
@@ -290,7 +297,7 @@ export function App(): JSX.Element {
             </div>
             {mode === 'shoot' && <Timeline />}
           </div>
-          <div className="panel right">
+          <div className={`panel right${panels.right ? ' open' : ''}`}>
             <Inspector />
           </div>
         </div>

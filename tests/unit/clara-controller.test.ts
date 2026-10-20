@@ -4,6 +4,8 @@
  * handle behind. Driven by a fake AttachClara and fake timers.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import type { AttachClara, IClaraAttachOptions, IClaraHandle, IHostWindow } from '@2dl/clara-client'
 import {
   CLARA_HOST_MIN_WIDTH,
@@ -116,9 +118,21 @@ describe('Clara controller', () => {
       folder: FOLDER,
       mcp: { type: 'http', url: URL },
       access: 'read-files',
+      tools: { delete_entity: { label: 'Remove {name}' } },
       instructions: CLARA_INSTRUCTIONS
     })
     expect(CLARA_INSTRUCTIONS).toContain('Call get_state first.')
+  })
+
+  it('every label template names arguments its tool takes (the delete card names the thing)', () => {
+    const catalog = JSON.parse(readFileSync(join(__dirname, '../../mcp/tools.json'), 'utf-8')) as { name: string; inputSchema: { properties: Record<string, unknown> } }[]
+    const tools = buildAttachOptions(FOLDER, URL).tools ?? {}
+    expect(Object.keys(tools).length).toBeGreaterThan(0)
+    for (const [name, override] of Object.entries(tools)) {
+      const tool = catalog.find((t) => t.name === name)
+      expect(tool, name).toBeDefined()
+      for (const [, arg] of (override.label ?? '').matchAll(/\{(\w+)\}/g)) expect(Object.keys(tool!.inputSchema.properties), name).toContain(arg)
+    }
   })
 
   it('MCP not listening: Clara still gets the default URL so it can offer Retry', async () => {

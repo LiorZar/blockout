@@ -130,7 +130,7 @@ when Blockout's tools aren't available (for example, port 17480 is taken).
 
 ## Tools
 
-33 tools. Coordinates are in **meters**: `+X` right, `−Z` forward/away from the default camera; **heading 0 faces −Z**; `rotationDeg` / `panDeg` are clockwise seen from above; `tiltDeg` is positive up. Focal lengths are mm on Super 35 (24 wide, 35 normal, 50–85 tight).
+33 tools. Coordinates are in **meters**: `+X` right, `−Z` forward/away from the default camera; **heading 0 faces −Z**; `rotationDeg` / `panDeg` turn counter-clockwise seen from above (90 faces −X); `tiltDeg` is positive up. Focal lengths are mm on Super 35 (24 wide, 35 normal, 50–85 tight).
 
 | Tool | Params | Does |
 |---|---|---|

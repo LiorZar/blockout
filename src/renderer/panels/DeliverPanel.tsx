@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's profile limit warnings in 2026; see MODIFICATIONS.md.
 /**
  * Deliver mode: pick a generator profile, choose passes, export the
  * package, copy the generated prompt, and hand off to Blender/ComfyUI.
@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react'
 import { useStore } from '../store'
 import { BUILTIN_PROFILES, getProfile } from '@engine/profiles'
 import { generatePrompt } from '@engine/prompt'
+import { profileWarnings } from '@engine/profile-limits'
 import {
   exportShot,
   exportAnimatic,
@@ -51,7 +52,8 @@ export function DeliverPanel(): JSX.Element {
   }
 
   const dims = exportDims(profile, shot.aspect, resolution)
-  const overCap = profile.maxDuration !== undefined && shot.duration > profile.maxDuration
+  // Fork: every limit the shot breaks (duration cap, aspect), shared with export_shot.
+  const limitWarnings = profileWarnings(profile, shot)
   const pct =
     progress.totalFrames > 0 ? Math.round((progress.frame / progress.totalFrames) * 100) : 0
 
@@ -92,12 +94,11 @@ export function DeliverPanel(): JSX.Element {
         {profile.attachHint}
       </p>
 
-      {overCap && (
-        <div className="warning-chip" style={{ marginBottom: 10 }}>
-          ⚠ Shot is {shot.duration.toFixed(1)}s but {profile.name} caps clips at{' '}
-          {profile.maxDuration}s — consider shortening.
+      {limitWarnings.map((w) => (
+        <div key={w} className="warning-chip" style={{ marginBottom: 10 }}>
+          ⚠ {w}
         </div>
-      )}
+      ))}
 
       <div className="field">
         <label>

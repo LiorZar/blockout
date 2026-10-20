@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's fight re-solve in 2026; see MODIFICATIONS.md.
 /**
  * Shoot-mode bottom timeline: transport, a scrubbable second-ruler, and one
  * lane per moving entity (camera first) with draggable mark pills. Reads and
@@ -8,7 +8,7 @@
 
 import { useMemo, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
-import { useStore } from '../store'
+import { refightShot, toastRefight, useStore } from '../store'
 import { ShotEvaluator } from '@engine/evaluate'
 import { GAITS } from '@engine/gaits'
 import type { ActorMark, CameraMark, MarkBase, Scene, Shot } from '@engine/types'
@@ -136,6 +136,7 @@ export function Timeline(): JSX.Element {
     const raw = Number(e.target.value)
     if (Number.isNaN(raw)) return
     const next = clamp(raw, 0.5, 60)
+    let fights: ReturnType<typeof refightShot> = []
     mutate('shot duration', (doc) => {
       const sc = doc.scenes.find((s) => s.id === scene.id)
       const sh = sc?.shots.find((s) => s.id === shot.id)
@@ -145,17 +146,24 @@ export function Timeline(): JSX.Element {
       // every other shot's choreography, and the evaluator handles marks
       // beyond the duration fine (they're simply not reached).
       sh.duration = next
+      fights = refightShot(sc, sh) // Fork: staged fights follow the new end.
     })
+    toastRefight(fights)
     if (time > next) setTime(next)
   }
 
   const onFps = (e: React.ChangeEvent<HTMLSelectElement>): void => {
     const fps = Number(e.target.value)
     if (Number.isNaN(fps)) return
+    let fights: ReturnType<typeof refightShot> = []
     mutate('shot fps', (doc) => {
       const sh = doc.scenes.flatMap((s) => s.shots).find((s) => s.id === shot.id)
       if (sh) sh.fps = fps
+      // Fork: staged fights move their impacts onto the new frame grid.
+      const sc = doc.scenes.find((s) => s.id === scene.id)
+      if (sc && sh) fights = refightShot(sc, sh)
     })
+    toastRefight(fights)
   }
 
   /* ------------------------------- ruler --------------------------------- */

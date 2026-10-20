@@ -1,4 +1,4 @@
-// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, Entity.heldBy (weapons); see MODIFICATIONS.md.
+// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons); see MODIFICATIONS.md.
 /**
  * Blockout document model.
  *
@@ -164,6 +164,14 @@ export interface ActorMark extends MarkBase {
    * opponent and keeps the posed rig exact at impact frames.
    */
   lockFacing?: boolean
+  /**
+   * Fork (motion playback): a motion keyframe. On a leg between two of them
+   * the performer keeps its facing and this mark's gait, as with lockFacing,
+   * and the body's lowest point travels straight between the keyframes so a
+   * body folding onto the floor never dips through it. Travel legs into or
+   * out of a motion behave as upstream.
+   */
+  posedMove?: boolean
 }
 
 export interface CameraMark extends MarkBase {

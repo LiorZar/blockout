@@ -144,4 +144,29 @@ test.describe('mannequins', () => {
     })
     expect(spawned).toEqual(['person.mannequinMale', 'person.mannequinFemale'])
   })
+
+  test('stage_fight assets + labels spawns the chosen bodies under those names (gap 9)', async () => {
+    const res = await rpc<{ fightId: string; script: string; report: Report }>('stage_fight', {
+      script: 'RED jab cross to head -> block, hit\nBLUE hook to body -> hit',
+      assets: ['person.mannequinMale', 'person.mannequinFemale'],
+      labels: ['RED', 'BLUE'],
+      x: -6,
+      z: -8
+    })
+    expect(res.ok, res.error).toBe(true)
+    expect(res.data!.report.beats).toHaveLength(2)
+    const st = await rpc<{ scene: { fights: { id: string; fighterIds: string[] }[]; entities: { id: string; assetId: string; label?: string }[] } }>('get_state')
+    const fight = st.data!.scene.fights.find((f) => f.id === res.data!.fightId)!
+    const bodies = fight.fighterIds.map((id) => st.data!.scene.entities.find((e) => e.id === id)!)
+    expect(bodies.map((e) => e.assetId)).toEqual(['person.mannequinMale', 'person.mannequinFemale'])
+    expect(bodies.map((e) => e.label)).toEqual(['RED', 'BLUE'])
+    expect(res.data!.script).toContain('RED jab-cross')
+
+    const bad = await rpc('stage_fight', { random: { seed: 1 }, assets: ['person.mannequinMale', 'prop.sword'] })
+    expect(bad.ok).toBe(false)
+    expect(bad.error).toContain('list_assets')
+    const both = await rpc('stage_fight', { random: { seed: 1 }, fighterIds: bodies.map((e) => e.id), labels: ['X', 'Y'] })
+    expect(both.ok).toBe(false)
+    expect(both.error).toContain('fighterIds')
+  })
 })

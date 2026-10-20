@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { parseFightScript, defaultTarget } from '@engine/fight/script'
-import { listShotMoves, SHOT_MOVES, shotImpacts } from '@engine/fight/moves'
+import { formatFightScript, parseFightScript, defaultTarget } from '@engine/fight/script'
+import { SHIELD_BLOCK, fightMotion, listShotMoves, SHOT_MOVES, shotImpacts } from '@engine/fight/moves'
+import { mirrorJoints } from '@engine/choreography'
+import { torsoShape, torsoSurface } from '@engine/fight/contact'
+import { MOTION_PRESETS } from '@engine/motions'
 import { solveFight, type FighterInput } from '@engine/fight/solve'
 import { ShotEvaluator } from '@engine/evaluate'
 import { createEntity, createProject } from '@engine/schema'
 import { personDims, poseEffectors, toWorld } from '@engine/skeleton'
-import { aimDirectionLocal, heldPointLocal, weaponContact, weaponSpec } from '@engine/weapons'
+import { aimDirectionLocal, heldPointLocal, holdJoints, weaponContact, weaponSpec, type Hand } from '@engine/weapons'
 import type { EntityState, FightDoc, V3 } from '@engine/types'
 
 describe('weapon fight scripts', () => {
@@ -94,6 +97,8 @@ function aimPoint(a: EntityState, d: EntityState, dIn: FighterInput, zone: strin
   const dims = personDims(dIn.assetId, dIn.params)
   const l = Math.hypot(a.position.x - d.position.x, a.position.z - d.position.z)
   const toward = { x: (a.position.x - d.position.x) / l, z: (a.position.z - d.position.z) / l }
+  // Body blows land on the torso's surface at the chest (fork, contact.ts).
+  if (zone !== 'head') return torsoSurface(torsoShape(dIn.assetId, dIn.params, dims), dims, dIn.scale, d.joints, d.position, d.heading, toward, 0.55)
   const fx = poseEffectors(dims, d.joints)
   const p = toWorld(zone === 'head' ? fx.head : fx.chest, d.position, d.heading, dIn.scale)
   const k = zone === 'head' ? dims.headR * dIn.scale : 0.3 * dims.bodyW * dIn.scale
@@ -135,6 +140,23 @@ describe('armed fights (solveFight with held weapons)', () => {
         const E = weaponPoint(a, fighters[0], arms[0]!, weaponContact(spec, 'strike'))
         expect(d3(E, aimPoint(a, d, fighters[1], fight.beats[0]!.target)), `${name} blow ${i + 1}`).toBeLessThanOrEqual(0.03)
         expect(Math.abs(t * FPS - Math.round(t * FPS))).toBeLessThan(1e-9)
+      })
+    })
+  }
+
+  for (const hand of ['R', 'L'] as const) {
+    it(`a two-handed slash keeps both hands on the grip at every blow (sword in the ${hand} hand)`, () => {
+      const fight = fightOf('A sword slash to head -> hit, hit')
+      const fighters = pair([{ assetId: 'prop.sword', hand, scale: 1 }])
+      const { sol, ev } = stage(fight, fighters)
+      const rep = sol.report.beats[0]!
+      expect(rep, sol.report.warnings.join('; ')).toBeDefined()
+      const dims = personDims('person.man')
+      rep.impactTimes.forEach((t, i) => {
+        expect(rep.contactErrorM[i]).toBeLessThanOrEqual(0.03)
+        const a = ev.evaluate(t).entities.find((e) => e.entityId === 'ent_a')!
+        const fx = poseEffectors(dims, a.joints)
+        expect(d3(fx.handL, fx.handR), `blow ${i + 1}: hands apart`).toBeLessThanOrEqual(0.15)
       })
     })
   }
@@ -193,6 +215,65 @@ describe('armed fights (solveFight with held weapons)', () => {
     expect(keys.some((k) => Math.abs((after.joints?.[k] ?? 0) - (before.joints?.[k] ?? 0)) > 0.05)).toBe(true)
   })
 
+  for (const hand of ['L', 'R'] as const) {
+    it(`a bow in the ${hand} hand: "A shoot" looses on bow-draw-loose's loose keyframe, the arrow line through the target`, () => {
+      const loose = MOTION_PRESETS.find((m) => m.id === 'bow-draw-loose')!.keyframes.find((kf) => kf.t === 1.4)!
+      const fight = fightOf('A shoot to body -> hit')
+      const bow = { assetId: 'prop.bow', hand, scale: 1 }
+      const fighters = pair([bow], [], 5)
+      const { sol, ev } = stage(fight, fighters)
+      const rep = sol.report.beats[0]!
+      expect(rep, sol.report.warnings.join('; ')).toBeDefined()
+      expect(rep.contactErrorM[0]).toBeLessThanOrEqual(0.03)
+      const T = rep.impactTimes[0]!
+      // The loose keyframe (the draw hand opens after full draw), mirrored for a right-hand bow.
+      const mark = sol.tracks[0].find((m) => Math.abs(m.time - T) < 1e-9)!
+      expect(mark.joints![hand === 'L' ? 'elbowR' : 'elbowL']).toBeCloseTo(loose.joints.elbowR!, 9)
+      const st = ev.evaluate(T)
+      const a = st.entities.find((e) => e.entityId === 'ent_a')!
+      const d = st.entities.find((e) => e.entityId === 'ent_b')!
+      const spec = weaponSpec('prop.bow')!
+      const rest = weaponPoint(a, fighters[0], bow, spec.tip)
+      const dl = aimDirectionLocal(personDims('person.man'), a.joints, hand, spec)
+      const c = Math.cos(a.heading)
+      const s = Math.sin(a.heading)
+      const dir = { x: dl.x * c + dl.z * s, y: dl.y, z: -dl.x * s + dl.z * c }
+      const target = aimPoint(a, d, fighters[1], 'body')
+      const v = { x: target.x - rest.x, y: target.y - rest.y, z: target.z - rest.z }
+      const along = v.x * dir.x + v.y * dir.y + v.z * dir.z
+      expect(along).toBeGreaterThan(1)
+      expect(Math.hypot(v.x - dir.x * along, v.y - dir.y * along, v.z - dir.z * along), 'arrow line miss').toBeLessThanOrEqual(0.03)
+      // The archer holds its ground.
+      for (const m of sol.tracks[0]) expect(Math.hypot(m.position.x + 2.5, m.position.z), `t=${m.time}`).toBeLessThan(0.35)
+    })
+  }
+
+  it('the bow is a shot move: its loose, from the bow hand, listed with the bow', () => {
+    expect(SHOT_MOVES.has('bow-draw-loose')).toBe(true)
+    expect(shotImpacts('bow-draw-loose')).toEqual([{ effector: 'handL', t: 1.4, speed: 15 }])
+    expect(listShotMoves().find((m) => m.id === 'bow-draw-loose')?.guns).toEqual(['prop.bow'])
+    const r = parseFightScript('A bow draw loose to body -> hit', ['A', 'B'])
+    if (!('beats' in r)) throw new Error(r.error)
+    expect(r.beats[0]!.move).toBe('bow-draw-loose')
+  })
+
+  it('a shot echoes as "shoot", and the report names the aim that plays (rifle, pistol, bow)', () => {
+    const r = parseFightScript('A shoot to body -> hit\nA fire to head -> ko', ['A', 'B'])
+    if ('error' in r) throw new Error(r.error)
+    const text = formatFightScript(r.beats, ['A', 'B'])
+    expect(text).toBe('A shoot to body -> hit\nA shoot to head -> ko')
+    const again = parseFightScript(text, ['A', 'B'])
+    if ('error' in again) throw new Error(again.error)
+    expect(again.beats).toEqual(r.beats)
+    for (const [gun, hand, plays] of [['prop.rifle', 'R', 'rifle-aim-fire'], ['prop.pistol', 'R', 'pistol-aim-fire'], ['prop.bow', 'L', 'bow-draw-loose']] as const) {
+      const sol = solveFight(fightOf('A shoot to body -> hit'), pair([{ assetId: gun, hand, scale: 1 }], [], 5), { duration: 20, fps: FPS })
+      expect(sol.report.beats[0]?.plays, gun).toBe(plays)
+    }
+    const none = solveFight(fightOf('A shoot to body -> hit'), pair([]), { duration: 20, fps: FPS })
+    expect(none.report.warnings.join(' ')).toContain('(A shoot → body)')
+    expect(none.report.warnings.join(' ')).not.toContain('pistol-aim-fire')
+  })
+
   it('a shot needs a gun; blocking a bullet becomes a miss', () => {
     const none = solveFight(fightOf('A shoot to body -> hit'), pair([]), { duration: 20, fps: FPS })
     expect(none.report.beats).toHaveLength(0)
@@ -208,4 +289,84 @@ describe('armed fights (solveFight with held weapons)', () => {
     const empty = solveFight(fight, pair([]), { duration: 20, fps: FPS })
     expect(JSON.stringify(empty)).toBe(JSON.stringify(plain))
   })
+})
+
+/* --------------------------------- shields -------------------------------- */
+
+const BODIES = ['person.man', 'person.woman', 'person.mannequinMale', 'person.mannequinFemale', 'person.child', 'person.elderly']
+const SHIELD = weaponSpec('prop.shield')!
+const deg = (rad: number): number => (rad * 180) / Math.PI
+
+/** Unit normal of the shield's face (its model −Z), holder-local, for a held pose. */
+function shieldNormal(dims: ReturnType<typeof personDims>, joints: Record<string, number> | undefined, hand: Hand): V3 {
+  const c = heldPointLocal(dims, joints, hand, SHIELD, SHIELD.tip, 1)
+  const b = heldPointLocal(dims, joints, hand, SHIELD, { ...SHIELD.tip, z: SHIELD.tip.z - 1 }, 1)
+  return { x: b.x - c.x, y: b.y - c.y, z: b.z - c.z }
+}
+
+describe('shields face the threat', () => {
+  for (const [upstream, fork, from, to] of [
+    ['shield-block', 'shield-block-face', 1, -1],
+    ['shield-brace', 'shield-brace-face', 0, 0]
+  ] as const) {
+    it(`${fork} (for ${upstream}): the face within 10° of forward at every braced keyframe, either hand, every body`, () => {
+      const m = MOTION_PRESETS.find((p) => p.id === fork)!
+      expect(m, fork).toBeDefined()
+      expect(MOTION_PRESETS.find((p) => p.id === upstream)).toBeDefined()
+      const kfs = m.keyframes.slice(from, to === 0 ? undefined : to)
+      for (const body of BODIES) {
+        const dims = personDims(body)
+        for (const hand of ['L', 'R'] as Hand[]) {
+          for (const kf of kfs) {
+            const joints = hand === 'L' ? kf.joints : mirrorJoints(kf.joints)
+            const held = holdJoints(dims, joints, [{ spec: SHIELD, hand, scale: 1 }])
+            const n = shieldNormal(dims, held, hand)
+            expect(deg(Math.acos(Math.min(1, -n.z))), `${body} ${hand} t=${kf.t}`).toBeLessThanOrEqual(10)
+          }
+        }
+      }
+    })
+  }
+
+  it('a shield holder blocks with the shield blocks (low at the chest, high at the head)', () => {
+    expect(SHIELD_BLOCK.low).toBe('shield-block-face')
+    expect(SHIELD_BLOCK.high).toBe('shield-block-high')
+    for (const id of [SHIELD_BLOCK.low, SHIELD_BLOCK.high]) expect(fightMotion(id), id).toBeDefined()
+  })
+
+  for (const [name, aArms, bArms, script] of [
+    ['sword slash on a shield (L), high', [{ assetId: 'prop.sword', hand: 'R', scale: 1 }], [{ assetId: 'prop.shield', hand: 'L', scale: 1 }], 'A sword slash to head -> block, block'],
+    ['jab cross on a shield (L), body', [], [{ assetId: 'prop.shield', hand: 'L', scale: 1 }], 'A jab cross to body -> block, block'],
+    ['axe on sword-and-shield: blows land on the shield', [{ assetId: 'prop.axe', hand: 'R', scale: 1 }], [{ assetId: 'prop.sword', hand: 'R', scale: 1 }, { assetId: 'prop.shield', hand: 'L', scale: 1 }], 'A slash to head -> block, block'],
+    ['a shield in the right hand', [{ assetId: 'prop.sword', hand: 'R', scale: 1 }], [{ assetId: 'prop.shield', hand: 'R', scale: 1 }], 'A thrust to body -> block']
+  ] as [string, Arms, Arms, string][]) {
+    it(`${name}: on the impact frame the blow meets the shield (≤ 3 cm) and its face points at the attacker (≤ 25°)`, () => {
+      const fight = fightOf(script)
+      const fighters = pair(aArms, bArms)
+      const { sol, ev } = stage(fight, fighters)
+      const rep = sol.report.beats[0]!
+      expect(rep, sol.report.warnings.join('; ')).toBeDefined()
+      const shieldArms = bArms.find((w) => w.assetId === 'prop.shield')!
+      rep.impactTimes.forEach((t, i) => {
+        expect(rep.contactErrorM[i], `report #${i}`).toBeLessThanOrEqual(0.03)
+        const st = ev.evaluate(t)
+        const a = st.entities.find((e) => e.entityId === 'ent_a')!
+        const d = st.entities.find((e) => e.entityId === 'ent_b')!
+        const dims = personDims(fighters[1].assetId)
+        // The blow lands on the shield face: the attacker's strike point at the shield's guard point (+5 cm toward A).
+        const spec = aArms[0] ? weaponSpec(aArms[0].assetId)! : null
+        const E = spec ? weaponPoint(a, fighters[0], aArms[0]!, weaponContact(spec, 'strike')) : null
+        const face = weaponPoint(d, fighters[1], shieldArms, weaponContact(SHIELD, 'guard'))
+        if (E) expect(d3(E, face), `blow ${i + 1} on the shield`).toBeLessThanOrEqual(0.03 + 0.05 + 1e-6)
+        const nl = shieldNormal(dims, d.joints, shieldArms.hand)
+        const c = Math.cos(d.heading)
+        const s = Math.sin(d.heading)
+        const n = { x: nl.x * c + nl.z * s, y: nl.y, z: -nl.x * s + nl.z * c }
+        const to = { x: a.position.x - d.position.x, z: a.position.z - d.position.z }
+        const l = Math.hypot(to.x, to.z)
+        const cos = (n.x * to.x + n.z * to.z) / l / Math.hypot(n.x, n.y, n.z)
+        expect(deg(Math.acos(Math.min(1, cos))), `blow ${i + 1}: shield face to the attacker`).toBeLessThanOrEqual(25)
+      })
+    })
+  }
 })

@@ -7,7 +7,7 @@
  * does is undoable, autosaved, and visible live.
  */
 
-import { useStore, currentProjectJson, releaseHeldBy } from '../store'
+import { useStore, currentProjectJson, refightShot, releaseHeldBy, solveInScene } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { createActorMark, createCameraMark } from '@engine/schema'
 import { newId } from '@engine/ids'
@@ -24,6 +24,7 @@ import {
 } from '../export/exporter'
 import { BUILTIN_PROFILES } from '@engine/profiles'
 import { generatePrompt } from '@engine/prompt'
+import { profileWarnings } from '@engine/profile-limits'
 import { getSceneManager } from '../export/scene-access'
 import type { ActorMark, AspectId, CameraMark, Entity, GaitId, LightingPresetId, RigId, Scene, Shot, V3 } from '@engine/types'
 import { WEAPON_SPECS, weaponSpec } from '@engine/weapons'
@@ -35,7 +36,7 @@ import { parseShotWords } from '@engine/shot-words'
 import type { ShotAngle, ShotSide, ShotSpec } from '@engine/shot'
 import { MOVE_ALIASES, SHOT_MOVES, STRIKE_IDS, listFightMoves, listShotMoves } from '@engine/fight/moves'
 import { defaultTarget, formatFightScript, parseFightScript, randomFightScript } from '@engine/fight/script'
-import { solveFight, type FightSolution } from '@engine/fight/solve'
+import type { FightSolution } from '@engine/fight/solve'
 import type { FightBeat, FightDoc, FightOutcome } from '@engine/types'
 
 type Params = Record<string, unknown>
@@ -201,6 +202,34 @@ function fightWeapons(params: Params): [string | null, string | null] | undefine
   }) as [string | null, string | null]
 }
 
+/** Gap 3 (fork): the fight a two-person routine staged through the fight solver, if it did. */
+function newFightId(fightsBefore: number): { fightId?: string } {
+  const fights = useStore.getState().scene()?.fights ?? []
+  return fights.length > fightsBefore ? { fightId: fights[fights.length - 1]!.id } : {}
+}
+
+/** stage_fight `assets` / `labels`: [A's, B's] body (a person asset id) and name for the fighters it spawns. */
+function fightCast(params: Params): { assets?: [string, string]; labels?: [string, string] } {
+  const pair = (key: string, check: (v: unknown, q: number) => string): [string, string] | undefined => {
+    const raw = params[key]
+    if (raw === undefined) return undefined
+    if (!Array.isArray(raw) || raw.length !== 2) throw new Error(`stage_fight: ${key} must be two entries, [A, B].`)
+    return [check(raw[0], 0), check(raw[1], 1)]
+  }
+  const assets = pair('assets', (v, q) => {
+    if (typeof v !== 'string' || !v.startsWith('person.') || !ASSET_CATALOG.some((a) => a.id === v)) {
+      throw new Error(`stage_fight: assets[${q}] "${String(v)}" isn't a person — call list_assets with category people.`)
+    }
+    return v
+  })
+  const labels = pair('labels', (v, q) => {
+    if (typeof v !== 'string' || !v.trim()) throw new Error(`stage_fight: labels[${q}] must be a non-empty name.`)
+    return v.trim()
+  })
+  if (labels && labels[0].toLowerCase() === labels[1].toLowerCase()) throw new Error('stage_fight: the two labels must differ.')
+  return { ...(assets ? { assets } : {}), ...(labels ? { labels } : {}) }
+}
+
 /** Beats from `script` (text), `beats` (array) or `random` ({seed, style, ending}). */
 function fightBeatsFromParams(params: Params, tool: string, labels: [string, string], duration: number): FightBeat[] | undefined {
   const script = str(params, 'script')
@@ -259,10 +288,9 @@ function fightResult(fightId: string, report?: FightSolution['report']): unknown
   if (!scene || !shot || !fight) throw new Error(`No fight "${fightId}": get_state lists the scene's fights.`)
   let rep = report
   if (!rep) {
-    const ents = fight.fighterIds.map((id) => scene.entities.find((e) => e.id === id))
-    if (!ents[0] || !ents[1]) throw new Error(`A fighter of "${fightId}" was deleted: get_state lists the scene's entities.`)
-    const input = ents.map((e) => ({ entityId: e!.id, assetId: e!.assetId, params: e!.params, scale: e!.transform.scale, start: { ...e!.transform.position } }))
-    rep = solveFight(fight, [input[0]!, input[1]!], { duration: shot.duration, fps: shot.fps }).report
+    if (fight.fighterIds.some((id) => !scene.entities.some((e) => e.id === id))) throw new Error(`A fighter of "${fightId}" was deleted: get_state lists the scene's entities.`)
+    // Fork: the same solve as the store's (held weapons and set props included).
+    rep = solveInScene(scene, shot, fight).report
   }
   return { fightId, name: fight.name, script: formatFightScript(fight.beats, fightLabels(scene, fight.fighterIds)), report: rep }
 }
@@ -389,7 +417,8 @@ function summary(): unknown {
             focalLength: m.focalLength,
             hold: m.hold,
             easeIn: m.easeIn,
-            easeOut: m.easeOut
+            easeOut: m.easeOut,
+            shot: m.shot
           }))
         }
       : null,
@@ -401,7 +430,7 @@ function summary(): unknown {
         shots: sc.shots.map((sh) => ({ id: sh.id, name: sh.name }))
       })) ?? [],
     conventions:
-      'meters; +X right, -Z forward; heading/pan 0 faces -Z; rotationDeg/panDeg clockwise from above'
+      'meters; +X right, -Z forward; heading/pan 0 faces -Z; rotationDeg/panDeg counter-clockwise seen from above (90 faces -X)'
   }
 }
 
@@ -535,7 +564,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
           }
         }
       })
-      if (!found) throw new Error(`No entity "${entityId}".`)
+      if (!found) throw new Error(`No entity "${entityId}" — call get_state for ids.`)
       if (useStore.getState().selection?.kind === 'entity') s.setSelection(null)
       return { deleted: entityId }
     }
@@ -618,7 +647,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         track.marks.push(createActorMark({ x, y, z }, time, gait))
         ok = true
       })
-      if (!ok) throw new Error(`No entity "${entityId}" in the current scene.`)
+      if (!ok) throw new Error(`No entity "${entityId}" in the current scene — call get_state for ids.`)
       return { added: true }
     }
 
@@ -663,7 +692,11 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (!scene || !shot) throw new Error('No active shot.')
       const fighterIds = strList(params, 'fighterIds')
       if (fighterIds.length !== 0 && fighterIds.length !== 2) throw new Error('stage_fight: fighterIds must name exactly 2 people from get_state (or leave it out to spawn A and B).')
-      const beats = fightBeatsFromParams(params, 'stage_fight', fightLabels(scene, fighterIds), shot.duration)
+      const cast = fightCast(params)
+      if (fighterIds.length === 2 && (cast.assets || cast.labels)) {
+        throw new Error('stage_fight: assets and labels are for the fighters it spawns; with fighterIds the two people keep their own (set_entity_style renames them).')
+      }
+      const beats = fightBeatsFromParams(params, 'stage_fight', cast.labels ?? fightLabels(scene, fighterIds), shot.duration)
       if (!beats || beats.length === 0) throw new Error('stage_fight: give a script, beats, or random.')
       const exaggeration = flt(params, 'exaggeration')
       const coverage = fightCoverage(params, 'stage_fight')
@@ -672,6 +705,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         beats,
         at: { x: flt(params, 'x') ?? 0, z: flt(params, 'z') ?? 0, heading: toRad(flt(params, 'headingDeg') ?? 0) },
         ...(fighterIds.length === 2 ? { fighters: [fighterIds[0]!, fighterIds[1]!] as [string, string] } : {}),
+        ...cast,
         ...(weapons ? { weapons } : {}),
         ...(exaggeration !== undefined ? { exaggeration } : {}),
         ...(coverage ? { coverage } : {})
@@ -749,6 +783,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
 
     case 'set_shot': {
       requireDoc()
+      let fights: ReturnType<typeof refightShot> = []
       s.mutate('agent: set shot', (doc) => {
         const scene = doc.scenes.find((sc) => sc.id === useStore.getState().sceneId)
         const shot = scene?.shots.find((sh) => sh.id === useStore.getState().shotId)
@@ -764,8 +799,15 @@ async function execute(action: string, params: Params): Promise<unknown> {
         if (aspect && ['16:9', '9:16', '2.39:1', '4:3', '1:1'].includes(aspect)) {
           shot.aspect = aspect
         }
+        // Fork (gap 2): the shot's fights follow its new fps / duration.
+        if (scene && (duration !== undefined || fps !== undefined)) fights = refightShot(scene, shot)
       })
-      return { ok: true }
+      return {
+        ok: true,
+        ...(fights.length > 0
+          ? { fights: fights.map((f) => ({ fightId: f.fightId, beats: f.report.beats.length, warnings: f.report.warnings })) }
+          : {})
+      }
     }
 
     case 'new_shot': {
@@ -836,7 +878,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       requireDoc()
       const entityId = str(params, 'entityId') // empty/undefined = off
       if (entityId && !s.scene()?.entities.some((e) => e.id === entityId)) {
-        throw new Error(`No entity "${entityId}".`)
+        throw new Error(`No entity "${entityId}" — call get_state for ids.`)
       }
       s.mutate('agent: track subject', (doc) => {
         const scene = doc.scenes.find((sc) => sc.id === useStore.getState().sceneId)
@@ -873,7 +915,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const scene = s.scene()
       const shot = s.shot()
       const entity = scene?.entities.find((e) => e.id === entityId)
-      if (!scene || !shot || !entity) throw new Error(`No entity "${entityId}".`)
+      if (!scene || !shot || !entity) throw new Error(`No entity "${entityId}" — call get_state for ids.`)
       const specs = preset.generate({
         start: {
           x: entity.transform.position.x,
@@ -929,12 +971,14 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const x = flt(params, 'x') ?? 0
       const z = flt(params, 'z') ?? 0
       const headingDeg = flt(params, 'headingDeg') ?? 0
+      const fightsBefore = s.scene()?.fights?.length ?? 0
       s.spawnSequence({ type, count, style, origin: { x, z, heading: toRad(headingDeg) } })
       const after = useStore.getState()
       const sel = after.selection
       return {
         staged: sel?.kind === 'entities' ? sel.entityIds.length : 0,
-        entityIds: sel?.kind === 'entities' ? sel.entityIds : []
+        entityIds: sel?.kind === 'entities' ? sel.entityIds : [],
+        ...newFightId(fightsBefore)
       }
     }
 
@@ -955,12 +999,14 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const x = flt(params, 'x') ?? 0
       const z = flt(params, 'z') ?? 0
       const headingDeg = flt(params, 'headingDeg') ?? 0
+      const fightsBefore = s.scene()?.fights?.length ?? 0
       s.spawnChoreography(spec, { x, z, heading: toRad(headingDeg) })
       const sel = useStore.getState().selection
       return {
         kind: spec.kind,
         staged: sel?.kind === 'entities' ? sel.entityIds.length : 0,
-        entityIds: sel?.kind === 'entities' ? sel.entityIds : []
+        entityIds: sel?.kind === 'entities' ? sel.entityIds : [],
+        ...newFightId(fightsBefore)
       }
     }
 
@@ -971,11 +1017,12 @@ async function execute(action: string, params: Params): Promise<unknown> {
         throw new Error('entityIds must be a non-empty array of person entity ids.')
       }
       const spec = routineSpecFromParams(params)
+      const fightsBefore = s.scene()?.fights?.length ?? 0
       const applied = s.choreographEntities(entityIds, spec)
       if (applied === 0) {
         throw new Error('No matching performers — choreography applies to people (person.* entities).')
       }
-      return { kind: spec.kind, choreographed: applied }
+      return { kind: spec.kind, choreographed: applied, ...newFightId(fightsBefore) }
     }
 
     case 'list_motion_presets': {
@@ -1049,7 +1096,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const entityId = str(params, 'entityId') ?? ''
       const scene = s.scene()
       if (!scene?.entities.some((e) => e.id === entityId)) {
-        throw new Error(`No entity "${entityId}".`)
+        throw new Error(`No entity "${entityId}" — call get_state for ids.`)
       }
       s.setSelection({ kind: 'entity', entityId })
       requireManager().snapSelectionToGround()
@@ -1177,8 +1224,22 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (color === null) throw new Error(`set_entity_style: unknown color "${rawColor}". Use ${COLOR_HINT}.`)
       const label = str(params, 'label')
       const name = str(params, 'name')?.trim()
-      const heightScale = flt(params, 'heightScale')
-      const build = flt(params, 'build')
+      // Fork: only people take height / build, inside the ranges personDims renders (skeleton.ts).
+      const notes: string[] = []
+      const isPerson = s.scene()!.entities.find((e) => e.id === entityId)!.assetId.startsWith('person.')
+      const sized = (key: 'heightScale' | 'build', lo: number, hi: number): number | undefined => {
+        const v = flt(params, key)
+        if (v === undefined) return undefined
+        if (!isPerson) {
+          notes.push(`${key} not stored: only people have a height and build.`)
+          return undefined
+        }
+        const c = clamp(v, lo, hi)
+        if (c !== v) notes.push(`${key} ${v} clamped to ${c} (people take ${lo}–${hi}).`)
+        return c
+      }
+      const heightScale = sized('heightScale', 0.8, 1.2)
+      const build = sized('build', 0.8, 1.3)
       const hide = bool(params, 'hideInExports')
       const used = (s.scene()?.entities ?? [])
         .filter((e) => e.id !== entityId && e.label?.text)
@@ -1194,15 +1255,17 @@ async function execute(action: string, params: Params): Promise<unknown> {
         if (name) e.name = name
         if (heightScale !== undefined || build !== undefined) {
           e.params = { ...(e.params ?? {}) }
-          if (heightScale !== undefined) e.params.height = clamp(heightScale, 0.5, 1.5)
-          if (build !== undefined) e.params.build = clamp(build, 0.5, 1.5)
+          if (heightScale !== undefined) e.params.height = heightScale
+          if (build !== undefined) e.params.build = build
         }
         if (hide === true) e.excludeFromExport = true
         else if (hide === false) delete e.excludeFromExport
       })
       const st = useStore.getState()
       const e = st.scene()?.entities.find((en) => en.id === entityId)
-      return e ? entitySummary(e, activeTake(st.scene(), st.shot())) : null
+      if (!e) return null
+      const out = entitySummary(e, activeTake(st.scene(), st.shot())) as Record<string, unknown>
+      return notes.length > 0 ? { ...out, notes } : out
     }
 
     case 'set_camera_rig': {
@@ -1250,11 +1313,38 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (lane0.kind === 'actor' && cameraOnly) {
         throw new Error(`update_mark: ${cameraOnly} only applies to the camera lane.`)
       }
+      // Fork: a shot-words mark is re-solved every frame, so its pose only takes an edit after release: true.
+      const release = bool(params, 'release') === true
+      if (release && lane0.kind !== 'camera') throw new Error('update_mark: release only applies to camera marks.')
+      const framed = lane0.kind === 'camera' ? lane0.marks.find((x) => x.id === markId) : undefined
+      const words = framed?.shot
+      if (words && !release) {
+        const posed = ['x', 'y', 'z', 'panDeg', 'tiltDeg', 'rollDeg', ...(words.lens !== undefined || words.over ? ['focalLength'] : [])]
+          .filter((k) => params[k] !== undefined)
+        if (posed.length > 0) {
+          throw new Error(
+            `update_mark: mark "${markId}" is framed by shot words (${words.size} on ${words.subjectIds.join(', ')}) and re-solved every frame, so ${posed.join(', ')} would not show. ` +
+              'Pass release: true to freeze its framing into a plain mark and edit that, or call frame_shot to change the words.'
+          )
+        }
+      }
+      const frozen = words && release ? new ShotEvaluator(scene0, s.shot()!).solveShotAt(words, framed!.time, framed!.focalLength) : null
       let result: unknown
-      mutateActive('agent: update mark', (scene, shot) => {
+      mutateActive(words && release ? 'agent: release shot words' : 'agent: update mark', (scene, shot) => {
         const lane = resolveLane(scene, shot, laneId)
         const m = lane.marks.find((x) => x.id === markId)
         if (!m) return
+        if (words && release) {
+          const cm = m as CameraMark
+          if (frozen) {
+            cm.position = { ...frozen.position }
+            cm.pan = frozen.pan
+            cm.tilt = frozen.tilt
+            cm.roll = frozen.roll
+            cm.focalLength = frozen.focalLength
+          }
+          delete cm.shot
+        }
         const time = flt(params, 'time')
         if (time !== undefined) m.time = clamp(time, 0, shot?.duration ?? time)
         for (const axis of ['x', 'y', 'z'] as const) {
@@ -1364,7 +1454,11 @@ async function execute(action: string, params: Params): Promise<unknown> {
         maxDuration: p.maxDuration,
         recommendedDuration: p.recommendedDuration,
         aspects: p.aspects,
-        fps: p.fps
+        fps: p.fps,
+        // Fork: the model's input-file and prompt caps, and what to attach where.
+        ...(p.maxFileMB ? { maxFileMB: p.maxFileMB } : {}),
+        ...(p.maxPromptChars ? { maxPromptChars: p.maxPromptChars } : {}),
+        attachHint: p.attachHint
       }))
 
     case 'export_shot': {
@@ -1392,7 +1486,9 @@ async function execute(action: string, params: Params): Promise<unknown> {
       return {
         packagePath: res.packagePath,
         relativePath: projectRelative(res.packagePath),
-        prompt: scene && shot ? generatePrompt(scene, shot, profile) : ''
+        prompt: scene && shot ? generatePrompt(scene, shot, profile) : '',
+        // Fork: limits the shot breaks for this model (empty when it fits).
+        warnings: shot ? profileWarnings(profile, shot) : []
       }
     }
 

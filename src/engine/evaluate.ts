@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons; see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts); see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -12,6 +12,7 @@
 import { assetSpec, entityHeight } from './assets'
 import { verticalFov } from './camera'
 import { easedProgress, lerp, lerpAngle, smoothstep } from './easing'
+import { posedMoveY } from './floor'
 import { GAITS, checkSpeed, type SpeedVerdict } from './gaits'
 import { Path, headingOf } from './path'
 import { RigNoise } from './rigs'
@@ -285,9 +286,12 @@ export class ShotEvaluator {
       const r = evaluateTrack(marks, legs, time)
       const arriveHeading = r.atMark?.arriveHeading
       // Fork: a lockFacing destination keeps the marks' facing (and its own
-      // gait) while travelling — fighters back off facing the opponent.
+      // gait) while travelling — fighters back off facing the opponent. So
+      // does a leg between two motion-playback marks (posedMove): a motion
+      // plays without a walk cycle under it; travel legs stay upstream.
+      const posed = !!(r.leg?.from.posedMove && r.leg.to.posedMove)
       const locked =
-        r.leg?.to.lockFacing && (r.leg.from.arriveHeading !== undefined || r.leg.to.arriveHeading !== undefined)
+        r.leg && (r.leg.to.lockFacing || posed) && (r.leg.from.arriveHeading !== undefined || r.leg.to.arriveHeading !== undefined)
           ? r.leg
           : null
       const heading = locked
@@ -313,9 +317,27 @@ export class ShotEvaluator {
         : r.atMark?.joints
           ? { ...r.atMark.joints }
           : undefined
+      // Fork: on a posed move the body's lowest point travels straight from
+      // keyframe to keyframe, so a body folding onto the floor never dips through it.
+      const from = posed ? locked?.from : undefined
+      const to = posed ? locked?.to : undefined
+      const position =
+        from?.joints && to?.joints && entity.assetId.startsWith('person.')
+          ? {
+              ...r.position,
+              y: posedMoveY(
+                { assetId: entity.assetId, params: entity.params, scale: entity.transform.scale },
+                { y: from.position.y, joints: from.joints },
+                { y: to.position.y, joints: to.joints },
+                joints,
+                r.position.y,
+                easedProgress(r.legProgress, from.easeOut, to.easeIn)
+              )
+            }
+          : r.position
       entities.push({
         entityId: entity.id,
-        position: r.position,
+        position,
         heading,
         gait: locked ? locked.to.gait : r.leg && spec.travels ? gait : r.leg ? 'walk' : gait,
         distanceTravelled: r.distanceTravelled,

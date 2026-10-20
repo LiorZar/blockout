@@ -8,7 +8,7 @@
 import { _electron as electron, test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import { mkdtempSync, readFileSync, existsSync, mkdirSync, readdirSync } from 'fs'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { basename, join } from 'path'
 import net from 'net'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
@@ -106,6 +106,34 @@ test('MCP over HTTP reaches the running app', async () => {
   }
 })
 
+test('a tool call before any project is open is an isError "No project open"', async () => {
+  // A second app on its own config dir and MCP port, left on the start screen.
+  const dir = mkdtempSync(join(tmpdir(), 'blockout noproject-'))
+  const configDir = join(dir, 'config')
+  mkdirSync(configDir, { recursive: true })
+  const port2 = await freePort()
+  const env = { ...process.env, BLOCKOUT_SMOKE_DIR: dir, BLOCKOUT_CONFIG_DIR: configDir, BLOCKOUT_MCP_PORT: String(port2) } as Record<string, string>
+  delete env.ELECTRON_RUN_AS_NODE
+  const bare = await electron.launch({ args: ['out/main/index.js'], env })
+  const client = new Client({ name: 'e2e-noproject', version: '0.0.0' })
+  try {
+    const win = await bare.firstWindow()
+    await win.waitForLoadState('domcontentloaded')
+    await expect(win.getByRole('button', { name: 'New Project' })).toBeVisible({ timeout: 30_000 })
+    await expect.poll(() => existsSync(resolveConfigPath('control.json', { env }))).toBe(true)
+    await client.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port2}/mcp`)))
+    for (const [name, args] of [['get_state', {}], ['add_entity', { assetId: 'person.man', x: 0, z: -3 }]] as const) {
+      const result = await client.callTool({ name, arguments: args })
+      expect(result.isError, name).toBe(true)
+      const text = (result.content as { type: string; text: string }[])[0]!.text
+      expect(text, name).toContain('No project open')
+    }
+  } finally {
+    await client.close()
+    await bare.close()
+  }
+})
+
 test('apply_camera_move follows the entity it is given', async () => {
   expect((await rpc('add_entity', { assetId: 'env.residentialStreet', x: 0, z: 0 })).ok).toBe(true)
   const spawned = await rpc<{ entityIds: string[] }>('spawn_sequence', { type: 'carChase', count: 2 })
@@ -173,11 +201,45 @@ test('set_entity_style color red gives #e5484d', async () => {
   expect(res.ok).toBe(true)
   expect(res.data?.color).toBe('#e5484d')
   expect(res.data?.label).toBe('VILLAIN')
-  expect(res.data?.heightScale).toBe(1.5)
   expect(res.data?.hideInExports).toBe(true)
   const bad = await rpc('set_entity_style', { entityId: id, color: 'banana' })
   expect(bad.ok).toBe(false)
   expect(bad.error).toContain('banana')
+})
+
+test('set_entity_style keeps heightScale / build to what the rig renders', async () => {
+  const man = (await rpc<{ entityId: string }>('add_entity', { assetId: 'person.man', x: 1, z: -5 })).data!.entityId
+  const res = await rpc<{ heightScale: number; build: number; notes?: string[] }>('set_entity_style', { entityId: man, heightScale: 9, build: 0.1 })
+  expect(res.ok, res.error).toBe(true)
+  expect(res.data?.heightScale).toBe(1.2)
+  expect(res.data?.build).toBe(0.8)
+  expect(res.data?.notes?.join(' ')).toContain('0.8–1.2')
+  const inRange = await rpc<{ heightScale: number; notes?: string[] }>('set_entity_style', { entityId: man, heightScale: 1.1 })
+  expect(inRange.data?.heightScale).toBe(1.1)
+  expect(inRange.data?.notes).toBeUndefined()
+  const car = (await rpc<{ entityId: string }>('add_entity', { assetId: 'vehicle.sedan', x: 4, z: -8 })).data!.entityId
+  const carRes = await rpc<{ heightScale?: number; build?: number; notes?: string[] }>('set_entity_style', { entityId: car, heightScale: 1.3, build: 1.2 })
+  expect(carRes.ok, carRes.error).toBe(true)
+  expect(carRes.data?.heightScale).toBeUndefined()
+  expect(carRes.data?.build).toBeUndefined()
+  expect(carRes.data?.notes?.join(' ')).toContain('only people')
+})
+
+test('stale entity ids in delete/snap/track/preset/actor-mark errors name get_state', async () => {
+  const presets = await rpc<{ id: string }[]>('list_action_presets')
+  const calls: [string, Record<string, unknown>][] = [
+    ['delete_entity', { entityId: 'ent_gone' }],
+    ['snap_to_ground', { entityId: 'ent_gone' }],
+    ['set_track_subject', { entityId: 'ent_gone' }],
+    ['apply_action_preset', { entityId: 'ent_gone', presetId: presets.data![0]!.id }],
+    ['add_actor_mark', { entityId: 'ent_gone', x: 0, z: 0, time: 0 }]
+  ]
+  for (const [action, params] of calls) {
+    const res = await rpc(action, params)
+    expect(res.ok, action).toBe(false)
+    expect(res.error, action).toContain('ent_gone')
+    expect(res.error, action).toContain('get_state')
+  }
 })
 
 test('set_camera_rig shows in get_state', async () => {
@@ -364,6 +426,24 @@ test.describe('export tools', () => {
     const animatic = await rpc<{ path: string }>('export_scene_animatic', { resolution: '720p' })
     expect(animatic.error).toBeUndefined()
     expect(existsSync(animatic.data!.path)).toBe(true)
+    // Timestamped like export_shot, so a second export never overwrites the first.
+    const STAMP = '\\d{4}-\\d{2}-\\d{2}-\\d{2}-\\d{2}-\\d{2}(-\\d+)?'
+    expect(basename(sheet.data!.path)).toMatch(new RegExp(`^contact-sheet-${STAMP}\\.png$`))
+    expect(basename(animatic.data!.path)).toMatch(new RegExp(`^animatic-${STAMP}\\.mp4$`))
+    const again = await rpc<{ path: string }>('export_contact_sheet')
+    expect(again.data!.path).not.toBe(sheet.data!.path)
+    expect(existsSync(sheet.data!.path) && existsSync(again.data!.path)).toBe(true)
+  })
+
+  test('two export_frame calls in the same second keep both frames (qa-export B11)', async () => {
+    const first = await rpc<{ path: string }>('export_frame', { resolution: '720p' })
+    const second = await rpc<{ path: string }>('export_frame', { resolution: '720p' })
+    expect(first.ok && second.ok).toBe(true)
+    expect(second.data!.path).not.toBe(first.data!.path)
+    expect(existsSync(first.data!.path) && existsSync(second.data!.path)).toBe(true)
+    // Same second: the repeat gets a -2 suffix rather than the first frame's name.
+    const stem = (p: string): string => basename(p).replace(/^(.*_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})(-\d+)?\.png$/, '$1')
+    if (stem(first.data!.path) === stem(second.data!.path)) expect(basename(second.data!.path)).toMatch(/-2\.png$/)
   })
 
   test('edits during a running export_shot are refused, reads still work', async () => {
@@ -434,4 +514,17 @@ test('a selection never reaches the top-down blocking diagram', async () => {
   const none = await topDown()
   expect((await topDown()).equals(none)).toBe(true) // the diagram itself is deterministic
   expect(selected.equals(none)).toBe(true)
+})
+
+test('a positive panDeg / rotationDeg turns counter-clockwise from above: +90 faces -X', async () => {
+  await rpc('new_scene', { name: 'Pan direction' })
+  await rpc('clear_camera_marks')
+  expect((await rpc('add_camera_mark', { x: 0, y: 1.6, z: 0, panDeg: 90, tiltDeg: 0, time: 0 })).ok).toBe(true)
+  const man = (await rpc<{ entityId: string }>('add_entity', { assetId: 'person.man', x: 0, z: -3, rotationDeg: 90 })).data!.entityId
+  await rpc('set_time', { t: 0 })
+  // Forward = −Z column of each object's world matrix, rounded: "x,z".
+  const forward = (expr: string): Promise<string> =>
+    page.evaluate(`(() => { const o = ${expr}; o.updateMatrixWorld(true); const e = o.matrixWorld.elements; return Math.round(-e[8]) + ',' + Math.round(-e[10]) })()`) as Promise<string>
+  await expect.poll(() => forward('window.__blockout_scene.shotCam')).toBe('-1,0')
+  await expect.poll(() => forward(`window.__blockout_scene.visuals.get(${JSON.stringify(man)}).root`)).toBe('-1,0')
 })
