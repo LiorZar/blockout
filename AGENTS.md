@@ -50,6 +50,7 @@ assets/         (profiles as code in engine/profiles.ts; 3D assets are procedura
 - **Sky & editor chrome** (`SceneManager`): the `middaySky`/`goldenHourSky`/`blueHourSky` lighting presets drive a `three/examples` `Sky` dome — a deterministic function of `sunAzimuth`/`sunElevation` with fixed turbidity/rayleigh per preset, so it renders byte-identically in the **clean** export and is hidden in the depth/normal passes. Spike-tape marks and path ribbons live in `overlay` sub-groups (`marksGroup`/`pathsGroup`, HUD eye toggles `showMarks`/`showPaths`); selection adds direction chevrons + `t=…s` labels for the picked lane only. The bottom-right `ViewHelper` gizmo and the selected-entity **emissive tint** are editor-only — the gizmo renders in its own corner viewport (never in `this.scene`), and `renderFrameAt` neutralizes the tint for the duration of every pass so selection can't affect exported pixels. The Shoot **Take bar** (Viewport) and **Set your marks** coach (Help/App) are pure compositions of existing store actions.
 - **Shot words + Fight Director** (fork; `src/engine/skeleton.ts`, `shot*.ts`, `fight/`, PURE): `skeleton.ts` is the person rig's FK (`buildPerson` takes its lengths from `personDims`; FK and renderer agree to 1e-6, and the `motions.ts` header is the joint-sign spec). A camera mark with `shot` (`ShotSpec`, from `parseShotWords`) is re-solved every frame by `solveShot` (`shot-track.ts` hooked into `evaluateCamera`). `solveFight` turns a beat script (`fight/script.ts`) into ordinary actor marks with `lockFacing` (the evaluator keeps their facing and posed gait): impacts on the frame grid, blows placed by FK within 3 cm (kicks may lift the kicker, blocks reach the blow), closed-form knockback (`fight/physics.ts`) that stops at set props (`fight/obstacles.ts`; the store reads prop footprints off the built geometry in `renderer/fight-obstacles.ts`), and `fight/coverage.ts` camera modes on one side of the line. Store: `setShotAtTime`, `stageFight` / `updateFight` / `coverFight`, `solveInScene` (every fight solve, props included), `refightShot` (re-solves a shot's fights after an fps / duration change, inside the same mutate); a two-person routine fight goes through `stageFight`. UI: the camera Inspector's Shot box and the Choreographer's Fight Director.
 - **Studio mannequins** (fork; `person.mannequinMale` / `person.mannequinFemale`): procedural sculpted bodies (`src/renderer/viewport/mannequin-mesh.ts`, ≤ 8k triangles each, Phong plastic, panel seams, darker recessed joints) built by `buildMannequin` on the same named joint groups, `personDims` lengths and `animatePerson` as `buildPerson`, so FK, every motion and the fight solver work unchanged (`tests/unit/skeleton.test.ts` cross-checks both at 1e-6). Weapons find the hand at `(0, −lowerArmLen, 0)` in `elbowL` / `elbowR`; keep those names and that point. The Fight Director's **Bodies** select stages fights with them (`stageFight({ assets })`).
+- **Held weapons + hit power** (fork; `src/engine/weapons.ts`, `fight/physics.ts`, `fight/moves.ts`, PURE): `Entity.heldBy` puts a weapon in a hand. `ShotEvaluator.evaluate` calls `applyHolds` after marriages: holders blend in idle hold poses (long guns at low ready), a two-hander's off hand reaches the grip by closed-form IK, and a held weapon's state sits in the hand frame computed from `personDims` + joints; `SceneManager.applyHeldWeapons` draws the grey-box models from `weapon-builders.ts`. Scenes without holds evaluate exactly as before. In fights (`FighterInput.weapons`) blades land with the weapon, and `shoot` beats play the weapon's own aim (`gunAimMove`: `pistol-aim-fire`, the shouldered `rifle-aim-fire`, `bow-draw-loose`) along a line through the target. Hit power: each impact carries a nominal peak speed (`STRIKE_SPEED`), the limb's mass scales with the attacker's, a held weapon adds its mass and leverage (`weaponHeft`), and a guard takes half the blow, so jabs absorb, power punches stagger, and roundhouses and heavy weapons knock down (`tests/unit/fight-tune.test.ts`). Store: `holdWeapon` / `spawnHeldWeapon` / `dropWeapon`; MCP: `list_weapons` / `hold_weapon` / `drop_weapon`.
 - **Floor contact** (fork; `src/engine/floor.ts`, PURE): `bodyLowY(body, joints)` is the lowest surface point of a posed person (a proxy on the `poseFrames` bones, within 5 mm of the rendered meshes; if you change a body's meshes, `tests/unit/floor.test.ts` tells you to update its proxy). Gaits ground themselves with it (`animatePerson`), motion keyframes use `motionRootY` (a keyframe that doesn't lift the body rests on the floor), and on a leg between two motion-playback (`posedMove`) marks the evaluator keeps the facing and stand gait and the body's lowest point on the line between keyframes (`evaluate.ts`); travel legs stay upstream.
 
 ## Hard rules
@@ -109,21 +110,26 @@ claude mcp add blockout -- node /ABSOLUTE/PATH/TO/blockout/mcp/blockout-mcp.mjs
 |---|---|---|
 | `get_state` | — | Project/scene/shot summary incl. entity + mark listings (call first) |
 | `list_assets` | `category?` | The placeable asset catalog |
-| `add_entity` | `assetId, x, z, label?, rotationDeg?` | Place something |
+| `add_entity` | `assetId, x, z, label?, rotationDeg?, color?` | Place something |
 | `move_entity` | `entityId, x, z, y?, rotationDeg?` | Reposition an entity |
-| `delete_entity` | `entityId` | Remove an entity |
+| `delete_entity` | `entityId, name?` | Remove an entity (`name` is shown on Clara's approval card) |
 | `add_actor_mark` | `entityId, x, z, time, gait?` | Drop an actor timeline mark |
 | `add_camera_mark` | `x, y, z, panDeg, tiltDeg, time, focalLength?` | Drop a camera mark |
 | `clear_camera_marks` | — | Clear the active shot's camera marks |
 | `set_shot` | `name?, duration?, aspect?, fps?` | Update shot settings |
 | `new_shot` | `name?` | New shot, same blocking |
-| `apply_framing` | `kind: 2S\|OTS\|REV\|TOP\|LOW\|DUTCH` | Auto-frame the camera |
+| `apply_framing` | `kind: 2S\|OTS\|REV\|TOP\|LOW\|DUTCH, entityIds?` | Auto-frame the camera |
+| `list_action_presets` / `apply_action_preset` | — / `entityId, presetId` | Motion-path presets for non-character performers (plane, heli, bird, car chase, debris); lay one on an entity, replacing its marks |
+| `list_sequence_styles` | — | Styles per `spawn_sequence` type |
+| `spawn_sequence` | `type, count, style?, x?, z?, headingDeg?` | Stage a crowd sequence — `dance` / `fight` / `footChase` / `carChase` — performers + choreography |
+| `list_camera_moves` / `apply_camera_move` | — / `presetId, entityId?` | Classic camera-move presets; generate one's camera marks around a subject (replaces camera marks) |
+| `set_track_subject` | `entityId?` | Aim-lock the camera on an entity (none = off) |
 | `list_choreography_options` | — | Choreography vocabulary: kinds, styles, formations, endings |
 | `spawn_choreography` | `kind, performers, durationS?, style?, formation?, canon?, mirror?, formationChange?, ending?, bpm?, seed?, x?, z?, headingDeg?` | Stage a dance/fight/chase — fresh performers + their per-beat blocking |
 | `choreograph_entities` | `entityIds, kind, style?, …` (same routine options) | Retarget existing people into a routine (keeps assets/labels) |
 | `list_motion_presets` | `category?` | The single-performer motion library (`{id,name,category,duration}`) |
 | `import_scan` | `sourcePath` | Import a `.ply/.splat/.spz/.ksplat` scan (editor-only); returns the scan |
-| `set_scan_transform` | `scanId, position?, rotationDeg?, scale?, visible?` | Move/rotate/scale/show-hide an imported scan |
+| `set_scan_transform` | `scanId, position?, rotationDeg?, scale?, visible?, flipped?` | Move/rotate/scale/show-hide an imported scan (`flipped` rights an upside-down .splat) |
 | `remove_scan` | `scanId` | Remove an imported scan from the scene |
 | `snap_to_ground` | `entityId` | Rest an entity on the ground |
 | `set_time` / `play` / `stop` | `t` / — / — | Scrub, play, stop |
@@ -131,21 +137,21 @@ claude mcp add blockout -- node /ABSOLUTE/PATH/TO/blockout/mcp/blockout-mcp.mjs
 | `list_presets` / `save_preset` / `apply_preset` | — / `name` / `id` | Global stage presets |
 | `set_reference` | `videoPath, handoffVersion?, mode?, opacity?` | Attach a reference clip (copied into `refs/`) as a ghost/PIP underlay. Motion sends handoff v1; missing stays legacy-compatible. |
 
-Fork additions (2026; the catalog is `mcp/tools.json`, shared by both transports and kept in step with `handler.ts` by `tests/unit/mcp-catalog.test.ts`). `add_entity` takes `color?` (labelled entities get distinct colours automatically), `apply_framing` takes `entityIds?`, and `apply_camera_move` builds the move around `entityId` (never a set kit). `get_state` also reports colours, `scene.environment` in degrees, camera-mark ids, rig, and `allScenes`.
+Fork additions (2026; the catalog is `mcp/tools.json`, shared by both transports and kept in step with `handler.ts` by `tests/unit/mcp-catalog.test.ts`). Fork params on the upstream tools above: `add_entity` `color?` (labelled entities get distinct colours automatically), `delete_entity` `name?` (Clara's delete card says "Remove {name}"), `apply_framing` `entityIds?`; `apply_camera_move` builds the move around `entityId` (never a set kit); `spawn_sequence` / `spawn_choreography` / `choreograph_entities` route a two-person fight to the Fight Director. `get_state` also reports colours, held weapons, `scene.environment` in degrees, camera-mark ids and their `shot`, rig, and `allScenes`. Export file names carry a date-time stamp (a repeat within one second gets `-2`), so nothing is overwritten.
 
 | Tool | Params | Does |
 |---|---|---|
 | `new_scene` / `select_scene` / `select_shot` | `name?` / `sceneId` / `shotId` | Add a scene, switch scene or shot |
 | `set_lighting` | `preset, sunAzimuthDeg?, sunElevationDeg?, fog?` | One of the 9 lighting presets |
-| `set_entity_style` | `entityId, label?, color?, name?, heightScale?, build?, hideInExports?` | An entity's look |
+| `set_entity_style` | `entityId, label?, color?, name?, heightScale?, build?, hideInExports?` | An entity's look; height 0.8–1.2 and build 0.8–1.3 for people only (`notes` say when clamped or ignored) |
 | `set_camera_rig` | `rig, intensity?` | sticks / dolly / steadicam / handheld / crane / drone / carMount |
-| `list_marks` / `update_mark` / `delete_marks` | `lane` / `lane, markId, …` / `lane, markIds` | Timeline marks; `lane` is `camera` or an entity id |
+| `list_marks` / `update_mark` / `delete_marks` | `lane` / `lane, markId, …, release?` / `lane, markIds` | Timeline marks; `lane` is `camera` or an entity id. A shot-words camera mark is re-solved every frame: its pose takes edits only with `release: true` |
 | `apply_motion` | `entityIds, presetId` | A motion-library move on people |
 | `undo` / `redo` / `save_project` | — | History and save |
 | `list_export_profiles` | — | Export targets |
 | `export_shot` | `profileId?, passes?, labels?, resolution?` | Export the package (default `seedance-2`, clean + depth; `minimax-h3-max` for MiniMax H3 Max); returns `packagePath`, `relativePath`, `prompt`, `warnings` (limits the shot breaks) |
 | `export_frame` / `export_contact_sheet` / `export_scene_animatic` | `profileId?, resolution?, labels?` / — / `profileId?, resolution?` | Still, contact sheet, scene animatic |
-| `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Shot words ("MCU on B, over A's right shoulder, 50mm") → a live camera mark re-solved every frame |
+| `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Shot words ("MCU on B, over A's right shoulder, 50mm") → a live camera mark re-solved every frame. Over a shoulder, the shoulder stays in frame and the eyes sit on the far third; a high / low angle may back the camera off (`achievedSize` says what the frame is) |
 | `list_fight_moves` | — | Strikes, aliases, default targets and impacts |
 | `stage_fight` | `script` / `beats` / `random`, `x?, z?, headingDeg?, fighterIds?, assets?, labels?, exaggeration?, coverage?, weapons?` | Scripted two-person fight; returns `{ fightId, script, report }` (per-beat contact error, physics, lift, warnings). `weapons: [A's, B's]` arms the fighters: blows land with the blade or point, `A shoot to body -> hit` fires a held gun |
 | `update_fight` / `get_fight` / `delete_fight` | `fightId, script?/beats?, exaggeration?, coverage?` / `fightId` / `fightId` | Re-solve, read, forget a fight |

@@ -518,6 +518,38 @@ Changes in this fork (2026):
   the fighter used to walk from the floor straight back to guard with no
   get-up, sinking the walking legs 21–36 cm through the floor. Tests:
   `tests/unit/fight-ground.test.ts`.
+- Tool docs (`mcp/README.md`, `AGENTS.md`, `README.md`): both tool tables
+  list all 62 tools of `mcp/tools.json` with their current params (the 18
+  scene / lighting / rig / marks / history / export tools in
+  `mcp/README.md`; the 7 upstream `list_action_presets`,
+  `apply_action_preset`, `list_sequence_styles`, `spawn_sequence`,
+  `list_camera_moves`, `apply_camera_move`, `set_track_subject` in
+  `AGENTS.md`); `AGENTS.md` Key subsystems gains held weapons + hit power;
+  `README.md` loses a stray `>>>>>>> Stashed changes` marker and says 62 tools.
+- `tests/e2e/control-tools.spec.ts` (upstream test; Lior's one sanctioned
+  edit): the app gets a private `BLOCKOUT_CONFIG_DIR` and the spec reads the
+  discovery file with `resolveConfigPath('control.json', { env })`, where the
+  app writes it, instead of `~/.config/blockout` (wrong on Windows).
+- Long guns at rest are carried low (Lior, 2026-10-20): a held rifle or
+  shotgun at rest hangs muzzle down across the body, 40° below level and
+  turned 70° toward the off side, upright, the grip hand at the waist and the
+  support hand on the fore-end, so a walk reads as carrying (it rested at the
+  chest, 19° down, nearly an aim). `WeaponSpec.carry` (`weapons.ts`);
+  `weaponRotation` turns from the stock rule to the carry as the
+  shoulder→grip line drops from 45° to 60° below level, set off the torso's
+  level forward (`HandFrame.torso`; `hold.ts` reads the rendered `torso`
+  group), so the shouldered aim, the recoil and every `rifle-aim-fire`
+  keyframe play exactly as before. A shouldered gun's body retarget fades out
+  with the carry. A child still can't reach an adult gun's fore-end at rest
+  (the support hand slides back 4.3 cm on the rifle, 7.3 cm on the shotgun).
+  Tests: `tests/unit/weapons-carry.test.ts`; the stock-on-the-shoulder-line
+  check in `tests/unit/rifle-aim.test.ts` covers shouldered poses (the line
+  under 45° below level).
+- Talk / gesture at chest height (Lior, 2026-10-20): `animatePerson`'s
+  `gesture` gait holds the right forearm forward, the hand in front of the
+  chest below the shoulder, beating gently on the shot time; a stoop raises
+  the arm as much (the hand used to rise 0.53 m above the shoulder, a hail).
+  Tests: `tests/unit/gaits.test.ts` (six bodies, 4 s).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

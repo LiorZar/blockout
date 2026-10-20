@@ -1,3 +1,4 @@
+// Modified for the fork's Windows discovery path in 2026; see MODIFICATIONS.md.
 /**
  * Control-server e2e for the choreography + 3D-scan agent tools: launch the
  * built app, create a project, then drive the localhost control server exactly
@@ -8,9 +9,10 @@
  */
 
 import { _electron as electron, test, expect, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtempSync, writeFileSync, existsSync } from 'fs'
-import { tmpdir, homedir } from 'os'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
+import { resolveConfigPath } from '../../src/shared/config-paths'
 
 let app: ElectronApplication
 let page: Page
@@ -59,9 +61,13 @@ test.beforeAll(async () => {
   splatPath = join(smokeDir, 'living-room.splat')
   makeSyntheticSplat(splatPath)
 
+  // Fork: a private config dir, and the discovery file read where the app writes it (not ~/.config on Windows).
+  const configDir = join(smokeDir, 'config')
+  mkdirSync(configDir, { recursive: true })
+  const env = { ...process.env, BLOCKOUT_SMOKE_DIR: smokeDir, BLOCKOUT_CONFIG_DIR: configDir } as Record<string, string>
   app = await electron.launch({
     args: ['out/main/index.js'],
-    env: { ...process.env, BLOCKOUT_SMOKE_DIR: smokeDir }
+    env
   })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
@@ -69,7 +75,7 @@ test.beforeAll(async () => {
   await expect(page.locator('.mode-switch')).toBeVisible()
 
   const { readFileSync } = await import('fs')
-  const discoveryFile = join(homedir(), '.config', 'blockout', 'control.json')
+  const discoveryFile = resolveConfigPath('control.json', { env })
   expect(existsSync(discoveryFile)).toBe(true)
   ;({ port, token } = JSON.parse(readFileSync(discoveryFile, 'utf-8')) as { port: number; token: string })
 })

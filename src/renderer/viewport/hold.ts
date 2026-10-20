@@ -3,7 +3,8 @@
  *
  * `heldWeaponMatrix` gives a weapon model's world matrix from the holder's
  * rendered rig: the `elbowL` / `elbowR` group (hand at `(0, −lowerArmLen, 0)`)
- * and, for shouldered long guns, the same side's shoulder group. It uses the
+ * and, for shouldered long guns, the same side's shoulder group and the
+ * torso (a gun's carry at rest is set off it). It uses the
  * engine's grip math (src/engine/weapons.ts), so the rendered weapon and the
  * engine's tip agree exactly. The rig's world matrices must be current.
  */
@@ -25,6 +26,12 @@ function compose(r: M3, k: number, t: V3, out: THREE.Matrix4): THREE.Matrix4 {
 const tmpRot = new THREE.Matrix4()
 const tmpLocal = new THREE.Matrix4()
 
+/** An object's world rotation, row-major. */
+function worldRot(o: THREE.Object3D): M3 {
+  const e = tmpRot.extractRotation(o.matrixWorld).elements
+  return [e[0]!, e[4]!, e[8]!, e[1]!, e[5]!, e[9]!, e[2]!, e[6]!, e[10]!]
+}
+
 /** World matrix of a weapon model held in `hand` of the rig `person` (null when the rig has no such arm). */
 export function heldWeaponMatrix(
   person: THREE.Object3D,
@@ -36,6 +43,7 @@ export function heldWeaponMatrix(
 ): THREE.Matrix4 | null {
   const elbow = person.getObjectByName(hand === 'L' ? 'elbowL' : 'elbowR')
   const shoulder = person.getObjectByName(hand === 'L' ? 'shoulderL' : 'shoulderR')
+  const torso = person.getObjectByName('torso')
   if (!elbow || !shoulder) return null
   if (spec.mount === 'hand') {
     const h = heldInElbow(dims, spec, hand, weaponScale)
@@ -43,9 +51,7 @@ export function heldWeaponMatrix(
   }
   const handW = elbow.localToWorld(new THREE.Vector3(0, -dims.lowerArmLen, 0))
   const shoulderW = shoulder.getWorldPosition(new THREE.Vector3())
-  const e = tmpRot.extractRotation(elbow.matrixWorld).elements
-  const handRot: M3 = [e[0]!, e[4]!, e[8]!, e[1]!, e[5]!, e[9]!, e[2]!, e[6]!, e[10]!]
-  const r = weaponRotation(spec, hand, { hand: handW, handRot, shoulder: shoulderW })
+  const r = weaponRotation(spec, hand, { hand: handW, handRot: worldRot(elbow), shoulder: shoulderW, torso: torso ? worldRot(torso) : undefined })
   const k = weaponScale * new THREE.Vector3().setFromMatrixScale(elbow.matrixWorld).x
   const g = spec.grip
   const t = {

@@ -59,14 +59,33 @@ describe('gaits on a body facing −Z (forward is −Z)', () => {
     }
   })
 
-  it('talk raises the right hand above and in front of the shoulder', () => {
+  it('talk gestures with the right hand in front of the chest, below the shoulder, through the cycle', () => {
     for (const id of PEOPLE) {
       const d = personDims(id)
-      const { at } = pose(id, 'gesture')
-      const shoulder = at('shoulderR')
-      const hand = at('elbowR', 0, -d.lowerArmLen, 0)
-      expect(hand.y, id).toBeGreaterThan(shoulder.y)
-      expect(hand.z, id).toBeLessThan(shoulder.z - 0.2)
+      const b = buildAsset(id)
+      const at = (name: string, x = 0, y = 0, z = 0): Vector3 => b.group.getObjectByName(name)!.localToWorld(new Vector3(x, y, z))
+      let lo = Infinity
+      let hi = -Infinity
+      for (let t = 0; t <= 4; t += 0.1) {
+        b.animate!({ gait: 'gesture', phase: 0, speed: 0, distance: 0, time: t })
+        b.group.updateMatrixWorld(true)
+        const shoulderR = at('shoulderR')
+        const shoulderL = at('shoulderL')
+        const hand = at('elbowR', 0, -d.lowerArmLen, 0)
+        const label = `${id} t=${t.toFixed(1)}`
+        // Chest height: below the shoulder, above the bottom of the ribs.
+        expect(hand.y, label).toBeLessThan(shoulderR.y - 0.05 * d.s)
+        expect(hand.y, label).toBeGreaterThan(shoulderR.y - 0.45 * d.torsoLen)
+        // In front of the chest, between the shoulders.
+        expect(hand.z, label).toBeLessThan(shoulderR.z - 0.2 * d.s)
+        expect(hand.x, label).toBeGreaterThan(shoulderL.x)
+        expect(hand.x, label).toBeLessThan(shoulderR.x)
+        lo = Math.min(lo, hand.y)
+        hi = Math.max(hi, hand.y)
+      }
+      // A small, visible motion.
+      expect(hi - lo, id).toBeGreaterThan(0.02 * d.s)
+      expect(hi - lo, id).toBeLessThan(0.15 * d.s)
     }
   })
 

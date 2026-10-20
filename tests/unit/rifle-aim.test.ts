@@ -29,9 +29,10 @@ function rng(seed: number): () => number {
 }
 
 describe('shouldered long guns', () => {
-  it('have a stock point, and the stock (not the grip line) rides the shoulder line', () => {
+  it('have a stock point, and the stock (not the grip line) rides the shoulder line while the hand is up (carried below 45°)', () => {
     const rnd = rng(5)
     const keys = ['shoulderLX', 'shoulderRX', 'shoulderLZ', 'shoulderRZ', 'elbowL', 'elbowR', 'torsoX', 'torsoY', 'torsoZ']
+    let checked = 0
     for (const id of LONG_GUNS) {
       const spec = weaponSpec(id)!
       expect(spec.mount, id).toBe('shoulder')
@@ -44,14 +45,17 @@ describe('shouldered long guns', () => {
           for (const hand of ['L', 'R'] as Hand[]) {
             const f = handFrame(dims, joints, hand)
             const reach = len(sub(f.shoulder, f.p))
-            if (reach < 0.1) continue
+            // Fork: a hand far below the shoulder carries the gun (weapons-carry.test.ts).
+            if (reach < 0.1 || deg(Math.asin((f.shoulder.y - f.p.y) / reach)) > 45) continue
             const butt = heldPointLocal(dims, joints, hand, spec, spec.stock!, 1)
             const onLine = { x: f.p.x + ((f.shoulder.x - f.p.x) * stockLen) / reach, y: f.p.y + ((f.shoulder.y - f.p.y) * stockLen) / reach, z: f.p.z + ((f.shoulder.z - f.p.z) * stockLen) / reach }
             expect(len(sub(butt, onLine)), `${id} ${body} ${hand}`).toBeLessThan(1e-9)
+            checked++
           }
         }
       }
     }
+    expect(checked).toBeGreaterThan(100)
   })
 })
 

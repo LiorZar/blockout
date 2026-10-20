@@ -58,6 +58,13 @@ export interface WeaponSpec {
   /** A shouldered long gun's butt (model frame, on the YZ plane): the point that sits in the shoulder. */
   stock?: V3
   /**
+   * A shouldered long gun's carry at rest (fork): the barrel `down` rad below
+   * level, turned `across` rad from the torso's level forward toward the off
+   * side, upright. It takes over from the stock rule as the hand drops to
+   * the hip (`carryWeight`).
+   */
+  carry?: { down: number; across: number }
+  /**
    * A one-handed carry at rest (spear, staff): the off hand only takes the
    * support point as the holding arm leaves its idle pose. At rest it can't
    * reach a point on the shaft in front, and the one behind is a reach round
@@ -142,6 +149,8 @@ export interface HandFrame {
   r: M3
   /** The same side's shoulder joint (where a long gun's stock sits). */
   shoulder: V3
+  /** The torso's axes (a long gun's carry is set off its level forward). */
+  torso: M3
 }
 
 interface Frame {
@@ -175,7 +184,7 @@ export function handFrame(dims: PersonDims, joints: Record<string, number> | und
     hand === 'L' ? euler(-j('shoulderLX'), 0, -j('shoulderLZ')) : euler(-j('shoulderRX'), 0, j('shoulderRZ'))
   const shoulder = child(torso, shoulderOffset(dims, hand), shoulderRot)
   const elbow = child(shoulder, v(0, -dims.upperArmLen, 0), euler(j(hand === 'L' ? 'elbowL' : 'elbowR'), 0, 0))
-  return { p: add(elbow.p, apply(elbow.r, v(0, -dims.lowerArmLen, 0))), r: elbow.r, shoulder: shoulder.p }
+  return { p: add(elbow.p, apply(elbow.r, v(0, -dims.lowerArmLen, 0))), r: elbow.r, shoulder: shoulder.p, torso: torso.r }
 }
 
 /* ------------------------------- the grips ------------------------------- */
@@ -245,8 +254,12 @@ const FWD = v(0, 0, -1)
 const BLADE_IDLE = { shoulderRX: 0, shoulderRZ: 0.1, elbowR: 0.65 }
 const SHAFT_IDLE = { shoulderRX: 0, shoulderRZ: -0.2, elbowR: 0.85 }
 const GUARD_IDLE = { shoulderRX: 0, shoulderRZ: -0.2, elbowR: 0.65 }
-/** Long guns at low ready: grip at the chest, muzzle ~30° down, the off hand on the handguard. */
-const LONG_GUN_IDLE = { shoulderRX: 0.2, shoulderRZ: -0.6, elbowR: 2.4 }
+/**
+ * Long guns at rest (fork): carried muzzle down across the body, the grip at
+ * the waist (as low as the off hand still reaches the fore-end at 40°).
+ */
+const LONG_GUN_IDLE = { shoulderRX: 0.42, shoulderRZ: -0.27, elbowR: 1.64 }
+const LONG_GUN_CARRY = { down: (40 * Math.PI) / 180, across: (70 * Math.PI) / 180 }
 
 /**
  * How far each model is lifted (m) so it rests on the floor unheld, its
@@ -293,8 +306,8 @@ export const WEAPON_SPECS: WeaponSpec[] = [
     shoulderRZ: 0.05,
     elbowR: 0.6
   }),
-  { ...W('prop.rifle', 'gun', 'shot', true, 'R', v(0, 0.07, 0.13), v(0, 0.165, -0.58), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.12, -0.17)), stock: v(0, 0.14, 0.46) },
-  { ...W('prop.shotgun', 'gun', 'shot', true, 'R', v(0, 0.075, 0.14), v(0, 0.165, -0.6), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.115, -0.18)), stock: v(0, 0.142, 0.455) },
+  { ...W('prop.rifle', 'gun', 'shot', true, 'R', v(0, 0.07, 0.13), v(0, 0.165, -0.58), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.12, -0.17)), stock: v(0, 0.14, 0.46), carry: LONG_GUN_CARRY },
+  { ...W('prop.shotgun', 'gun', 'shot', true, 'R', v(0, 0.075, 0.14), v(0, 0.165, -0.6), FWD, LEVEL_HOLD, LONG_GUN_IDLE, v(0, 0.115, -0.18)), stock: v(0, 0.142, 0.455), carry: LONG_GUN_CARRY },
   // Bow ready at the waist: forearm level, limbs upright, arrow forward.
   W('prop.bow', 'bow', 'shot', true, 'L', v(0, 0.75, 0), v(0, 0.78, -0.03), FWD, LEVEL_HOLD, {
     shoulderRX: 0.05,
@@ -364,11 +377,53 @@ const perp = (a: V3, axis: V3): V3 => sub(a, scale(axis, dotv(a, axis)))
  *
  * Shoulder mount (fork): the gun stays upright (world up leads, the thumb
  * breaks ties) and turns about its grip so the stock points at the shoulder:
- * the barrel tilts up from the shoulder→grip line by the stock's rise.
+ * the barrel tilts up from the shoulder→grip line by the stock's rise. With
+ * the torso's axes, a gun with a `carry` turns to it as the hand drops to
+ * the hip (`carryWeight`); an aim or a chest-high ready keeps the stock rule.
  */
-export function weaponRotation(spec: WeaponSpec, side: Hand, frame: { hand: V3; handRot: M3; shoulder: V3 }): M3 {
+export function weaponRotation(spec: WeaponSpec, side: Hand, frame: { hand: V3; handRot: M3; shoulder: V3; torso?: M3 }): M3 {
   const rigid = mul(frame.handRot, holdTransform(spec, side, 1).r)
   if (spec.mount === 'hand') return rigid
+  const s = shoulderAxes(spec, frame, rigid)
+  const k = spec.carry && frame.torso ? carryWeight(frame) : 0
+  if (k <= 0) return columns(s.up, scale(s.dir, -1))
+  const c = carryAxes(spec.carry!, side, frame.torso!)
+  const dir = unit(add(scale(s.dir, 1 - k), scale(c.dir, k)))
+  const up = unit(perp(add(scale(s.up, 1 - k), scale(c.up, k)), dir))
+  return columns(up, scale(dir, -1))
+}
+
+/** The shoulder→grip line this far below level (rad) still shoulders a long gun; this far, it's carried. */
+const CARRY_FROM = (45 * Math.PI) / 180
+const CARRY_AT = (60 * Math.PI) / 180
+
+/**
+ * How far a long gun is carried (0 shouldered, 1 the rest carry), from how
+ * far the shoulder→grip line drops below level. A body with no level forward
+ * (lying down) shoulders it.
+ */
+function carryWeight(frame: { hand: V3; shoulder: V3; torso?: M3 }): number {
+  if (!frame.torso) return 0
+  const d = sub(frame.hand, frame.shoulder)
+  const drop = Math.atan2(-d.y, Math.hypot(d.x, d.z))
+  const level = Math.hypot(frame.torso[2], frame.torso[8])
+  const u = clamp((drop - CARRY_FROM) / (CARRY_AT - CARRY_FROM), 0, 1) * clamp((level - 0.3) / 0.3, 0, 1)
+  return u * u * (3 - 2 * u)
+}
+
+/** The carry's barrel and top directions: off the torso's level forward, upright. */
+function carryAxes(carry: { down: number; across: number }, side: Hand, torso: M3): { dir: V3; up: V3 } {
+  const fwd = unit(v(-torso[2], 0, -torso[8]))
+  const offSide = scale(v(-fwd.z, 0, fwd.x), side === 'R' ? -1 : 1)
+  const level = add(scale(fwd, Math.cos(carry.across)), scale(offSide, Math.sin(carry.across)))
+  return {
+    dir: add(scale(level, Math.cos(carry.down)), v(0, -Math.sin(carry.down), 0)),
+    up: add(scale(level, Math.sin(carry.down)), v(0, Math.cos(carry.down), 0))
+  }
+}
+
+/** The stock rule's barrel and top directions (see `weaponRotation`). */
+function shoulderAxes(spec: WeaponSpec, frame: { hand: V3; handRot: M3; shoulder: V3 }, rigid: M3): { dir: V3; up: V3 } {
   const rigidBarrel = apply(rigid, spec.aim)
   const d = sub(frame.hand, frame.shoulder)
   const n = len(d)
@@ -383,7 +438,7 @@ export function weaponRotation(spec: WeaponSpec, side: Hand, frame: { hand: V3; 
   const rise = spec.stock ? Math.atan2(spec.stock.y - spec.grip.y, spec.stock.z - spec.grip.z) : 0
   const dir = add(scale(line, Math.cos(rise)), scale(up0, Math.sin(rise)))
   const up = add(scale(line, -Math.sin(rise)), scale(up0, Math.cos(rise)))
-  return columns(up, scale(dir, -1))
+  return { dir, up }
 }
 
 /** A weapon model point held in `hand`, entity-local to the holder (unscaled by the holder). */
@@ -396,7 +451,7 @@ export function heldPointLocal(
   weaponScale: number
 ): V3 {
   const f = handFrame(dims, joints, hand)
-  const r = weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder })
+  const r = weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder, torso: f.torso })
   return add(f.p, apply(r, scale(sub(modelPoint, spec.grip), weaponScale)))
 }
 
@@ -408,7 +463,7 @@ export function aimDirectionLocal(
   spec: WeaponSpec
 ): V3 {
   const f = handFrame(dims, joints, hand)
-  return unit(apply(weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder }), spec.aim))
+  return unit(apply(weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder, torso: f.torso }), spec.aim))
 }
 
 /** The idle hold pose for the holding arm. */
@@ -654,6 +709,10 @@ export function holdJoints(
     const h = hands[hand]
     if (h?.spec.mount !== 'shoulder' || isReference(dims)) continue
     const base = sumJoints(out, fixed)
+    // The retarget matches the man's shouldered gun; a carry is the same on every body already.
+    const bf = handFrame(dims, base, hand)
+    const shouldered = 1 - (h.spec.carry ? carryWeight({ hand: bf.p, shoulder: bf.shoulder, torso: bf.torso }) : 0)
+    if (shouldered <= 0) continue
     let fix = longGunRetarget(dims, base, hand, h.spec, 0)
     // An arm too short for the fore-end even slid back (a child): pull the gun back along the shoulder line until it reaches.
     let pull = 0
@@ -663,7 +722,7 @@ export function holdJoints(
       pull += short
       fix = longGunRetarget(dims, base, hand, h.spec, pull)
     }
-    for (const [k, val] of Object.entries(fix)) out[k] = (out[k] ?? 0) + val
+    for (const [k, val] of Object.entries(fix)) out[k] = (out[k] ?? 0) + val * shouldered
     touched = true
   }
   for (const hand of ['R', 'L'] as Hand[]) {

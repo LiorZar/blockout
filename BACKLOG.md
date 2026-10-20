@@ -9,8 +9,7 @@
 - ~~Motion data: `sword-slash-combo` says "two-handed grip" but the hands are 0.67–0.8 m apart.~~ DONE (fights play the fork `sword-slash-two-hand`)
 - ~~Motion data: `shield-brace` / `shield-block` hold both forearms vertical (there is no shoulder-twist channel), so a strapped shield faces forward only with a forearm-vertical hold.~~ DONE (fork `shield-block-face` / `shield-brace-face`; fights block with the shield blocks)
 - Upstream classic people render 0.14·s taller than their catalog height (man 1.78 → 1.92 m) because of fixed pelvis/neck offsets in `buildPerson`; the mannequins absorb those offsets and match their catalog height.
-- `README.md:199` has a stray `>>>>>>> Stashed changes` merge marker.
-- `tests/e2e/control-tools.spec.ts` reads the discovery file from `~/.config/blockout`, which is wrong on Windows (use `resolveConfigPath` + `BLOCKOUT_CONFIG_DIR`).
+- ~~`tests/e2e/control-tools.spec.ts` reads the discovery file from `~/.config/blockout`, which is wrong on Windows (use `resolveConfigPath` + `BLOCKOUT_CONFIG_DIR`).~~ DONE (Lior's ruling: fix the one line; private `BLOCKOUT_CONFIG_DIR`)
 - ~~`stills/*_topdown.png` leaks the gizmo into the export.~~ DONE (fixed in 4899552: gizmo, selection boxes and tint hidden in renderTopDown)
 - The default "day" lighting renders a flat grey void behind the action.
 - Fight rest steps and step-ins: the walk cycle plays under the guard joints, so the legs float 5–6 cm for a few frames (`animatePerson` grounds the walk before the joint overrides; found by fix-fight-geom, 2026-10-19).

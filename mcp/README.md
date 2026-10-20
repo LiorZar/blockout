@@ -130,28 +130,28 @@ when Blockout's tools aren't available (for example, port 17480 is taken).
 
 ## Tools
 
-33 tools. Coordinates are in **meters**: `+X` right, `−Z` forward/away from the default camera; **heading 0 faces −Z**; `rotationDeg` / `panDeg` turn counter-clockwise seen from above (90 faces −X); `tiltDeg` is positive up. Focal lengths are mm on Super 35 (24 wide, 35 normal, 50–85 tight).
+62 tools, listed in [`tools.json`](tools.json), the one catalog both transports serve (`tests/unit/mcp-catalog.test.ts` keeps it in step with the app). Coordinates are in **meters**: `+X` right, `−Z` forward/away from the default camera; **heading 0 faces −Z**; `rotationDeg` / `panDeg` turn counter-clockwise seen from above (90 faces −X); `tiltDeg` is positive up. Focal lengths are mm on Super 35 (24 wide, 35 normal, 50–85 tight).
 
 | Tool | Params | Does |
 |---|---|---|
-| `get_state` | — | **Call first.** Project / scene / active-shot summary: placed entities (id, asset, label, position) and the actor + camera marks on the timeline. |
+| `get_state` | — | **Call first.** Project / scene / active-shot summary: placed entities (id, asset, label, colour, position, held weapons) and the actor + camera marks on the timeline (camera marks with their ids and any `shot` words), the rig, and `allScenes`. |
 | `list_assets` | `category?` | The placeable asset catalog (people, animals, vehicles, furniture, environment kits, primitives). Filter by category. |
-| `add_entity` | `assetId, x, z, label?, rotationDeg?` | Place an entity on the ground. Returns the new id. |
+| `add_entity` | `assetId, x, z, label?, rotationDeg?, color?` | Place an entity on the ground. A labelled entity gets its own colour automatically (or `color`: a name or hex). Returns the new id and colour. |
 | `move_entity` | `entityId, x, z, y?, rotationDeg?` | Reposition an entity; omitted fields unchanged. |
-| `delete_entity` | `entityId` | Remove an entity. |
+| `delete_entity` | `entityId, name?` | Remove an entity with its marks; weapons it held are set down. `name` ("the spear") is shown on Clara's approval card. |
 | `add_actor_mark` | `entityId, x, z, time, gait?` | Drop a timeline mark: at `time` the actor is at `x,z`. Chain marks to choreograph a walk. `gait`: walk / jog / run / stand. |
 | `add_camera_mark` | `x, y, z, panDeg, tiltDeg, time, focalLength?` | Drop a camera mark: camera at `x,y,z` looking `panDeg`/`tiltDeg` at `time`. |
 | `clear_camera_marks` | — | Clear the active shot's camera marks (keeps actor marks). |
 | `set_shot` | `name?, duration?, aspect?, fps?` | Update active-shot settings; omitted fields unchanged. |
 | `new_shot` | `name?` | New shot in the scene (same blocking, fresh camera). |
-| `apply_framing` | `kind: 2S\|OTS\|REV\|TOP\|LOW\|DUTCH` | Auto-frame the camera relative to labelled subjects. |
+| `apply_framing` | `kind: 2S\|OTS\|REV\|TOP\|LOW\|DUTCH, entityIds?` | Auto-frame the camera relative to labelled subjects, or the `entityIds` you name. |
 | `list_action_presets` | — | Motion-path presets for non-character performers (plane, heli, bird, chase moves, debris…). Call before `apply_action_preset`. |
 | `apply_action_preset` | `entityId, presetId` | Lay a full motion path (with altitude) on an entity from its current pose. Replaces its marks. |
 | `list_sequence_styles` | — | Styles available per sequence type (dance styles, fight formats, chase modes). |
-| `spawn_sequence` | `type, count, style?, x?, z?, headingDeg?` | Stage a whole choreographed crowd — `dance` / `fight` / `footChase` / `carChase` — performers *and* their choreography, in one call. |
+| `spawn_sequence` | `type, count, style?, x?, z?, headingDeg?` | Stage a whole choreographed crowd — `dance` / `fight` / `footChase` / `carChase` — performers *and* their choreography, in one call. A fight of exactly two is solved by the Fight Director (blows land; returns `fightId`); for a scripted fight use `stage_fight`. |
 | `list_choreography_options` | — | The choreography vocabulary: kinds, styles per kind, formations, endings per kind. Call before `spawn_choreography` / `choreograph_entities`. |
-| `spawn_choreography` | `kind, performers, durationS?, style?, bpm?, formation?, canon?, mirror?, formationChange?, ending?, seed?, x?, z?, headingDeg?` | Stage a full routine — a dance number, a paired / one-vs-many fight, or a foot chase — spawning fresh performers *and* their per-beat blocking. |
-| `choreograph_entities` | `entityIds, kind, style?, durationS?, bpm?, formation?, canon?, mirror?, formationChange?, ending?, seed?` | Retarget existing people into a routine: keeps their assets/labels, replaces their timeline. Centers on the group. |
+| `spawn_choreography` | `kind, performers, durationS?, style?, bpm?, formation?, canon?, mirror?, formationChange?, ending?, seed?, x?, z?, headingDeg?` | Stage a full routine — a dance number, a paired / one-vs-many fight, or a foot chase — spawning fresh performers *and* their per-beat blocking. A fight of exactly two is solved by the Fight Director (blows land; returns `fightId`); for a scripted fight use `stage_fight`. |
+| `choreograph_entities` | `entityIds, kind, style?, durationS?, bpm?, formation?, canon?, mirror?, formationChange?, ending?, seed?` | Retarget existing people into a routine: keeps their assets/labels, replaces their timeline. Centers on the group. A fight of exactly two is solved by the Fight Director (blows land; returns `fightId`); for a scripted fight use `stage_fight`. |
 | `list_motion_presets` | `category?` | The single-performer motion library (fight / dance / gesture / everyday / sport / stunt) as `{ id, name, category, duration }`. |
 | `list_camera_moves` | — | The 27 classic camera-move presets (orbits, cranes, drone follows, vertigo dolly-zoom, whip pan…). Call before `apply_camera_move`. |
 | `apply_camera_move` | `presetId, entityId?` | Generate a full set of camera marks for a preset, built around a subject and riding along if it moves. Track moves enable aim-lock. Replaces camera marks. |
@@ -167,15 +167,33 @@ when Blockout's tools aren't available (for example, port 17480 is taken).
 | `set_scan_transform` | `scanId, position?, rotationDeg?, scale?, visible?, flipped?` | Position / rotate / scale / show-hide an imported scan; `flipped` rights upside-down .splat exports. Omitted fields unchanged. |
 | `remove_scan` | `scanId` | Remove an imported scan from the current scene. |
 | `set_reference` | `videoPath, handoffVersion?, mode?, opacity?` | Attach a reference clip (copied into `refs/`) as a ghost/PIP underlay. Motion Previs sends independent handoff protocol version `1`; missing version remains accepted for legacy clients. |
-| `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Frame the camera with shot words — "MCU on B, over A's right shoulder, 50mm" — or the same fields. The mark is re-solved every frame from the subjects, so the framing holds while they move. |
+| `new_scene` | `name?` | Add a scene after the last one and switch to it (one empty shot). Returns its scene and shot ids. |
+| `select_scene` / `select_shot` | `sceneId` / `shotId` | Switch scene (to its first shot) or shot; ids are in `get_state` `allScenes`. |
+| `set_lighting` | `preset, sunAzimuthDeg?, sunElevationDeg?, fog?` | One of the 9 lighting presets (`day`, `goldenHour`, `night`, `interiorWarm`, `interiorCool`, `club`, `middaySky`, `goldenHourSky`, `blueHourSky`). |
+| `set_entity_style` | `entityId, label?, color?, name?, heightScale?, build?, hideInExports?` | An entity's label, colour and name; height (0.8–1.2) and build (0.8–1.3) for people only (the result's `notes` say when a value was clamped or ignored); hide it from exports. |
+| `set_camera_rig` | `rig, intensity?` | What the camera is mounted on: `sticks`, `dolly`, `steadicam`, `handheld`, `crane`, `drone`, `carMount`; `intensity` 0–1 scales shake or drift. |
+| `list_marks` | `lane` | The marks on one lane (`camera` or an entity id), sorted by time, with their ids. |
+| `update_mark` | `lane, markId, time?, x?, y?, z?, gait?, hold?, easeIn?, easeOut?, panDeg?, tiltDeg?, rollDeg?, focalLength?, focusDistance?, release?` | Edit one mark. A camera mark framed by shot words is re-solved every frame: its pose takes edits only with `release: true`, which freezes the framing into a plain mark first. |
+| `delete_marks` | `lane, markIds` | Delete marks from one lane. |
+| `apply_motion` | `entityIds, presetId` | A motion-library move (`list_motion_presets`) on people, replacing their marks. |
+| `undo` / `redo` / `save_project` | — | History, and save now (the app also autosaves). |
+| `list_export_profiles` | — | The AI models Blockout exports for: length limits, aspects, frame rate, file and prompt caps, what to attach where. |
+| `export_shot` | `profileId?, passes?, labels?, resolution?` | Export the clean package (default `seedance-2`, clean + depth; `minimax-h3-max` for MiniMax H3 Max): reference video, depth video, stills and `prompt.txt`. Returns `packagePath`, `relativePath`, `prompt` and `warnings` (limits the shot breaks). |
+| `export_frame` | `profileId?, resolution?, labels?` | The frame at the playhead as a full-quality PNG. |
+| `export_contact_sheet` | — | One PNG of every shot's first frame in the scene, captioned. |
+| `export_scene_animatic` | `profileId?, resolution?` | Every shot of the scene exported in order and joined into one video (shots must share aspect and fps). |
+
+| `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Frame the camera with shot words — "MCU on B, over A's right shoulder, 50mm" — or the same fields. The mark is re-solved every frame from the subjects, so the framing holds while they move. Over a shoulder, that shoulder stays in frame and the subject's eyes sit on the far third; a high or low angle may back the camera off (`achievedSize` says what the frame is). |
 | `list_fight_moves` | — | Strikes a fight script can use, with aliases, default targets and impacts. |
-| `stage_fight` | `script` / `beats` / `random`, `x?, z?, headingDeg?, fighterIds?, exaggeration?, coverage?, weapons?` | Stage a scripted two-person fight blow by blow ("A jab cross to head -> block, hit"); hits land on their frame. `weapons: ["prop.sword", "prop.pistol"]` arms A and B: "A sword slash to head -> parry" lands the blade, "B shoot to body -> hit" fires along a line through the target. Returns `{ fightId, script, report }`. |
+| `stage_fight` | `script` / `beats` / `random`, `x?, z?, headingDeg?, fighterIds?, assets?, labels?, exaggeration?, coverage?, weapons?` | Stage a scripted two-person fight blow by blow ("A jab cross to head -> block, hit"); hits land on their frame. `weapons: ["prop.sword", "prop.pistol"]` arms A and B: "A sword slash to head -> parry" lands the blade, "B shoot to body -> hit" fires along a line through the target. Returns `{ fightId, script, report }`. |
 | `update_fight` | `fightId, script?, beats?, exaggeration?, coverage?` | Re-solve a staged fight. |
 | `get_fight` / `delete_fight` | `fightId` | Read a fight's script and report / forget a fight (its marks stay). |
 | `fight_coverage` | `fightId, mode, side?` | Replace the camera with fight coverage: `master`, `punch-in`, `over-shoulder` or `follow`, never crossing the fight line. |
 | `list_weapons` | — | Holdable weapons (`assetId, kind, strike, twoHanded, usualHand`) and who holds what in the scene. |
 | `hold_weapon` | `entityId, assetId` or `weaponId, hand?` | Put a weapon in a person's hand — a new one from `assetId`, or pick up `weaponId`. It follows the hand through every move; `get_state` shows `heldBy` and the weapon's position in the hand. |
 | `drop_weapon` | `weaponId` | Let go; it stands where the hand was at the playhead. |
+
+Export file names carry a date-time stamp (a repeat within one second gets `-2`), so nothing is overwritten.
 
 ---
 

@@ -1,4 +1,4 @@
-<!-- Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md. -->
+<!-- Modified for cross-platform Windows support and the fork's MCP tools in 2026; see MODIFICATIONS.md. -->
 
 <div align="center">
 
@@ -193,10 +193,10 @@ default per-user Windows install.
 Discovery and auth are automatic — the app writes a versioned localhost-only
 control descriptor to `~/.config/blockout/control.json` on macOS/Linux or
 `%APPDATA%\blockout\control.json` on Windows. The zero-dependency bridge reads
-both versioned and legacy descriptors. There are **33 tools** (from `get_state`
+both versioned and legacy descriptors. There are **62 tools** (from `get_state`
 and `add_entity` through `spawn_choreography`, `import_scan`, `apply_camera_move`,
-and `screenshot`).
->>>>>>> Stashed changes
+and `screenshot`, plus the fork's shot words, Fight Director, held weapons, scene,
+lighting, marks, history and export tools).
 
 👉 **Full setup, the complete tool table, and a worked session: [mcp/README.md](mcp/README.md).**
 

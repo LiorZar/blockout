@@ -474,12 +474,12 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
       // Neutral with tiny breathing bob.
       j.root.position.y = Math.sin(t * 1.5) * 0.005
       if (input.gait === 'gesture') {
-        // One forearm raised, gently waving. Fork fix: a positive X rotation
-        // swings a hanging limb forward on a body facing −Z (the arm used to
-        // rise behind the head and the elbow to hyperextend).
-        j.shoulderR.rotation.x = 2.3
-        j.elbowR.rotation.z = Math.sin(t * 2) * 0.3
-        j.elbowR.rotation.x = 0.4
+        // Fork fix: a talking gesture, not a hail (the hand used to rise over
+        // the head). The upper arm a little forward and turned in, the
+        // forearm forward with the hand in front of the chest, beating gently;
+        // a stoop (baseLean) raises the arm as much, so the hand stays up.
+        j.shoulderR.rotation.set(0.35 - j.baseLean + Math.sin(t * 2.2 + 0.6) * 0.03, 0.45 + Math.sin(t * 1.3) * 0.08, 0.12)
+        j.elbowR.rotation.x = 1.7 + Math.sin(t * 2.2) * 0.09
       }
       break
     }
