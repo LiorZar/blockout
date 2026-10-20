@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -40,6 +40,8 @@ import { heldWeaponMatrix, steadyArm } from './hold'
 import { canHoldWeapons, weaponSpec } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
 import { StageEnvironment, toneMapSky } from './environment'
+import { isMocapAsset } from '@engine/mocap/registry'
+import { loadMocapLibrary, onMocapLoaded } from '../mocap/library'
 
 const RAD2DEG = 180 / Math.PI
 
@@ -136,10 +138,16 @@ export class SceneManager {
    */
   private depthMaterial = new THREE.ShaderMaterial({
     uniforms: { uNear: { value: 0.5 }, uFar: { value: 30 } },
+    // Fork: the skinning chunks pose a mocap bot (they compile away for other meshes).
     vertexShader: `
+      #include <common>
+      #include <skinning_pars_vertex>
       varying float vViewZ;
       void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        #include <skinbase_vertex>
+        #include <begin_vertex>
+        #include <skinning_vertex>
+        vec4 mv = modelViewMatrix * vec4(transformed, 1.0);
         vViewZ = -mv.z;
         gl_Position = projectionMatrix * mv;
       }`,
@@ -323,6 +331,10 @@ export class SceneManager {
         }
       })
     )
+
+    // Fork: the local mocap library; bot placeholders become bots once it loads.
+    this.unsubscribers.push(onMocapLoaded(() => this.swapMocapVisuals()))
+    void loadMocapLibrary()
 
     // Bus commands
     this.unsubscribers.push(on('frameSubject', ({ size }) => this.autoFrame(size)))
@@ -582,6 +594,17 @@ export class SceneManager {
     if (entity.assetId.startsWith('custom.') && entity.sourceFile) {
       void this.loadCustomModel(visual)
     }
+  }
+
+  /** Fork: rebuild mocap bot visuals (their studio-mannequin placeholders) once the library has loaded. */
+  private swapMocapVisuals(): void {
+    if (this.disposed) return
+    for (const [id, visual] of this.visuals) {
+      if (!isMocapAsset(visual.entity.assetId)) continue
+      this.removeEntityVisual(visual)
+      this.visuals.delete(id)
+    }
+    this.syncFromStore()
   }
 
   private async loadCustomModel(visual: EntityVisual): Promise<void> {

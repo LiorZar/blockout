@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons) in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -9,6 +9,8 @@
 
 import { useStore, currentProjectJson, refightShot, releaseHeldBy, solveInScene } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
+import { isMocapAsset } from '@engine/mocap/registry'
+import { assetListed } from '../mocap/library'
 import { createActorMark, createCameraMark } from '@engine/schema'
 import { newId } from '@engine/ids'
 import { nextLabelColor, resolveColor, LABEL_COLOR_NAMES } from '@engine/palette'
@@ -67,6 +69,9 @@ const LIGHTING_PRESETS: LightingPresetId[] = [
   'goldenHourSky',
   'blueHourSky'
 ]
+/** Fork: a mocap bot asked for without the local Mixamo library (or before it has loaded). */
+const MOCAP_MISSING = "is a Mixamo mocap bot: it needs the local Mixamo library (<config dir>/mixamo), which isn't installed or hasn't loaded — call list_assets for the bodies on offer."
+
 const COLOR_HINT = `a name (${Object.keys(LABEL_COLOR_NAMES).join(', ')}) or a hex value like #e5484d`
 
 function requireManager(): NonNullable<ReturnType<typeof getSceneManager>> {
@@ -221,6 +226,7 @@ function fightCast(params: Params): { assets?: [string, string]; labels?: [strin
     if (typeof v !== 'string' || !v.startsWith('person.') || !ASSET_CATALOG.some((a) => a.id === v)) {
       throw new Error(`stage_fight: assets[${q}] "${String(v)}" isn't a person — call list_assets with category people.`)
     }
+    if (!assetListed(v)) throw new Error(`stage_fight: assets[${q}] "${v}" ${MOCAP_MISSING}`)
     return v
   })
   const labels = pair('labels', (v, q) => {
@@ -487,7 +493,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
 
     case 'list_assets': {
       const cat = str(params, 'category')
-      return ASSET_CATALOG.filter((a) => !cat || a.category === cat).map((a) => ({
+      return ASSET_CATALOG.filter((a) => (!cat || a.category === cat) && assetListed(a.id)).map((a) => ({
         id: a.id,
         name: a.name,
         category: a.category
@@ -500,6 +506,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (!ASSET_CATALOG.some((a) => a.id === assetId)) {
         throw new Error(`Unknown assetId "${assetId}" — call list_assets for valid ids.`)
       }
+      if (isMocapAsset(assetId) && !assetListed(assetId)) throw new Error(`add_entity: "${assetId}" ${MOCAP_MISSING}`)
       const rawColor = str(params, 'color')
       const color = rawColor === undefined ? undefined : resolveColor(rawColor)
       if (color === null) throw new Error(`add_entity: unknown color "${rawColor}". Use ${COLOR_HINT}.`)

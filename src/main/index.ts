@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support, the fork's HTTP MCP server, Clara and the export file-size cap in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's HTTP MCP server, Clara, the export file-size cap and the mocap library in 2026; see MODIFICATIONS.md.
 /**
  * Electron main process: window lifecycle, project folder I/O, ffmpeg
  * export orchestration. All filesystem access lives here; the renderer
@@ -10,6 +10,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { mkdir, readFile, writeFile, copyFile, stat, rm } from 'fs/promises'
 import { join, dirname, basename, extname, resolve, sep } from 'path'
 import { registerPresetsIpc } from './presets'
+import { registerMocapIpc } from './mocap'
 import { startControlServer } from './control'
 import { createMcpHttpServer, resolveMcpPort, type McpHttpServer, type McpHttpStatus, type McpToolDef } from './mcp-http'
 import MCP_TOOLS from '../../mcp/tools.json'
@@ -104,6 +105,7 @@ app.whenReady().then(() => {
   if (process.platform === 'win32') app.setAppUserModelId(DISTRIBUTION.appId)
   createWindow()
   registerPresetsIpc()
+  registerMocapIpc()
   void startAgentServers()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

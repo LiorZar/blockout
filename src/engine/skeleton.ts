@@ -9,10 +9,17 @@
  * breathing bob) to give exact hand / foot / head positions in the entity's
  * local frame: origin at the ground, facing −Z, +X = the person's right.
  *
+ * `poseFrames` / `poseEffectors` are the body call for every person: a
+ * mocap bot (`dims.mocap`, see `mocap/`) branches off first, so the
+ * procedural bodies evaluate exactly as before.
+ *
  * PURE: no DOM / three.js / Electron.
  */
 
 import { assetSpec } from './assets'
+import { mocapEffectors, mocapFrames, type MocapDims } from './mocap/fk'
+import { mocapDims, mocapStandIn } from './mocap/registry'
+import type { MocapFrame } from './mocap/rig'
 import type { V3 } from './types'
 
 export interface PersonDims {
@@ -32,6 +39,8 @@ export interface PersonDims {
   lowerLegLen: number
   /** Rest torso pitch (rotation.x); negative stoops forward. */
   baseLean: number
+  /** A mocap bot (fork, mocap/): its fitted rig; `poseFrames` / `poseEffectors` pose it. */
+  mocap?: MocapDims
 }
 
 export type Effector =
@@ -69,6 +78,9 @@ const MANNEQUIN_WIDTHS: Record<string, { bodyW: number; shoulderX: number; hipX:
 
 /** Mannequin proportions for a person asset (height ×0.8..1.2, build ×0.8..1.3). */
 export function personDims(assetId: string, params?: Record<string, number | string>): PersonDims {
+  const bot = mocapDims(assetId, params)
+  if (bot) return bot
+  assetId = mocapStandIn(assetId)
   const spec = assetSpec(assetId)
   const hMul = clamp(numParam(params, 'height', 1), 0.8, 1.2)
   const buildMul = clamp(numParam(params, 'build', 1), 0.8, 1.3)
@@ -187,6 +199,12 @@ const v = (x: number, y: number, z: number): V3 => ({ x, y, z })
 
 export type Bone = 'pelvis' | 'torso' | 'head' | 'shoulderL' | 'shoulderR' | 'elbowL' | 'elbowR' | 'hipL' | 'hipR' | 'kneeL' | 'kneeR'
 
+/** The rig's frames; a mocap bot adds its lower spine and neck (fork). */
+export type PoseFrames = Record<Bone, Frame> & Partial<Record<MocapFrame, Frame>>
+
+/** A frame a surface proxy point rides. */
+export type ProxyBone = Bone | MocapFrame
+
 /**
  * The rig's bone frames for a pose (fork): the hierarchy and joint mapping
  * of `animatePerson`'s stand gait (the motions.ts conventions on a −Z-facing
@@ -199,7 +217,8 @@ export type Bone = 'pelvis' | 'torso' | 'head' | 'shoulderL' | 'shoulderR' | 'el
  * `rootZ` roll (positive to the right) turn the whole body about the pelvis
  * joint (the pelvis frame's Euler XYZ: −rootX, rootY, −rootZ).
  */
-export function poseFrames(dims: PersonDims, joints: Record<string, number> | undefined): Record<Bone, Frame> {
+export function poseFrames(dims: PersonDims, joints: Record<string, number> | undefined): PoseFrames {
+  if (dims.mocap) return mocapFrames(dims.mocap, joints)
   const j = (k: string): number => joints?.[k] ?? 0
   const root: Frame = { p: v(0, 0, 0), r: IDENTITY }
   const pelvis = child(root, v(0, dims.legLen, 0), euler(-j('rootX'), j('rootY'), -j('rootZ')))
@@ -221,6 +240,7 @@ export function poseFrames(dims: PersonDims, joints: Record<string, number> | un
  * from `poseFrames`.
  */
 export function poseEffectors(dims: PersonDims, joints: Record<string, number> | undefined): Record<Effector, V3> {
+  if (dims.mocap) return mocapEffectors(dims.mocap, joints)
   const { pelvis, torso, head, shoulderL, shoulderR, elbowL, elbowR, kneeL, kneeR } = poseFrames(dims, joints)
   const toe = v(0, -dims.lowerLegLen + 0.03 * dims.s, -0.16 * dims.s)
   return {

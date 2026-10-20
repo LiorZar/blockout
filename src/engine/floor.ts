@@ -5,7 +5,8 @@
  * bones of `poseFrames` (skeleton.ts). The classic people are capsules and
  * boxes (renderer `buildPerson`), so their proxy is exact up to tessellation;
  * the studio mannequins' points are rings sampled from their section tables
- * (renderer `mannequin-mesh.ts`). `lowestY` is the lowest surface point of a
+ * (renderer `mannequin-mesh.ts`); a mocap bot's are the support points
+ * fitted from its skinned mesh (`mocap/rig.ts`). `lowestY` is the lowest surface point of a
  * posed body, entity-local (root at the origin): the stand gait plus joint
  * offsets, with an optional root pitch for the lying gaits.
  * `tests/unit/floor.test.ts` checks it against the rendered meshes.
@@ -15,11 +16,12 @@
  * PURE: no DOM / three.js / Electron.
  */
 
-import { personDims, poseFrames, type Bone, type PersonDims } from './skeleton'
+import { isMocapAsset, mocapStandIn, mocapVersion } from './mocap/registry'
+import { personDims, poseFrames, type Bone, type PersonDims, type ProxyBone } from './skeleton'
 
 /** A ball (r > 0) or a surface point (r = 0) in a bone's frame. */
 interface Ball {
-  bone: Bone
+  bone: ProxyBone
   x: number
   y: number
   z: number
@@ -199,9 +201,15 @@ function mannequinShape(d: PersonDims, female: boolean, build: number): Ball[] {
 /** The surface proxy of a person asset (height / build params as `personDims`). */
 export function bodyShape(assetId: string, params?: Record<string, number | string>): BodyShape {
   const dims = personDims(assetId, params)
+  // Fork: a mocap bot's support points (mocap/rig.ts), scaled by its height.
+  if (dims.mocap) {
+    const k = dims.mocap.k
+    return { dims, balls: dims.mocap.rig.points.map((q) => ({ bone: q.frame, x: q.p.x * k, y: q.p.y * k, z: q.p.z * k, r: 0 })) }
+  }
+  const id = mocapStandIn(assetId)
   const build = Math.min(1.3, Math.max(0.8, numParam(params, 'build', 1)))
-  const mannequin = assetId === 'person.mannequinMale' || assetId === 'person.mannequinFemale'
-  return { dims, balls: mannequin ? mannequinShape(dims, assetId === 'person.mannequinFemale', build) : classicShape(dims, build) }
+  const mannequin = id === 'person.mannequinMale' || id === 'person.mannequinFemale'
+  return { dims, balls: mannequin ? mannequinShape(dims, id === 'person.mannequinFemale', build) : classicShape(dims, build) }
 }
 
 /**
@@ -216,7 +224,7 @@ export function lowestY(shape: BodyShape, joints: Record<string, number> | undef
   let low = Infinity
   for (const b of shape.balls) {
     // framePoint's y and z, inline (the hot loop of every grounding).
-    const { p, r } = frames[b.bone]
+    const { p, r } = frames[b.bone]!
     const py = p.y + r[3] * b.x + r[4] * b.y + r[5] * b.z
     const pz = p.z + r[6] * b.x + r[7] * b.y + r[8] * b.z
     const y = py * c - pz * s - b.r
@@ -230,7 +238,7 @@ const SHAPES = new Map<string, BodyShape>()
 /** Lowest surface point of a performer's posed body, in meters above its root (scaled). */
 export function bodyLowY(body: Body | undefined, joints: Record<string, number> | undefined): number {
   const assetId = body?.assetId.startsWith('person.') ? body.assetId : 'person.man'
-  const key = `${assetId}|${numParam(body?.params, 'height', 1)}|${numParam(body?.params, 'build', 1)}`
+  const key = `${assetId}|${numParam(body?.params, 'height', 1)}|${numParam(body?.params, 'build', 1)}${isMocapAsset(assetId) ? `|${mocapVersion()}` : ''}`
   let shape = SHAPES.get(key)
   if (!shape) {
     shape = bodyShape(assetId, body?.params)

@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis; see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -15,6 +15,8 @@ import { assetSpec } from '@engine/assets'
 import { personDims, type PersonDims } from '@engine/skeleton'
 import { bodyShape, lowestY, type BodyShape } from '@engine/floor'
 import { GAITS } from '@engine/gaits'
+import { isMocapAsset, MOCAP_STAND_IN } from '@engine/mocap/registry'
+import { buildMocapPerson } from '../mocap/body'
 import { dressMannequin } from './mannequin-mesh'
 import { buildWeapon, isWeaponModel, onFloor } from './weapon-builders'
 
@@ -162,7 +164,7 @@ function numParam(params: Record<string, number | string> | undefined, key: stri
 // PERSON — articulated capsule mannequin
 // ---------------------------------------------------------------------------
 
-interface PersonJoints {
+export interface PersonJoints {
   root: THREE.Group // child of group; we tip THIS for lie/fall, not the group
   pelvis: THREE.Group // fork: turned by the motion root channels (rootX / rootY / rootZ)
   torso: THREE.Group
@@ -6315,6 +6317,8 @@ function buildFallback(assetId: string): BuiltAsset {
 // ---------------------------------------------------------------------------
 
 export function buildAsset(assetId: string, params?: Record<string, number | string>): BuiltAsset {
+  // Fork: a mocap bot once the library has loaded (renderer/mocap), else its studio mannequin.
+  if (isMocapAsset(assetId)) return buildMocapPerson(assetId, params, animatePerson) ?? buildMannequin(MOCAP_STAND_IN[assetId]!, params)
   if (assetId.startsWith('person.mannequin')) return buildMannequin(assetId, params)
   if (assetId.startsWith('person.')) return buildPerson(assetId, params)
   if (assetId === 'animal.bird') return buildBird(assetId)

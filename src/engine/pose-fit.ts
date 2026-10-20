@@ -15,6 +15,7 @@
  */
 
 import { bodyShape, type Body, type BodyShape } from './floor'
+import { isMocapAsset, mocapVersion } from './mocap/registry'
 import { framePoint, poseFrames } from './skeleton'
 
 /** Proxy points by body region; the L / R groups are one side's. */
@@ -54,7 +55,7 @@ const FITTED = new Map<string, Fitted>()
 /** A body's proxy with its points sorted into contact groups (cached per asset, height, build). */
 function fittedShape(body: Body | undefined): Fitted {
   const assetId = body?.assetId.startsWith('person.') ? body.assetId : 'person.man'
-  const key = `${assetId}|${numParam(body?.params, 'height', 1)}|${numParam(body?.params, 'build', 1)}`
+  const key = `${assetId}|${numParam(body?.params, 'height', 1)}|${numParam(body?.params, 'build', 1)}${isMocapAsset(assetId) ? `|${mocapVersion()}` : ''}`
   let f = FITTED.get(key)
   if (f) return f
   const shape = bodyShape(assetId, body?.params)
@@ -62,7 +63,8 @@ function fittedShape(body: Body | undefined): Fitted {
   const groups: Record<ContactGroup, number[]> = { hands: [], feet: [], knees: [], torso: [], kneeL: [], kneeR: [], footL: [], footR: [] }
   shape.balls.forEach((b, i) => {
     if ((b.bone === 'elbowL' || b.bone === 'elbowR') && b.y < -0.6 * d.lowerArmLen) groups.hands.push(i)
-    if (b.bone === 'torso' || b.bone === 'pelvis') groups.torso.push(i)
+    // Fork: a mocap bot's lower spine bends on its own frames.
+    if (b.bone === 'torso' || b.bone === 'pelvis' || b.bone === 'spine' || b.bone === 'spine1') groups.torso.push(i)
     const side = b.bone.endsWith('L') ? 'L' : 'R'
     const foot = (b.bone === 'kneeL' || b.bone === 'kneeR') && b.y < -0.75 * d.lowerLegLen
     const knee =
@@ -86,7 +88,7 @@ function fittedShape(body: Body | undefined): Fitted {
 export function groupLows(body: Body | undefined, joints: Joints | undefined): Record<ContactGroup, number> {
   const { shape, groups } = fittedShape(body)
   const frames = poseFrames(shape.dims, joints)
-  const ys = shape.balls.map((b) => framePoint(frames[b.bone], b).y - b.r)
+  const ys = shape.balls.map((b) => framePoint(frames[b.bone]!, b).y - b.r)
   const out = {} as Record<ContactGroup, number>
   for (const g of Object.keys(groups) as ContactGroup[]) out[g] = Math.min(...groups[g].map((i) => ys[i]!))
   return out

@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director (kept across remounts); mannequin thumbs; Weapons group; Sequences fight hint; see MODIFICATIONS.md.
+// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director (kept across remounts); mannequin thumbs; Weapons group; Sequences fight hint; mocap bots and Choreographer bodies; see MODIFICATIONS.md.
 /**
  * Stage-mode asset palette. Browse the built-in catalog grouped by category,
  * filter by name, and arm click-to-place (the Viewport does the drop).
@@ -20,6 +20,7 @@ import {
 import { useStore } from '../store'
 import { populateFromReference } from '../ai/populate'
 import { FightDirector } from './FightDirector'
+import { assetListed, bodySets, useMocapLoaded, type BodySetId } from '../mocap/library'
 
 interface PresetInfo {
   id: string
@@ -241,6 +242,11 @@ function Choreographer(): JSX.Element {
   const [formationChange, setFormationChange] = useState(false)
   const [ending, setEnding] = useState('finish')
   const [seed, setSeed] = useState(randomSeed)
+  // Fork: the bodies a routine casts; Mocap by default once the library has loaded (until picked).
+  const mocapLoaded = useMocapLoaded()
+  const { sets: bodyChoices, preferred } = bodySets(mocapLoaded)
+  const [pickedBodies, setBodies] = useState<BodySetId | null>(null)
+  const bodies = pickedBodies && bodyChoices.some((b) => b.id === pickedBodies) ? pickedBodies : preferred
 
   const placing = useStore((s) => s.placingChoreography)
   const setPlacing = useStore((s) => s.setPlacingChoreography)
@@ -264,7 +270,8 @@ function Choreographer(): JSX.Element {
     canon,
     mirror,
     formationChange,
-    ending: activeEnding
+    ending: activeEnding,
+    ...(bodyChoices.find((b) => b.id === bodies)?.assets ? { bodies: bodyChoices.find((b) => b.id === bodies)!.assets } : {})
   })
 
   const selCount =
@@ -424,6 +431,20 @@ function Choreographer(): JSX.Element {
         </div>
       )}
       <div className="field">
+        <label>Bodies</label>
+        <select
+          value={bodies}
+          title="Who Spawn routine casts: the classic capsule people, the sculpted mannequins or the Mixamo mocap bots (men and women alternate). Apply to selection keeps their bodies."
+          onChange={(e) => setBodies(e.target.value as BodySetId)}
+        >
+          {bodyChoices.map((b) => (
+            <option key={b.id} value={b.id}>
+              {b.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="field">
         <label>Seed</label>
         <div className="field-row" style={{ gap: 6 }}>
           <input
@@ -469,6 +490,8 @@ const THUMBS: Record<string, string> = {
   'person.elderly': '🧓',
   'person.mannequinMale': '🧍‍♂️',
   'person.mannequinFemale': '🧍‍♀️',
+  'person.mocapMale': '🤖',
+  'person.mocapFemale': '🤖',
   // Animals
   'animal.dog': '🐕',
   'animal.cat': '🐈',
@@ -720,6 +743,7 @@ export function Library(): JSX.Element {
   const projectFolder = useStore((s) => s.projectFolder)
   const importScan = useStore((s) => s.importScan)
   const toast = useStore((s) => s.toast)
+  const mocapLoaded = useMocapLoaded()
 
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -732,9 +756,10 @@ export function Library(): JSX.Element {
     ).map(({ key, title }) => ({
       key,
       title,
-      items: ASSET_CATALOG.filter((a) => a.category === key && matches(a))
+      items: ASSET_CATALOG.filter((a) => a.category === key && matches(a) && assetListed(a.id))
     })).filter((g) => g.items.length > 0)
-  }, [query, categoryFilter])
+    // mocapLoaded: the bots appear once the library has loaded.
+  }, [query, categoryFilter, mocapLoaded])
 
   const toggleCollapsed = (key: EntityCategory): void =>
     setCollapsed((c) => ({ ...c, [key]: !c[key] }))
@@ -817,7 +842,7 @@ export function Library(): JSX.Element {
             <option value="">Place from list…</option>
             {CATEGORY_ORDER.map((c) => (
               <optgroup key={c.key} label={c.title}>
-                {ASSET_CATALOG.filter((a) => a.category === c.key).map((a) => (
+                {ASSET_CATALOG.filter((a) => a.category === c.key && assetListed(a.id)).map((a) => (
                   <option key={a.id} value={a.id}>
                     {thumbFor(a.id)} {a.name}
                   </option>

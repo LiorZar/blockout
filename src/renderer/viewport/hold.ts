@@ -6,7 +6,9 @@
  * and, for shouldered long guns, the same side's shoulder group and the
  * torso (a gun's carry at rest is set off it). It uses the
  * engine's grip math (src/engine/weapons.ts), so the rendered weapon and the
- * engine's tip agree exactly. The rig's world matrices must be current.
+ * engine's tip agree exactly. The rig's world matrices must be current. A
+ * mocap bot carries the same named frames, set from its FK every frame
+ * (renderer/mocap/body.ts), the palm at `(0, −lowerArmLen, 0)`.
  */
 
 import * as THREE from 'three'
@@ -68,6 +70,9 @@ export function heldWeaponMatrix(
  * channels), so a carried rifle doesn't swing out of the support hand.
  */
 export function steadyArm(person: THREE.Object3D, side: Hand, overrides: Record<string, number> | undefined): void {
+  // Fork: a mocap bot steadies its hidden rig and re-poses its bones (renderer/mocap/body.ts).
+  const bot = person.userData.mocapSteady as ((side: Hand, overrides: Record<string, number> | undefined) => void) | undefined
+  if (bot) return bot(side, overrides)
   const shoulder = person.getObjectByName(side === 'L' ? 'shoulderL' : 'shoulderR')
   const elbow = person.getObjectByName(side === 'L' ? 'elbowL' : 'elbowR')
   if (!shoulder || !elbow) return

@@ -120,6 +120,13 @@ describe('crowds', () => {
     scene.entities.push(createEntity('person.mannequinFemale', 'Mannequin', { x: 0, y: 0, z: 0 }))
     expect(describeShot(scene, shot).proxies).toEqual(['The light grey mannequin is a woman.'])
   })
+
+  it('reads the mocap bots as light grey mannequins too, labelled or not', () => {
+    const { scene, shot } = fixture()
+    scene.entities.push(createEntity('person.mocapMale', 'Bot', { x: 0, y: 0, z: 0 }))
+    person(scene, 'person.mocapFemale', 'B', '#a855f7', 1, 0)
+    expect(describeShot(scene, shot).proxies).toEqual(['The light grey mannequin is a man.', 'The purple mannequin (B) is a woman.'])
+  })
 })
 
 describe('action', () => {

@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support, the fork's per-profile file-size cap and local-time export stamps in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's per-profile file-size cap, local-time export stamps and waiting for the mocap library in 2026; see MODIFICATIONS.md.
 /**
  * The Deliver pipeline. Exports are deterministic: the timeline is stepped
  * at exactly the shot's fps and every frame is rendered from the same
@@ -15,8 +15,10 @@ import { ShotEvaluator } from '@engine/evaluate'
 import type { ProjectDoc, Scene, Shot } from '@engine/types'
 import { useStore } from '../store'
 import { getSceneManager, type SceneManager } from './scene-access'
+import type { RenderPass } from '../viewport/SceneManager'
 import { buildComfyWorkflow } from './comfy'
 import { exportStamp } from './stamp'
+import { mocapReady } from '../mocap/library'
 
 /** 'auto' = the profile's native size; 720p/1080p pin the SHORT edge. */
 export type ExportResolution = 'auto' | '720p' | '1080p'
@@ -230,6 +232,7 @@ function buildMetadata(scene: Scene, shot: Shot, profile: GeneratorProfile): str
  * cheap, strong check that state(t) rendering is deterministic.
  */
 export async function renderStillPngForTest(t: number, width = 320, height = 180): Promise<ArrayBuffer> {
+  await mocapReady() // fork: mocap bots render as themselves, never as placeholders
   const manager = getSceneManager()
   if (!manager) throw new Error('no scene manager')
   const { canvas, renderer } = getExportRenderer()
@@ -239,15 +242,15 @@ export async function renderStillPngForTest(t: number, width = 320, height = 180
   return canvasPng(canvas)
 }
 
-/** Raw-pixel variant for the determinism diagnostic. */
-export function renderRawForTest(t: number, width = 320, height = 180, doubleRender = false): number[] {
+/** Raw-pixel variant for the determinism diagnostic (fork: any pass, e.g. the depth pass of a skinned bot). */
+export function renderRawForTest(t: number, width = 320, height = 180, doubleRender = false, pass: RenderPass = 'clean'): number[] {
   const manager = getSceneManager()
   if (!manager) throw new Error('no scene manager')
   const { canvas, renderer } = getExportRenderer()
   canvas.width = width
   canvas.height = height
-  manager.renderFrameAt(renderer, t, width, height, 'clean', { showLabels: true })
-  if (doubleRender) manager.renderFrameAt(renderer, t, width, height, 'clean', { showLabels: true })
+  manager.renderFrameAt(renderer, t, width, height, pass, { showLabels: true })
+  if (doubleRender) manager.renderFrameAt(renderer, t, width, height, pass, { showLabels: true })
   const gl = renderer.getContext()
   const px = new Uint8Array(width * height * 4)
   gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, px)
@@ -255,6 +258,7 @@ export function renderRawForTest(t: number, width = 320, height = 180, doubleRen
 }
 
 export async function exportShot(opts: ExportOptions): Promise<ExportResult> {
+  await mocapReady() // fork: mocap bots render as themselves, never as placeholders
   const s = useStore.getState()
   const doc = s.doc
   const scene = s.scene()
@@ -407,6 +411,7 @@ export async function exportStillAtPlayhead(
   resolution: ExportResolution = 'auto',
   showLabels = true
 ): Promise<ExportResult> {
+  await mocapReady() // fork: mocap bots render as themselves, never as placeholders
   const s = useStore.getState()
   const scene = s.scene()
   const shot = s.shot()
@@ -486,6 +491,7 @@ export async function exportAnimatic(
 
 /** Contact sheet: first frame of every shot in a grid PNG. */
 export async function exportContactSheet(): Promise<ExportResult> {
+  await mocapReady() // fork: mocap bots render as themselves, never as placeholders
   const s = useStore.getState()
   const scene = s.scene()
   const folder = s.projectFolder

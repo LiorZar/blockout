@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror; see MODIFICATIONS.md.
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror, routines recast to chosen bodies; see MODIFICATIONS.md.
 /**
  * Choreography engine: routines that read as REAL staged choreography —
  * timed dance phrases hit on the count and change formation with real walking;
@@ -56,6 +56,8 @@ export interface RoutineSpec {
   ending?: FightEnding | ChaseEnding | string
   /** Chase serpentine sideways amplitude (m). Default 4. */
   amplitude?: number
+  /** Fork: [man's, woman's] body — the assets the routine casts instead of person.man / person.woman. */
+  bodies?: [string, string]
 }
 
 export interface RoutineCtx {
@@ -1053,6 +1055,8 @@ export function choreoFormations(): { id: FormationId; name: string }[] {
  */
 export function buildRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {
   const specs = routineOf(spec, ctx)
+  // Fork: recast before grounding, so posed marks rest each body on the floor.
+  if (spec.bodies) for (const e of specs) e.assetId = e.assetId === 'person.man' ? spec.bodies[0] : e.assetId === 'person.woman' ? spec.bodies[1] : e.assetId
   floorRoutine(specs, ctx.bodies)
   return specs
 }

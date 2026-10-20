@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's Clara button and export file-size cap in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's Clara button, export file-size cap and mocap library in 2026; see MODIFICATIONS.md.
 /**
  * Typed IPC bridge. The renderer sees exactly this surface as
  * window.blockout — nothing else from Node.
@@ -6,6 +6,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import type { ClaraView } from '../shared/clara-types'
+import type { MocapManifest } from '../shared/mocap-library'
 
 export interface PlatformInfo {
   platform: 'macos' | 'windows' | 'linux'
@@ -57,6 +58,9 @@ export interface BlockoutAPI {
   presetSave(name: string, json: string): Promise<{ ok: boolean; id?: string; error?: string }>
   presetLoad(id: string): Promise<string | null>
   presetDelete(id: string): Promise<boolean>
+  /** Fork: the local Mixamo library (null without one) and its files (confined to it). */
+  mocapList(): Promise<MocapManifest | null>
+  mocapRead(relativePath: string): Promise<ArrayBuffer>
   /** Agent control server (MCP): renderer receives actions, replies with results. */
   onControlInvoke(
     cb: (id: string, action: string, params: unknown) => void
@@ -129,6 +133,8 @@ const api: BlockoutAPI = {
   presetSave: (name, json) => ipcRenderer.invoke('presets:save', name, json),
   presetLoad: (id) => ipcRenderer.invoke('presets:load', id),
   presetDelete: (id) => ipcRenderer.invoke('presets:delete', id),
+  mocapList: () => ipcRenderer.invoke('mocap:list'),
+  mocapRead: (rel) => ipcRenderer.invoke('mocap:read', rel),
   onControlInvoke: (cb) => {
     const listener = (_e: unknown, id: string, action: string, params: unknown) =>
       cb(id, action, params)

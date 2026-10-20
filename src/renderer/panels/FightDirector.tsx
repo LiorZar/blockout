@@ -12,6 +12,7 @@ import { assetSpec } from '@engine/assets'
 import { WEAPON_SPECS } from '@engine/weapons'
 import { formatFightScript, parseFightScript, randomFightScript } from '@engine/fight/script'
 import type { FightDoc, Scene } from '@engine/types'
+import { bodySets, useMocapLoaded, type BodySetId } from '../mocap/library'
 
 const STYLES: { id: 'brawl' | 'martial-arts' | 'sparring'; name: string }[] = [
   { id: 'sparring', name: 'Sparring' },
@@ -25,11 +26,6 @@ const COVERAGE: { id: NonNullable<FightDoc['coverage']> | ''; name: string }[] =
   { id: 'punch-in', name: 'Punch in on big hits' },
   { id: 'over-shoulder', name: 'Over the shoulder' },
   { id: 'follow', name: 'Handheld follow' }
-]
-
-const BODIES: { id: 'classic' | 'mannequin'; name: string; assets?: [string, string] }[] = [
-  { id: 'classic', name: 'Classic' },
-  { id: 'mannequin', name: 'Mannequin', assets: ['person.mannequinMale', 'person.mannequinFemale'] }
 ]
 
 const EXAMPLE = `A jab cross to head -> block, hit
@@ -84,7 +80,11 @@ export function FightDirector(): JSX.Element {
   const [exaggeration, setExaggeration] = useState(fight?.exaggeration ?? 1.5)
   // A new fight comes with a master camera (one click, camera included); a staged one keeps its own.
   const [coverage, setCoverage] = useState<NonNullable<FightDoc['coverage']> | ''>(fight ? (fight.coverage ?? '') : 'master')
-  const [bodies, setBodies] = useState<(typeof BODIES)[number]['id']>('classic')
+  // Fork: Mocap bodies by default once the library has loaded (until picked).
+  const mocapLoaded = useMocapLoaded()
+  const { sets: bodyChoices, preferred } = bodySets(mocapLoaded)
+  const [pickedBodies, setBodies] = useState<BodySetId | null>(null)
+  const bodies = pickedBodies && bodyChoices.some((b) => b.id === pickedBodies) ? pickedBodies : preferred
   const [arms, setArms] = useState<[string, string]>(['', ''])
 
   const parsed = parseFightScript(script, labels)
@@ -121,7 +121,7 @@ export function FightDirector(): JSX.Element {
       setPlacing(null)
       return
     }
-    const assets = BODIES.find((b) => b.id === bodies)?.assets
+    const assets = bodyChoices.find((b) => b.id === bodies)?.assets
     armFightPlacement({ beats: parsed.beats, ...settings(), ...weapons(), ...(assets ? { assets } : {}) })
   }
 
@@ -250,10 +250,10 @@ export function FightDirector(): JSX.Element {
         <label>Bodies</label>
         <select
           value={bodies}
-          title="What Stage fight spawns: the classic capsule people or the sculpted mannequins (male A, female B). Apply to 2 selected keeps their bodies."
-          onChange={(e) => setBodies(e.target.value as typeof bodies)}
+          title="What Stage fight spawns: the classic capsule people, the sculpted mannequins or the Mixamo mocap bots (male A, female B). Apply to 2 selected keeps their bodies."
+          onChange={(e) => setBodies(e.target.value as BodySetId)}
         >
-          {BODIES.map((b) => (
+          {bodyChoices.map((b) => (
             <option key={b.id} value={b.id}>
               {b.name}
             </option>

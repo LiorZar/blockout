@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words, Fight Director, held-weapon actions and clear camera views; see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views and routine bodies; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -1496,7 +1496,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const duration = routineDuration(spec) // fork (fix-routines): the Choreographer's Duration
     // Fork (gap 3): a two-person fight goes through the fight solver.
     if (spec.kind === 'fight' && spec.performers === 2) {
-      stageRoutineFight({ beats: routineFightBeats(spec.seed, spec.style, spec.ending, duration), at })
+      stageRoutineFight({ beats: routineFightBeats(spec.seed, spec.style, spec.ending, duration), at, ...(spec.bodies ? { assets: spec.bodies } : {}) })
       return
     }
     const specs = buildRoutine({ ...spec, durationS: duration }, { origin: at })

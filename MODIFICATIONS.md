@@ -643,6 +643,68 @@ Changes in this fork (2026):
   `lowestY` runs allocation-free. Tests: `tests/unit/root-pose.test.ts`
   (rendered rig = FK at 1e-6 with root channels on six bodies, proxy vs mesh,
   conventions, mirror, shortest arc, grounded posed legs).
+- Mocap body kind (mocap-body; `src/engine/mocap/`, `skeleton.ts`,
+  `floor.ts`, `pose-fit.ts`, `fight/contact.ts`, `weapons.ts`, `assets.ts`):
+  `person.mocapMale` / `person.mocapFemale` ("Mocap man" / "Mocap woman")
+  are Mixamo's Y Bot and X Bot, read at runtime from the user's local
+  library (never from the repo). The renderer registers each bot's bind
+  pose and skinned vertices; the engine fits an A-rest (arms down, legs
+  vertical, soles on the floor, catalog height), rig dims, frame origins,
+  support-point floor proxies, limb capsules and a torso loft. `personDims`
+  returns a bot's fitted dims and `poseFrames` / `poseEffectors` branch on
+  `dims.mocap` first, so every FK consumer (floor, fights, weapons, shot
+  words, clear views, pose fits) poses bots and the procedural bodies stay
+  bit-identical. The torso turns over Spine / Spine1 / Spine2 in thirds, the
+  head half on Neck. A bot that isn't loaded stands in as its studio
+  mannequin. Tests: `tests/unit/mocap-body.test.ts` (a hand-built mixamorig
+  fixture: fit, FK, proxies, fight / shot / weapon consumers, and the old
+  body call against a frozen copy, compared bit for bit).
+- Mocap library access (mocap-body; `src/main/mocap.ts`,
+  `src/shared/mocap-library.ts`, `src/main/index.ts`, `src/preload/index.ts`,
+  `src/renderer/mocap/`): IPC `mocap:list` returns the manifest of
+  `<config dir>/mixamo/` (null without one) and `mocap:read` a file inside it
+  (absolute paths and `..` refused, as `file:readAbsolute` in a project). The
+  renderer parses the first male and female character with three's
+  FBXLoader, reads the bind pose and skinned vertices (FBXLoader's duplicate
+  bones skipped) into entity space and registers them; the parsed scene is
+  the template each bot visual clones. Without a library nothing loads.
+  Tests: `tests/unit/mocap-library.test.ts` (confinement, manifest, a
+  three-built FBX-like fixture; the real files only when present, never
+  copied).
+- Mocap bots on screen (mocap-body; `src/renderer/mocap/body.ts`,
+  `builders.ts`, `hold.ts`, `SceneManager.ts`, `export/exporter.ts`):
+  `buildAsset` builds a bot from the library template (SkeletonUtils.clone,
+  centimetres facing +Z turned into the bot's metres facing −Z), its bones
+  set every frame from a hidden 11-bone rig that `animatePerson` poses, so
+  every gait, joint override and grounding rule plays on bots; nothing
+  accumulates (no AnimationMixer). Until the library loads a bot is its
+  studio mannequin, and SceneManager swaps the visuals in when it does.
+  Named frame markers (`elbowL` … `torso`) carry the engine's frames, so
+  held weapons sit in the palm; `steadyArm` re-poses a bot through a hook.
+  Grey Phong plastic tinted through `userData.origColor`. The depth pass
+  shader includes three's skinning chunks (a skinned bot rendered in its
+  bind pose there). The arms rest turned out by a fitted angle (the least
+  that keeps the hanging hands off the hips and thighs), carried in FK and
+  arm IK. Exports and `renderStillPngForTest` wait for the library;
+  `renderRawForTest` takes a pass. Tests: `tests/unit/mocap-render.test.ts`
+  (bones, frames and skin vs engine FK to 1 mm, held pistol, tint, every
+  gait and library motion grounded within ±2 cm every 1/12 s on the
+  fixture), `tests/unit/mocap-real.test.ts` (the same on Y Bot / X Bot,
+  skipped without the library), `tests/e2e/mocap-bots.spec.ts`.
+- Mocap bots in the pickers (mocap-body; `Library.tsx`, `Inspector.tsx`,
+  `FightDirector.tsx`, `choreography.ts`, `store.ts`, `prompt-scene.ts`,
+  `control/handler.ts`, `mcp/tools.json`, `AGENTS.md`): the Library shows
+  the bots (🤖) once the library has loaded and hides them otherwise, as do
+  `list_assets`, `add_entity` and `stage_fight assets` (a clear error names
+  the missing library). The Inspector gets a Body select for people; the
+  Fight Director's Bodies and a new Choreographer Bodies select offer
+  Mocap and default to it when it is there. `RoutineSpec.bodies` recasts a
+  routine's men and women before its posed marks are grounded, so they rest
+  on the chosen bodies; a routine two-person fight passes them on as fight
+  assets. The prompt calls a bot a light grey mannequin, as it does the
+  studio mannequins. MCP defaults stay man and woman. Tests:
+  `tests/unit/mocap-pickers.test.ts`, `prompt-scene.test.ts`, the
+  mannequin and mocap-bots e2e specs.
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

@@ -1,4 +1,4 @@
-// Modified in this fork (2026): catalog additions; see MODIFICATIONS.md.
+// Modified in this fork (2026): catalog additions, mocap bots; see MODIFICATIONS.md.
 /**
  * Asset catalog — engine-side metadata for every built-in library item.
  * The renderer maps each id to a procedural grey-box builder; the engine
@@ -45,6 +45,9 @@ export const ASSET_CATALOG: AssetSpec[] = [
   // Fork: sculpted studio mannequins on the same rig (see MODIFICATIONS.md).
   A('person.mannequinMale', 'Mannequin (male)', 'people', 1.8, 0.3, 1, 'biped', 'a man'),
   A('person.mannequinFemale', 'Mannequin (female)', 'people', 1.7, 0.28, 1, 'biped', 'a woman'),
+  // Fork: Mixamo Y Bot / X Bot from the user's local library (mocap/registry.ts); hidden without it.
+  A('person.mocapMale', 'Mocap man', 'people', 1.8, 0.3, 1, 'biped', 'a man'),
+  A('person.mocapFemale', 'Mocap woman', 'people', 1.7, 0.28, 1, 'biped', 'a woman'),
 
   // Animals
   A('animal.dog', 'Dog', 'animals', 0.6, 0.35, 1.8, 'quadruped', 'a dog'),

@@ -13,6 +13,7 @@
  * PURE: no DOM / three.js / Electron.
  */
 
+import { mocapStandIn } from '../mocap/registry'
 import { framePoint, poseFrames, type PersonDims } from '../skeleton'
 import type { V3 } from '../types'
 
@@ -71,8 +72,14 @@ export type TorsoShape =
 
 /** The torso of a person asset (`dims` from `personDims(assetId, params)`). */
 export function torsoShape(assetId: string, params: Record<string, number | string> | undefined, dims: PersonDims): TorsoShape {
-  const female = assetId === 'person.mannequinFemale'
-  if (!female && assetId !== 'person.mannequinMale') return { kind: 'capsule', r: dims.bodyW * 0.5, y0: dims.torsoLen * 0.15, y1: dims.torsoLen * 0.85 }
+  // Fork: a mocap bot's loft is cut from its mesh (mocap/rig.ts), scaled by its height.
+  if (dims.mocap) {
+    const { rig, k } = dims.mocap
+    return { kind: 'loft', ys: rig.torso.ys.map((y) => y * k), rings: rig.torso.rings.map((ring) => ring.map(([x, z]): [number, number] => [x * k, z * k])) }
+  }
+  const id = mocapStandIn(assetId)
+  const female = id === 'person.mannequinFemale'
+  if (!female && id !== 'person.mannequinMale') return { kind: 'capsule', r: dims.bodyW * 0.5, y0: dims.torsoLen * 0.15, y1: dims.torsoLen * 0.85 }
   const b = params?.build
   const W = dims.s * Math.min(1.3, Math.max(0.8, typeof b === 'number' ? b : 1))
   const sections = (female ? TORSO_F : TORSO_M).map(([y, a, bb, cz = 0, cx = 0, bump = 0, back = 0]): Section => [y * dims.torsoLen, a * W, bb * W, cz * W, cx * W, bump * W, back * W])
@@ -238,8 +245,17 @@ export function bodyClearance(
   const r = t.r
   const d = { x: p.x - t.p.x, y: p.y - t.p.y, z: p.z - t.p.z }
   let gap = torsoGap(shape, { x: r[0] * d.x + r[3] * d.y + r[6] * d.z, y: r[1] * d.x + r[4] * d.y + r[7] * d.z, z: r[2] * d.x + r[5] * d.y + r[8] * d.z })
+  // Fork: a mocap bot's capsules are fitted to its mesh (mocap/rig.ts).
+  if (dims.mocap) {
+    const k = dims.mocap.k
+    for (const c of dims.mocap.rig.capsules) {
+      const f = fr[c.frame]!
+      gap = Math.min(gap, segDist(p, framePoint(f, { x: c.a.x * k, y: c.a.y * k, z: c.a.z * k }), framePoint(f, { x: c.b.x * k, y: c.b.y * k, z: c.b.z * k })) - c.r * k)
+    }
+    return gap * scale
+  }
   const W = dims.s * build
-  const at = (f: keyof typeof fr, x: number, y: number, z: number): V3 => framePoint(fr[f], { x, y, z })
+  const at = (f: keyof typeof fr, x: number, y: number, z: number): V3 => framePoint(fr[f]!, { x, y, z })
   const head = at('head', 0, dims.headR + 0.06 * dims.s, 0)
   gap = Math.min(gap, Math.hypot(p.x - head.x, p.y - head.y, p.z - head.z) - dims.headR)
   // Pelvis box / loft, neck; per side the deltoid, arm, hand and curled

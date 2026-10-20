@@ -20,7 +20,7 @@
 
 import { assetSpec } from './assets'
 import { LABEL_COLOR_NAMES } from './palette'
-import { personDims, toWorld, type PersonDims } from './skeleton'
+import { personDims, poseFrames, toWorld, type PersonDims } from './skeleton'
 import type { Entity, EntityState, HeldBy, V3 } from './types'
 
 export type Hand = HeldBy['hand']
@@ -178,6 +178,12 @@ function shoulderOffset(dims: PersonDims, side: Hand): V3 {
  * `skeleton.ts` (a test pins the two together).
  */
 export function handFrame(dims: PersonDims, joints: Record<string, number> | undefined, hand: Hand): HandFrame {
+  // Fork: a mocap bot's hand rides its own forearm frame (skeleton.ts body call).
+  if (dims.mocap) {
+    const fr = poseFrames(dims, joints)
+    const elbow = fr[hand === 'L' ? 'elbowL' : 'elbowR']
+    return { p: add(elbow.p, apply(elbow.r, v(0, -dims.lowerArmLen, 0))), r: elbow.r, shoulder: fr[hand === 'L' ? 'shoulderL' : 'shoulderR'].p, torso: fr.torso.r }
+  }
   const j = (k: string): number => joints?.[k] ?? 0
   const torso = torsoFrame(dims, j)
   const shoulderRot =
@@ -487,8 +493,10 @@ export function solveArmIK(
   target: V3
 ): Record<string, number> {
   const j = (k: string): number => joints?.[k] ?? 0
-  const torso = torsoFrame(dims, j)
-  let q = sub(apply(transpose(torso.r), sub(target, torso.p)), shoulderOffset(dims, side))
+  // Fork: a mocap bot's torso frame and shoulder joint (skeleton.ts body call).
+  const torso = dims.mocap ? poseFrames(dims, joints).torso : torsoFrame(dims, j)
+  const shoulder = dims.mocap ? scale(dims.mocap.rig.shoulder[side], dims.mocap.k) : shoulderOffset(dims, side)
+  let q = sub(apply(transpose(torso.r), sub(target, torso.p)), shoulder)
   const u = dims.upperArmLen
   const l = dims.lowerArmLen
   const d = len(q)
@@ -504,9 +512,11 @@ export function solveArmIK(
   const rx = Math.atan2(q.z, q.y) - Math.atan2(bz, y)
   // Wrap rx into (−π, π] so the stored channel stays small.
   const wrapped = Math.atan2(Math.sin(rx), Math.cos(rx))
+  // Fork: a mocap bot's arms rest turned out; the channel is the turn beyond that.
+  const rest = dims.mocap ? dims.mocap.rig.armRest : 0
   return side === 'L'
-    ? { shoulderLX: -wrapped, shoulderLZ: -rz, elbowL: e }
-    : { shoulderRX: -wrapped, shoulderRZ: rz, elbowR: e }
+    ? { shoulderLX: -wrapped, shoulderLZ: -rz - rest, elbowL: e }
+    : { shoulderRX: -wrapped, shoulderRZ: rz - rest, elbowR: e }
 }
 
 /* ------------------------------ in the scene ------------------------------ */
@@ -571,7 +581,7 @@ export function sanitizeHolds(entities: Entity[]): void {
 /* ------------------------- every body, one hold (fork) ------------------------- */
 
 const REFERENCE = personDims('person.man')
-const DIM_KEYS = Object.keys(REFERENCE) as (keyof PersonDims)[]
+const DIM_KEYS = Object.keys(REFERENCE) as Exclude<keyof PersonDims, 'mocap'>[]
 const isReference = (d: PersonDims): boolean => DIM_KEYS.every((k) => Math.abs(d[k] - REFERENCE[k]) < 1e-12)
 
 /** Barrel pitch and yaw (rad) and grip-to-shoulder distance of a shouldered gun in a pose. */

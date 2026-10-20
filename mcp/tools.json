@@ -15,7 +15,7 @@
   {
     "name": "list_assets",
     "title": "List things to place",
-    "description": "List the placeable asset catalog (people, animals, vehicles, furniture, environment kits, primitives). Use an assetId from here with add_entity. Optionally filter by category.",
+    "description": "List the placeable asset catalog (people, animals, vehicles, furniture, environment kits, primitives). Use an assetId from here with add_entity. Optionally filter by category. People include the Mixamo mocap bots person.mocapMale / person.mocapFemale (Y Bot / X Bot) when the local Mixamo library is installed.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -527,7 +527,7 @@
           },
           "minItems": 2,
           "maxItems": 2,
-          "description": "[A's, B's] body for the fighters it spawns: person asset ids from list_assets, e.g. [\"person.mannequinMale\", \"person.mannequinFemale\"] (default man and woman). Not with fighterIds."
+          "description": "[A's, B's] body for the fighters it spawns: person asset ids from list_assets, e.g. [\"person.mannequinMale\", \"person.mannequinFemale\"] or the mocap bots [\"person.mocapMale\", \"person.mocapFemale\"] when listed (default man and woman). Not with fighterIds."
         },
         "labels": {
           "type": "array",

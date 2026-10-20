@@ -1,4 +1,4 @@
-// Modified for the fork (shared label palette, shot words box, pose-slider directions, held weapons, fight re-solve, camera-move subject hint) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (shared label palette, shot words box, pose-slider directions, held weapons, fight re-solve, camera-move subject hint, person body picker) in 2026; see MODIFICATIONS.md.
 /**
  * Context-sensitive right panel. Content is driven by store.selection and the
  * current mode: nothing selected → scene/lighting/shot; an entity, the shot
@@ -36,7 +36,8 @@ import type {
 } from '@engine/types'
 import { LABEL_SWATCHES } from '@engine/palette'
 import { WEAPON_SPECS, canHoldWeapons, weaponSpec } from '@engine/weapons'
-import { assetSpec } from '@engine/assets'
+import { ASSET_CATALOG, assetSpec } from '@engine/assets'
+import { assetListed, useMocapLoaded } from '../mocap/library'
 import { ShotLockNote, ShotPanel } from './ShotPanel'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi)
@@ -586,6 +587,7 @@ function EntityInspector({
   const mutate = useMutate()
   const setSelection = useStore((s) => s.setSelection)
   const setDroppingMarks = useStore((s) => s.setDroppingMarks)
+  useMocapLoaded() // fork: the Body list gains the mocap bots when the library loads
 
   const entity = scene.entities.find((e) => e.id === entityId)
   if (!entity) return <div className="panel-section">Entity not found.</div>
@@ -619,6 +621,22 @@ function EntityInspector({
             onChange={(e) => editEntity('entity name', (en) => (en.name = e.target.value))}
           />
         </div>
+        {isPerson && (
+          <div className="field">
+            <label>Body</label>
+            <select
+              value={entity.assetId}
+              title="The body this person renders and moves with: classic, studio mannequin, or a Mixamo mocap bot (when the library is installed). Marks and poses stay."
+              onChange={(e) => editEntity('body', (en) => (en.assetId = e.target.value))}
+            >
+              {ASSET_CATALOG.filter((a) => a.category === 'people' && (assetListed(a.id) || a.id === entity.assetId)).map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         <div className="field-row">
           <div className="field" style={{ flex: 1 }}>
             <label>X</label>

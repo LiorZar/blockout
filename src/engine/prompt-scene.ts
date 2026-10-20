@@ -99,9 +99,12 @@ const PRIMITIVE_SHAPES: Record<string, string> = {
   'prim.stairs': 'block of stairs'
 }
 
+/** The studio mannequins and the mocap bots (fork) render as grey plastic mannequins. */
+const isMannequin = (e: Entity): boolean => e.assetId.startsWith('person.mannequin') || e.assetId.startsWith('person.mocap')
+
 function shapeWord(e: Entity): string {
   const spec = assetSpec(e.assetId)
-  if (e.assetId.startsWith('person.mannequin')) return 'mannequin'
+  if (isMannequin(e)) return 'mannequin'
   if (spec.category === 'people') return 'figure'
   if (spec.category === 'animals') return spec.motion === 'flying' ? 'winged shape' : 'four-legged shape'
   if (spec.category === 'vehicles') return VEHICLE_SHAPES[e.assetId] ?? 'box on wheels'
@@ -144,7 +147,7 @@ function pluralPhrase(phrase: string): string {
 /** The colour an entity renders: its label's (tinted toward it), else the builder's grey plastic. */
 function renderedColor(e: Entity): string {
   if (e.label?.color) return colorWord(e.label.color)
-  return e.assetId.startsWith('person.mannequin') ? 'light grey' : 'grey'
+  return isMannequin(e) ? 'light grey' : 'grey'
 }
 
 /** How the action refers to an entity: its label, else "the orange man" / "the man". */

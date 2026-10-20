@@ -83,6 +83,8 @@ test.describe('mannequins', () => {
         { id: 'person.mannequinFemale', name: 'Mannequin (female)', category: 'people' }
       ])
     )
+    // Fork (mocap-body): this config dir has no Mixamo library, so the mocap bots stay hidden.
+    expect(res.data!.map((a) => a.id)).not.toContain('person.mocapMale')
   })
 
   test('add_entity builds the sculpted mannequins in the viewport', async () => {

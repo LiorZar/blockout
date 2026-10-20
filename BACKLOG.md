@@ -44,3 +44,4 @@
 ## Issues
 
 - Report the rig override sign bug (fixed in the fork, see MODIFICATIONS.md) to upstream wassermanproductions/blockout — needs Lior's go before anything is posted.
+- Mocap bots (phase 1 leftovers): the bots' fingers stay flat at rest, so a fist punch or a gun grip reads as an open hand until phase 2/3 brings clip poses; the AI reference analysis (`src/main/analyze.ts`) lists the bot ids even on a machine without the Mixamo library (a staged bot then shows as its studio mannequin).
