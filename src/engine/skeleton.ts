@@ -193,11 +193,16 @@ export type Bone = 'pelvis' | 'torso' | 'head' | 'shoulderL' | 'shoulderR' | 'el
  * body): shoulder / hip / torso / head X channels and the left abduction
  * channels are subtracted, the right abduction channels and elbow bends
  * added, knee bends and torso/head Z channels subtracted.
+ *
+ * Root channels (motion playback): `rootX` pitch (positive tips the body
+ * forward, prone), `rootY` yaw (positive counter-clockwise from above),
+ * `rootZ` roll (positive to the right) turn the whole body about the pelvis
+ * joint (the pelvis frame's Euler XYZ: −rootX, rootY, −rootZ).
  */
 export function poseFrames(dims: PersonDims, joints: Record<string, number> | undefined): Record<Bone, Frame> {
   const j = (k: string): number => joints?.[k] ?? 0
   const root: Frame = { p: v(0, 0, 0), r: IDENTITY }
-  const pelvis = child(root, v(0, dims.legLen, 0), IDENTITY)
+  const pelvis = child(root, v(0, dims.legLen, 0), euler(-j('rootX'), j('rootY'), -j('rootZ')))
   const torso = child(pelvis, v(0, 0.08 * dims.s, 0), euler(dims.baseLean - j('torsoX'), j('torsoY'), -j('torsoZ')))
   const head = child(torso, v(0, dims.torsoLen, 0), euler(-j('headX'), j('headY'), -j('headZ')))
   const shoulderL = child(torso, v(-dims.shoulderX, dims.shoulderY, 0), euler(-j('shoulderLX'), 0, -j('shoulderLZ')))

@@ -15,7 +15,7 @@
  * PURE: no DOM / three.js / Electron.
  */
 
-import { framePoint, personDims, poseFrames, type Bone, type PersonDims } from './skeleton'
+import { personDims, poseFrames, type Bone, type PersonDims } from './skeleton'
 
 /** A ball (r > 0) or a surface point (r = 0) in a bone's frame. */
 interface Ball {
@@ -53,11 +53,34 @@ function rim(t: number, n: number): [number, number] {
   return [Math.sign(c) * Math.abs(c) ** e, Math.sign(s) * Math.abs(s) ** e]
 }
 
-/** Points around a section: half-width a (x), half-depth b (z, +z = back), centre (cx, cz). */
-function ring(out: Ball[], bone: Bone, y: number, a: number, b: number, cz = 0, cx = 0, n = 2): void {
-  for (let k = 0; k < RING; k++) {
-    const [u, v] = rim((k / RING) * Math.PI * 2, n)
-    out.push({ bone, x: cx + a * u, y, z: cz + b * v, r: 0 })
+/** Ring angles of the sculpt's front bulges (pecs, bust) and back bulges (lats; glutes), as mannequin-mesh.ts. */
+const BUMP_AT = [(246 * Math.PI) / 180, (294 * Math.PI) / 180]
+const BACK_AT = [(55 * Math.PI) / 180, (125 * Math.PI) / 180]
+const GLUTES_AT = [(70 * Math.PI) / 180, (110 * Math.PI) / 180]
+
+/** A section's bulges: `bump` forward (−z) at BUMP_AT with lobe exponent `sharp`, `back` backward (+z) at `backAt`. */
+interface Bulge {
+  bump: number
+  back: number
+  sharp: number
+  backAt: number[]
+}
+
+/**
+ * Points around a section: half-width a (x), half-depth b (z, +z = back),
+ * centre (cx, cz). With bulges (mannequin-mesh.ts `ringPoint`) the ring also
+ * samples the bulge peaks, where a lying body rests.
+ */
+function ring(out: Ball[], bone: Bone, y: number, a: number, b: number, cz = 0, cx = 0, n = 2, bulge?: Bulge): void {
+  const at = Array.from({ length: RING }, (_, k) => (k / RING) * Math.PI * 2)
+  if (bulge?.bump) at.push(...BUMP_AT)
+  if (bulge?.back) at.push(...bulge.backAt)
+  const lobe = (t: number, peaks: number[], k: number): number => peaks.reduce((acc, p) => acc + Math.max(0, Math.cos(t - p)) ** k, 0)
+  for (const t of at) {
+    const [u, v] = rim(t, n)
+    const front = bulge?.bump ? bulge.bump * lobe(t, BUMP_AT, bulge.sharp) : 0
+    const rear = bulge?.back ? bulge.back * lobe(t, bulge.backAt, 4) : 0
+    out.push({ bone, x: cx + a * u, y, z: cz + b * v - front + rear, r: 0 })
   }
 }
 
@@ -97,10 +120,22 @@ function classicShape(d: PersonDims, w: number): Ball[] {
 
 /* Mannequin sections ([y, a, b, cz]), a subset of mannequin-mesh.ts. */
 type Sec = [number, number, number, number?]
-const PELVIS_M: Sec[] = [[-0.086, 0.03, 0.03, 0.006], [-0.08, 0.075, 0.062, 0.006], [-0.068, 0.118, 0.084, 0.006], [-0.03, 0.152, 0.11, 0.016], [0.02, 0.16, 0.11, 0.014], [0.116, 0.134, 0.09, 0.003]]
-const PELVIS_F: Sec[] = [[-0.086, 0.03, 0.03, 0.012], [-0.08, 0.085, 0.066, 0.014], [-0.068, 0.135, 0.09, 0.016], [-0.03, 0.18, 0.12, 0.026], [0.02, 0.182, 0.114, 0.02], [0.116, 0.123, 0.084, 0.004]]
-const TORSO_M: Sec[] = [[0.06, 0.134, 0.09, 0.004], [0.22, 0.128, 0.094, -0.002], [0.34, 0.136, 0.098, -0.006], [0.46, 0.152, 0.106, -0.008], [0.56, 0.166, 0.113, -0.009], [0.71, 0.178, 0.122, -0.012], [0.86, 0.178, 0.104, 0], [0.98, 0.15, 0.081, 0.008], [1.1, 0.074, 0.058, 0.016]]
-const TORSO_F: Sec[] = [[0.06, 0.12, 0.081, 0.004], [0.24, 0.106, 0.078, 0], [0.36, 0.113, 0.082, -0.002], [0.5, 0.131, 0.1, -0.016], [0.56, 0.136, 0.116, -0.031], [0.62, 0.141, 0.12, -0.034], [0.68, 0.145, 0.11, -0.024], [0.8, 0.152, 0.089, -0.002], [0.93, 0.146, 0.076, 0.004], [1.1, 0.058, 0.047, 0.012]]
+/* The sculpt's pelvis and torso tables in full ([y, a, b, cz, cx, bump, back], mannequin-mesh.ts). */
+type Sculpt = [number, number, number, number?, number?, number?, number?]
+const PELVIS_M: Sculpt[] = [[-0.086, 0.03, 0.03, 0.006], [-0.08, 0.075, 0.062, 0.006], [-0.068, 0.118, 0.084, 0.006], [-0.05, 0.14, 0.094, 0.008, 0, 0, 0.01], [-0.03, 0.152, 0.1, 0.01, 0, 0, 0.016], [0.02, 0.16, 0.104, 0.008, 0, 0, 0.012], [0.07, 0.148, 0.098, 0.004], [0.116, 0.134, 0.09, 0.003]]
+const PELVIS_F: Sculpt[] = [[-0.086, 0.03, 0.03, 0.012], [-0.08, 0.085, 0.066, 0.014], [-0.068, 0.135, 0.09, 0.016], [-0.05, 0.163, 0.102, 0.018, 0, 0, 0.016], [-0.03, 0.18, 0.11, 0.018, 0, 0, 0.024], [0.02, 0.182, 0.106, 0.012, 0, 0, 0.016], [0.07, 0.152, 0.094, 0.006], [0.116, 0.123, 0.084, 0.004]]
+const TORSO_M: Sculpt[] = [
+  [0.06, 0.134, 0.09, 0.004], [0.12, 0.13, 0.092, 0.002], [0.22, 0.128, 0.094, -0.002], [0.34, 0.136, 0.098, -0.006], [0.46, 0.152, 0.104, -0.01, 0, 0, 0.008],
+  [0.56, 0.166, 0.11, -0.012, 0, 0.004, 0.014], [0.63, 0.173, 0.112, -0.012, 0, 0.016, 0.018], [0.71, 0.178, 0.112, -0.01, 0, 0.021, 0.018], [0.79, 0.18, 0.108, -0.006, 0, 0.016, 0.016],
+  [0.86, 0.178, 0.1, -0.002, 0, 0.006, 0.012], [0.92, 0.175, 0.092, 0.003, 0, 0, 0.008], [0.95, 0.168, 0.087, 0.006], [0.98, 0.15, 0.081, 0.008], [1.02, 0.124, 0.074, 0.011], [1.06, 0.098, 0.066, 0.014], [1.1, 0.074, 0.058, 0.016]
+]
+const TORSO_F: Sculpt[] = [
+  [0.06, 0.12, 0.081, 0.004], [0.12, 0.114, 0.08, 0.002], [0.24, 0.106, 0.078], [0.36, 0.113, 0.082, -0.002], [0.45, 0.125, 0.087, -0.004, 0, 0.004], [0.5, 0.131, 0.089, -0.005, 0, 0.022],
+  [0.56, 0.136, 0.091, -0.006, 0, 0.05], [0.62, 0.141, 0.092, -0.006, 0, 0.056], [0.68, 0.145, 0.091, -0.005, 0, 0.038], [0.74, 0.149, 0.089, -0.004, 0, 0.012, 0.004], [0.8, 0.152, 0.086, -0.002, 0, 0.003, 0.006],
+  [0.87, 0.151, 0.082, 0, 0, 0, 0.006], [0.93, 0.146, 0.076, 0.004], [0.96, 0.136, 0.072, 0.006], [0.99, 0.12, 0.067, 0.008], [1.03, 0.098, 0.06, 0.01], [1.07, 0.074, 0.052, 0.012], [1.1, 0.058, 0.047, 0.012]
+]
+// Deltoid cap (shoulder group), y in s, [y, a, b, cz, cx outward].
+const DELTOID: Sculpt[] = [[0.04, 0.016, 0.018], [0.036, 0.04, 0.044, 0, 0.004], [0.024, 0.06, 0.064, 0, 0.008], [0.004, 0.074, 0.078, 0, 0.012], [-0.03, 0.076, 0.08, -0.002, 0.014], [-0.07, 0.068, 0.072, -0.003, 0.01], [-0.11, 0.054, 0.06, -0.004, 0.004], [-0.14, 0.042, 0.048, -0.004]]
 // Head: y about the head centre, all in head radii.
 const HEAD: Sec[] = [[-0.99, 0.16, 0.12, -0.5], [-0.92, 0.34, 0.3, -0.4], [-0.75, 0.5, 0.55, -0.2], [-0.52, 0.6, 0.72, -0.07], [-0.22, 0.65, 0.81, 0], [0.12, 0.68, 0.85, 0.02], [0.44, 0.65, 0.83, 0.04], [0.72, 0.52, 0.67, 0.05], [0.91, 0.31, 0.41, 0.05], [1, 0.08, 0.1, 0.05]]
 const UPPER_ARM: Sec[] = [[0, 0.056, 0.058], [-0.18, 0.06, 0.064, -0.004], [-0.42, 0.058, 0.066, -0.01], [-0.68, 0.05, 0.054, -0.006], [-0.985, 0.037, 0.039]]
@@ -116,8 +151,10 @@ function mannequinShape(d: PersonDims, female: boolean, build: number): Ball[] {
   const { s, headR } = d
   const W = s * build
   const out: Ball[] = []
-  for (const [y, a, b, cz = 0] of female ? PELVIS_F : PELVIS_M) ring(out, 'pelvis', y * s, a * W, b * W, cz * W, 0, 2.4)
-  for (const [y, a, b, cz = 0] of female ? TORSO_F : TORSO_M) ring(out, 'torso', y * d.torsoLen, a * W, b * W, cz * W, 0, 2.3)
+  for (const [y, a, b, cz = 0, , bump = 0, back = 0] of female ? PELVIS_F : PELVIS_M)
+    ring(out, 'pelvis', y * s, a * W, b * W, cz * W, 0, 2.4, { bump: bump * W, back: back * W, sharp: 12, backAt: GLUTES_AT })
+  for (const [y, a, b, cz = 0, , bump = 0, back = 0] of female ? TORSO_F : TORSO_M)
+    ring(out, 'torso', y * d.torsoLen, a * W, b * W, cz * W, 0, 2.3, { bump: bump * W, back: back * W, sharp: female ? 14 : 8, backAt: BACK_AT })
   const hc = headR + 0.06 * s
   for (const [y, a, b, cz = 0] of HEAD) ring(out, 'head', hc + y * headR, a * headR, b * headR, cz * headR, 0, 2.15)
   out.push({ bone: 'head', x: 0, y: hc - 0.25 * headR, z: -0.95 * headR, r: 0 }) // nose tip
@@ -127,7 +164,8 @@ function mannequinShape(d: PersonDims, female: boolean, build: number): Ball[] {
   const hl = s * (female ? 0.93 : 1)
   for (const side of SIDES) {
     const medial = -side.s
-    ring(out, side.shoulder, -0.03 * s, 0.076 * lw, 0.08 * lw, 0, 0.014 * s * side.s)
+    const dw = lw * (female ? 0.94 : 1)
+    for (const [y, a, b, cz = 0, cx = 0] of DELTOID) ring(out, side.shoulder, y * s, a * dw, b * dw, cz * dw, cx * dw * side.s)
     for (const [y, a, b, cz = 0] of UPPER_ARM) ring(out, side.shoulder, y * d.upperArmLen, a * lw, b * lw, cz * lw)
     for (const [y, a, b, cz = 0] of FOREARM) ring(out, side.elbow, y * d.lowerArmLen, a * lw, b * lw, cz * lw)
     const yw = -0.75 * d.lowerArmLen
@@ -177,8 +215,11 @@ export function lowestY(shape: BodyShape, joints: Record<string, number> | undef
   const s = Math.sin(rootPitch)
   let low = Infinity
   for (const b of shape.balls) {
-    const p = framePoint(frames[b.bone], { x: b.x, y: b.y, z: b.z })
-    const y = p.y * c - p.z * s - b.r
+    // framePoint's y and z, inline (the hot loop of every grounding).
+    const { p, r } = frames[b.bone]
+    const py = p.y + r[3] * b.x + r[4] * b.y + r[5] * b.z
+    const pz = p.z + r[6] * b.x + r[7] * b.y + r[8] * b.z
+    const y = py * c - pz * s - b.r
     if (y < low) low = y
   }
   return low
@@ -215,19 +256,19 @@ export function motionRootY(baseY: number, up: number, low: number): number {
 /**
  * Root height on a posed move between two keyframes (fork): the body's
  * lowest point travels in a straight line from keyframe to keyframe, so a
- * body folding down onto the floor never dips through it, as the root's own
- * straight line would let it. `rootY` is that straight-line root height,
- * `u` the eased leg progress the joints are blended with.
+ * body folding down onto the floor never dips through it (as the root's own
+ * straight line would let it), and one turning over on the floor (a
+ * push-up, a cartwheel, a fall) never hovers above it. `u` is the eased leg
+ * progress the joints are blended with.
  */
 export function posedMoveY(
   body: Body,
   from: { y: number; joints: Record<string, number> },
   to: { y: number; joints: Record<string, number> },
   joints: Record<string, number> | undefined,
-  rootY: number,
   u: number
 ): number {
   const a = from.y + bodyLowY(body, from.joints)
   const b = to.y + bodyLowY(body, to.joints)
-  return Math.max(rootY, a + (b - a) * u - bodyLowY(body, joints))
+  return a + (b - a) * u - bodyLowY(body, joints)
 }

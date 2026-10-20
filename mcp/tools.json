@@ -302,7 +302,7 @@
   {
     "name": "frame_shot",
     "title": "Frame the shot",
-    "description": "Frame the camera with shot words, e.g. \"MCU on B, over A's right shoulder, 50mm\" or \"two-shot of A and B, low angle, from the left at 2.5s\" — or the same fields structured. The camera mark is re-solved every frame from the subjects' live positions, so the framing holds while they move. Updates the camera mark at that time (±1 frame) or adds one. Names are entity labels or names from get_state. Over a shoulder: that shoulder stays in frame near the edge and the subject's eyes sit on the far third, as near the upper third as the size allows; size sets the distance (with no lens it sets the lens); angle raises or lowers the camera and backs it off when it must, so with a lens the frame can come out looser; overhead counts as high and side is ignored. When lens, size and angle can't all hold, the returned achievedSize says what the frame is.",
+    "description": "Frame the camera with shot words, e.g. \"MCU on B, over A's right shoulder, 50mm\" or \"two-shot of A and B, low angle, from the left at 2.5s\" — or the same fields structured. The camera mark is re-solved every frame from the subjects' live positions, so the framing holds while they move. Updates the camera mark at that time (±1 frame) or adds one. Names are entity labels or names from get_state. Over a shoulder: that shoulder stays in frame near the edge and the subject's eyes sit on the far third, as near the upper third as the size allows; size sets the distance (with no lens it sets the lens); angle raises or lowers the camera and backs it off when it must, so with a lens the frame can come out looser; overhead counts as high and side is ignored. When lens, size and angle can't all hold, the returned achievedSize says what the frame is. The camera stays in open space with the subject in view: when the asked-for view is blocked by the set or other cast (or would sit inside a wall or a body), it comes closer on a wider lens (same frame size), rises, or swings round the subject, the nearest clear choice first, and the result's note says what blocked it and what changed; a warning says when no clear view exists. A clear view is framed exactly as asked.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -662,7 +662,7 @@
   {
     "name": "fight_coverage",
     "title": "Cover the fight with the camera",
-    "description": "Replace the active camera with beat-aware coverage of a staged fight, built from live shot words and kept on one side of the fight line: master (one wide two-shot), punch-in (a two-shot that pushes in on the defender at every big hit), over-shoulder (per beat, high over the attacker's shoulder so the guard stays under the defender's face), follow (per beat, a handheld two-shot led by the attacker). Every framing keeps the blow in frame: sized to the target (head MCU, body MS, legs FS), a knockdown or KO a wide two-shot of both fighters, and weapons wider (an armed punch-in still pushes in, to an MS two-shot); an over-shoulder beat with a weapon, a fall or a blow to the legs becomes a two-shot on the line (FS; WS for a sword, katana, spear or long gun). Clears the camera's aim lock.",
+    "description": "Replace the active camera with beat-aware coverage of a staged fight, built from live shot words and kept on one side of the fight line: master (one wide two-shot), punch-in (a two-shot that pushes in on the defender at every big hit), over-shoulder (per beat, high over the attacker's shoulder so the guard stays under the defender's face), follow (per beat, a handheld two-shot led by the attacker). Every framing keeps the blow in frame: sized to the target (head MCU, body MS, legs FS), a knockdown or KO a wide two-shot of both fighters, and weapons wider (an armed punch-in still pushes in, to an MS two-shot); an over-shoulder beat with a weapon, a fall or a blow to the legs becomes a two-shot on the line (FS; WS for a sword, katana, spear or long gun). Clears the camera's aim lock. Each framing keeps a clear view of the fighters past the set and other cast over its beat (closer on a wider lens, higher, or swung up to 60° on its side of the line); views lists the framings that moved, with a note, or a warning when none is clear.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -783,7 +783,7 @@
   {
     "name": "apply_framing",
     "title": "Frame the shot",
-    "description": "Auto-frame the camera using a preset relative to the subjects: 2S (two-shot), OTS (over-the-shoulder), REV (reverse), TOP (top-down), LOW (low angle), DUTCH (canted). Pass entityIds to frame those entities; otherwise the selection, else the people in the scene.",
+    "description": "Auto-frame the camera using a preset relative to the subjects: 2S (two-shot), OTS (over-the-shoulder), REV (reverse), TOP (top-down), LOW (low angle), DUTCH (canted). Pass entityIds to frame those entities; otherwise the selection, else the people in the scene. The camera stays in open space with every subject in view for the whole shot: a pose behind a wall or blocked by the set or other cast moves to the nearest clear one (closer on a wider lens, higher, or swung round), and the result's note says so; a warning says when no clear view exists.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1118,7 +1118,7 @@
   {
     "name": "apply_camera_move",
     "title": "Move the camera",
-    "description": "Apply a classic camera-move preset to the active shot camera: generates a full set of camera marks over the shot built around a subject, riding along if the subject moves (e.g. drone-follow a flying plane). Track-style moves also enable aim-lock. Replaces the camera's existing marks.",
+    "description": "Apply a classic camera-move preset to the active shot camera: generates a full set of camera marks over the shot built around a subject, riding along if the subject moves (e.g. drone-follow a flying plane). Track-style moves also enable aim-lock. Replaces the camera's existing marks. A follow move on a person (follow-behind, lead-the-subject, side tracks …) keeps the camera out of walls and bodies with the person in view past the set and other cast, moving or adding marks where needed; the result's note says how, and a warning says when no clear view exists for part of the shot.",
     "inputSchema": {
       "type": "object",
       "properties": {

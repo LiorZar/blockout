@@ -35,6 +35,21 @@ export interface ShotSpec {
   lineIds?: [string, string]
   /** Which side of the line axis the camera sits on (sign of (B−A) × (cam−A)); default: solveShot's lineSide. */
   lineSide?: 1 | -1
+  /** How the camera gave way to a blocked view (fork, fix-camera-set; chosen by camera-clear.ts when the mark is made). */
+  view?: ShotView
+}
+
+export interface ShotView {
+  /** Swing round the subject (degrees); positive moves the camera to its own right. Not for over-the-shoulder. */
+  turnDeg?: number
+  /** Metres above the asked-for camera height; the camera re-aims at the subject. */
+  raise?: number
+  /** Distance and lens factor: below 1 the camera comes closer on a wider lens, same frame size. Not for over-the-shoulder. */
+  closer?: number
+  /** What blocked the asked-for view. */
+  blockedBy?: string
+  /** No clear view was found: this is the least blocked one. */
+  noClearView?: boolean
 }
 
 export interface ShotSubject {
@@ -104,6 +119,10 @@ const norm = (v: XZ): XZ | null => {
   const l = Math.hypot(v.x, v.z)
   return l < 1e-6 ? null : { x: v.x / l, z: v.z / l }
 }
+
+/** Rotate a ground direction anticlockwise seen from above (heading sense); a camera offset turned by a > 0 moves to the camera's right. */
+export const turnXZ = (v: XZ, a: number): XZ =>
+  a === 0 ? v : { x: v.x * Math.cos(a) + v.z * Math.sin(a), z: -v.x * Math.sin(a) + v.z * Math.cos(a) }
 
 function bodyOf(s: ShotSubject): Body {
   const scale = s.scale
@@ -401,14 +420,16 @@ export function solveShot(spec: ShotSpec, subjects: ShotSubject[], setup: ShotSe
     // overhead, which an OTS can't be), A's chest for low, near the floor for ground.
     const eyeLine = over.isPerson ? over.ref.y : shoulder.y + 0.12
     const angle = spec.angle ?? 'eye'
+    const raise = spec.view?.raise ?? 0
     const camHeight =
-      angle === 'high' || angle === 'overhead'
+      raise +
+      (angle === 'high' || angle === 'overhead'
         ? eyeLine + 0.6
         : angle === 'low'
           ? shoulder.y - 0.5
           : angle === 'ground'
             ? over.groundY + 0.15
-            : eyeLine
+            : eyeLine)
     const frame = first.isPerson
       ? {
           fill: size.fillFraction,
@@ -441,7 +462,7 @@ export function solveShot(spec: ShotSpec, subjects: ShotSubject[], setup: ShotSe
     const reaches = (p: OtsPose): boolean => Math.abs(p.position.y - camHeight) < 0.02
     const backOff = (lo: number, place: (v: number) => OtsPose): { pose: OtsPose; at: number } => {
       const near = place(lo)
-      if (angle === 'eye' || reaches(near)) return { pose: near, at: lo }
+      if ((angle === 'eye' && raise === 0) || reaches(near)) return { pose: near, at: lo }
       let hi = lo * OTS_MAX_BACKOFF
       let pose = place(hi)
       if (!reaches(pose)) return { pose, at: hi }
@@ -517,9 +538,10 @@ export function solveShot(spec: ShotSpec, subjects: ShotSubject[], setup: ShotSe
     return { position, pan: aim.pan, tilt: aim.tilt, roll, focalLength, achievedSize }
   }
 
-  const lens = spec.lens ?? setup.focalLength
+  const lens = (spec.lens ?? setup.focalLength) * (spec.view?.closer ?? 1)
   const angle = spec.angle ?? 'eye'
-  const dir = sideDirection(spec, first, byId, subjects, lineSide)
+  const raise = spec.view?.raise ?? 0
+  const dir = turnXZ(sideDirection(spec, first, byId, subjects, lineSide), ((spec.view?.turnDeg ?? 0) * Math.PI) / 180)
 
   // Vertical requirement from the tallest subject.
   let tallest = first
@@ -551,8 +573,8 @@ export function solveShot(spec: ShotSpec, subjects: ShotSubject[], setup: ShotSe
     if (angle === 'overhead') {
       return { position: { x: aim.x, y: aim.y + d, z: aim.z }, pan: first.subject.heading, tilt: -Math.PI / 2 }
     }
-    const position = { x: aim.x + dir.x * d, y: cameraY(angle, aim.y, first.groundY), z: aim.z + dir.z * d }
-    if (angle === 'eye') return { position, pan: headingOf({ x: -dir.x, y: 0, z: -dir.z }), tilt: 0 }
+    const position = { x: aim.x + dir.x * d, y: cameraY(angle, aim.y, first.groundY) + raise, z: aim.z + dir.z * d }
+    if (angle === 'eye' && raise === 0) return { position, pan: headingOf({ x: -dir.x, y: 0, z: -dir.z }), tilt: 0 }
     return { position, ...aimAt(position, aim) }
   }
 

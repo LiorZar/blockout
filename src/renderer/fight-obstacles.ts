@@ -12,6 +12,7 @@
 
 import * as THREE from 'three'
 import { assetSpec } from '@engine/assets'
+import type { SetBox } from '@engine/camera-clear'
 import type { FightObstacle } from '@engine/fight/obstacles'
 import type { BlockingTake, Entity, Scene } from '@engine/types'
 import { buildAsset } from './viewport/builders'
@@ -80,6 +81,90 @@ export function fightObstacles(scene: Scene, take: BlockingTake | undefined): Fi
         hx: f.hx * k,
         hz: f.hz * k,
         heading: h
+      })
+    }
+  }
+  return out
+}
+
+// Fork (fix-camera-set): the same props for cameras (src/engine/camera-clear.ts), mesh by mesh with their
+// full height — a wall taller than the body band still hides what is behind it. Shop glass counts too (a pane
+// across the frame washes it out). Floors, rugs and kerbs (under CAMERA_LOW) don't, and neither does whatever
+// the kit's own animation moves (the club's turning light cones).
+
+const CAMERA_LOW = 0.35
+
+type CameraPiece = Footprint & { y0: number; y1: number }
+
+const cameraCache = new Map<string, CameraPiece[]>()
+
+function cameraPieces(e: Entity): CameraPiece[] {
+  const key = `${e.assetId}|${JSON.stringify(e.params ?? {})}`
+  const hit = cameraCache.get(key)
+  if (hit) return hit
+  const out: CameraPiece[] = []
+  const built = buildAsset(e.assetId, e.params)
+  const group = built.group
+  group.updateMatrixWorld(true)
+  // A kit's own animation (the club's turning light cones) isn't fixed set: leave out whatever it moves.
+  const moves = new Set<THREE.Object3D>()
+  if (built.animate) {
+    const pose = (time: number): Map<THREE.Object3D, THREE.Matrix4> => {
+      built.animate!({ gait: 'stand', phase: 0, speed: 0, distance: 0, time })
+      group.updateMatrixWorld(true)
+      const m = new Map<THREE.Object3D, THREE.Matrix4>()
+      group.traverse((o) => m.set(o, o.matrixWorld.clone()))
+      return m
+    }
+    const rest = pose(0)
+    for (const time of [1.3, 3.7]) for (const [o, m] of pose(time)) if (!m.equals(rest.get(o)!)) moves.add(o)
+    pose(0)
+  }
+  const bb = new THREE.Box3()
+  group.traverseVisible((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh || !mesh.geometry || moves.has(mesh)) return
+    if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
+    bb.copy(mesh.geometry.boundingBox!).applyMatrix4(mesh.matrixWorld)
+    if (bb.max.y < CAMERA_LOW) return
+    out.push({
+      x: (bb.min.x + bb.max.x) / 2,
+      z: (bb.min.z + bb.max.z) / 2,
+      hx: (bb.max.x - bb.min.x) / 2,
+      hz: (bb.max.z - bb.min.z) / 2,
+      y0: bb.min.y,
+      y1: bb.max.y
+    })
+  })
+  cameraCache.set(key, out)
+  return out
+}
+
+/** The static props and set pieces of a scene that can block a camera or hold it out, as boxes. */
+export function cameraBoxes(scene: Scene, take: BlockingTake | undefined): SetBox[] {
+  const moving = new Set((take?.tracks ?? []).filter((t) => t.marks.length > 0).map((t) => t.entityId))
+  const out: SetBox[] = []
+  for (const e of scene.entities) {
+    if (NOT_PROPS.has(assetSpec(e.assetId).category) || e.assetId.startsWith('person.')) continue
+    if (e.heldBy || e.attachedTo || e.excludeFromExport || moving.has(e.id)) continue
+    const { position: p, rotationY: h, scale } = e.transform
+    const k = scale > 0 ? scale : 1
+    const c = Math.cos(h)
+    const s = Math.sin(h)
+    const kit = assetSpec(e.assetId).category === 'environment'
+    for (const f of cameraPieces(e)) {
+      const x = p.x + (f.x * c + f.z * s) * k
+      const z = p.z + (-f.x * s + f.z * c) * k
+      out.push({
+        entityId: e.id,
+        name: kit ? `the ${e.name} set at (${x.toFixed(1)}, ${z.toFixed(1)})` : e.label?.text || e.name,
+        x,
+        z,
+        hx: f.hx * k,
+        hz: f.hz * k,
+        heading: h,
+        y0: p.y + f.y0 * k,
+        y1: p.y + f.y1 * k
       })
     }
   }

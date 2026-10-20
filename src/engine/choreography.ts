@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves; see MODIFICATIONS.md.
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror; see MODIFICATIONS.md.
 /**
  * Choreography engine: routines that read as REAL staged choreography —
  * timed dance phrases hit on the count and change formation with real walking;
@@ -162,7 +162,7 @@ const LR_PAIRS: readonly [string, string][] = [
   ['kneeL', 'kneeR']
 ]
 /** Twist/lean channels whose sign flips under a mirror. */
-const NEGATE_ON_MIRROR = new Set(['torsoY', 'headY', 'torsoZ', 'headZ'])
+const NEGATE_ON_MIRROR = new Set(['torsoY', 'headY', 'torsoZ', 'headZ', 'rootY', 'rootZ']) // fork: root yaw / roll
 
 /**
  * Mirror a pose: swap L/R joint values and negate the twist/lean channels so a
@@ -412,7 +412,7 @@ function danceRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {
     if (isLast) {
       const freeze = firstOf(FREEZE_MOVES) ?? motion(vocabSafe[0]!)!
       const holdPose = freeze.keyframes[freeze.keyframes.length - 1]!
-      const endT = phraseStart + phraseDur
+      const endT = Math.min(phraseStart + phraseDur, spec.durationS) // fork: never past the Duration
       for (let i = 0; i < n; i++) {
         const mirror = spec.mirror ? i % 2 === 1 : false
         const pos = world(currentPos[i]!)
@@ -439,7 +439,7 @@ function danceRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {
       name: `Dancer ${i + 1}`,
       position: p,
       rotationY: facing,
-      marks: dedupeSort(marks[i]!)
+      marks: dedupeSort(marks[i]!.filter((m) => m.time <= spec.durationS + 1e-9)) // fork: the freeze lands on the Duration
     })
   }
   return out

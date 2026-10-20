@@ -550,6 +550,99 @@ Changes in this fork (2026):
   chest below the shoulder, beating gently on the shot time; a stoop raises
   the arm as much (the hand used to rise 0.53 m above the shoulder, a hail).
   Tests: `tests/unit/gaits.test.ts` (six bodies, 4 s).
+- Clear camera views (fix-camera-set; qa-export B3 c, d;
+  `src/engine/camera-clear.ts`, `src/renderer/camera-view.ts`): shot words
+  (`frame_shot` and the Shot panel, through `setShotAtTime`), fight coverage,
+  `apply_framing` and the people-follow camera moves keep the camera out of
+  walls, props and bodies with the framed subject in view. The set comes in
+  as data: `cameraBoxes` (`renderer/fight-obstacles.ts`) reads each static
+  prop's and kit's meshes as boxes with their full height, shop glass
+  included (anything under 0.35 m, and whatever the kit's own animation
+  moves, like the club's turning light cones, doesn't count); cast is read
+  off the evaluator (people as spheres on the posed rig, moving vehicles and
+  animals as boxes). A blocked view takes the nearest clear one over the time
+  the mark drives: closer on a wider lens at the same frame size, higher,
+  then swung round the subject (fight-line shots at most 60°, over the
+  shoulder only higher). Shot words keep the choice in `ShotSpec.view`
+  (`turnDeg`, `raise`, `closer`, `blockedBy`, `noClearView`), which
+  `solveShot` applies every frame, so a clear view is solved exactly as
+  before and nothing geometric runs on the `state(t)` path. A follow move's
+  marks each take the nearest clear view of the whole subject (staying near
+  the previous mark's), and a cleared mark is added, swung round the subject
+  between its neighbours, wherever the evaluated path passes through a wall
+  or body, comes within 1.5 m of the subject or half a metre of anyone else,
+  or loses the subject. qa-export's scenes (`.maestro/fix-camera-set-visual`):
+  the nightclub 2S on six dancers went from 24/24 black frames to 0, every
+  dancer seen in 24/24 samples; the downtown chase follow-behind sees the
+  runner in 22/24 (was 16/24, the camera 0.46 m from its back) and
+  lead-the-subject in 23/24 (was 21/24, 2 flat frames). Results carry a `note` (what blocked
+  the view, what changed) or a `warning` (no clear view): `frame_shot`,
+  `apply_framing`, `apply_camera_move`, and `fight_coverage`'s `views`. The
+  2S math moved unchanged to `engine/framing.ts` (`groupShotPose`). Tests:
+  `tests/unit/camera-clear.test.ts`, `camera-clear-store.test.ts`,
+  `camera-clear-moves.test.ts`.
+- A place behind the action (fix-env; qa-export "void %";
+  `src/renderer/viewport/environment.ts`, small hooks in `SceneManager`):
+  every lighting preset renders a ground that runs out to a horizon under a
+  graded sky, instead of one flat background colour over a transparent
+  shadow-catcher (day was RGB 57,64,72 above and below, with no horizon). A
+  gradient dome (zenith → horizon → far ground below the horizon, unlit,
+  exact sRGB, drawn at the far plane around any camera) and a lit ground
+  1 cm under the floor line, 4 km across, with a faint 1 m checker
+  (box-filtered, so it never shimmers) that hazes into the far-ground colour
+  a little darker than the sky's horizon, so the eye line stays crisp.
+  Interiors and the club swap the sky for a dim room surround and haze the
+  floor within a hall's depth. The dome is clean-pass only; the ground stays
+  in depth / normal as the shadow plane did, so the depth passes are
+  unchanged; shadows still come from the upstream catcher. User fog fades to
+  the horizon colour. The physical `*Sky` presets keep their sky, scaled by
+  `SKY_EXPOSURE` and given the viewport's ACES curve when the renderer has
+  none (exports), so midday is a blue sky instead of a white void. All
+  values are per-preset constants (`ENV_LOOKS`): deterministic. Tests:
+  `tests/unit/environment.test.ts`.
+- Export stamps are local time (fix-env): export folders, frames, animatics
+  and contact sheets are stamped `YYYY-MM-DD-HH-mm-ss` from the local clock
+  (`src/renderer/export/stamp.ts`); `toISOString()` stamped UTC. Tests:
+  `tests/unit/export-stamp.test.ts`.
+- Fight rest steps and step-ins keep their feet down (fix-fight-legs;
+  `animatePerson` in `builders.ts`, `fight/solve.ts`): with joint overrides,
+  a gait's root is set after them so the gait pose rests where the stand pose
+  with the same joints rests (the evaluator's `floor.ts` rule for fight and
+  motion marks); the walk under a fighter's guard floated 5–6 cm (elderly up
+  to 9.8 cm). Without overrides, and for stand, nothing changes. Fight
+  step-ins walk instead of jogging (a jog's flight lifted both feet up to
+  3 cm). Tests: `tests/unit/fight-legs.test.ts` (every walk frame of seven
+  fights on six bodies: the lowest foot within ±2 cm).
+- Elbows reach a taller head (fix-fight-legs; `fightTarget`, `solveLean` in
+  `fight/solve.ts`): an elbow to the head lands on the jaw, the head's
+  surface 35° below its middle (it aimed at the middle); an arm blow still
+  more than 1.5 cm off after the wider pitch is solved again with a torso
+  lean (pitch and side bend, at most 20° on top of the move's own) under the
+  re-solved limb pitch, the smallest lean that reaches, and never one that
+  takes the attacker's torso or head into the defender's body (or deeper
+  than upright); one that still can't reach keeps its warning. The elbow up
+  to a taller head lands: woman → man 0.5 cm (was 7.1), mannequinFemale →
+  mannequinMale 0.0 cm (was 3.3), elderly → man 0.0 cm with a 14° lean (was
+  3.6); mannequinFemale → man 7.3 cm (was 15.4) and the child's arm blows
+  on adults stay warned. Kicks don't lean and keep their lift. Tests:
+  `tests/unit/fight-legs.test.ts`.
+- Root orientation channel for motion playback (fix-root-pitch;
+  `skeleton.ts`, `builders.ts`, `floor.ts`, `evaluate.ts`, `choreography.ts`):
+  mark joints may carry `rootX` (pitch, + tips forward / prone), `rootY`
+  (yaw, + counter-clockwise from above) and `rootZ` (roll, + to the right),
+  which turn the whole body about the pelvis joint: the pelvis frame in
+  `poseFrames`, the pelvis group in `animatePerson`, so FK, the rendered rig,
+  held weapons, shot framing and the floor proxy all see them. The evaluator
+  blends them on the shortest arc (a full roll never spins back), and
+  `mirrorJoints` negates yaw and roll. On a posed move the body's lowest
+  point now follows the straight line between keyframe lows exactly (it used
+  to keep the root's own line when that was higher), so a body turning over
+  on the floor never hovers. The mannequin floor proxy takes the sculpt's
+  full pelvis and torso tables with their glute, lat, chest and bust bulges
+  and the deltoid cap (a supine female mannequin sank 1.9 cm), and
+  `lowestY` runs allocation-free. Tests: `tests/unit/root-pose.test.ts`
+  (rendered rig = FK at 1e-6 with root channels on six bodies, proxy vs mesh,
+  conventions, mirror, shortest arc, grounded posed legs).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

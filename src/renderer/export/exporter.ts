@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's per-profile file-size cap in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's per-profile file-size cap and local-time export stamps in 2026; see MODIFICATIONS.md.
 /**
  * The Deliver pipeline. Exports are deterministic: the timeline is stepped
  * at exactly the shot's fps and every frame is rendered from the same
@@ -16,6 +16,7 @@ import type { ProjectDoc, Scene, Shot } from '@engine/types'
 import { useStore } from '../store'
 import { getSceneManager, type SceneManager } from './scene-access'
 import { buildComfyWorkflow } from './comfy'
+import { exportStamp } from './stamp'
 
 /** 'auto' = the profile's native size; 720p/1080p pin the SHORT edge. */
 export type ExportResolution = 'auto' | '720p' | '1080p'
@@ -276,7 +277,7 @@ export async function exportShot(opts: ExportOptions): Promise<ExportResult> {
   const profile = getProfile(opts.profileId)
   const { width, height } = exportDims(profile, shot.aspect, opts.resolution ?? 'auto')
 
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const stamp = exportStamp()
   const pkg = freshPath(`${folder}/exports/${sanitize(scene.name)}/Shot-${sanitize(shot.name)}/export-${stamp}`)
 
   const passes: ('clean' | 'depth' | 'normal')[] = []
@@ -423,7 +424,7 @@ export async function exportStillAtPlayhead(
   try {
     manager.renderFrameAt(renderer, t, width, height, 'clean', { showLabels })
     const png = await canvasPng(canvas)
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const stamp = exportStamp()
     const out = freshPath(`${folder}/exports/${sanitize(scene.name)}/Shot-${sanitize(shot.name)}/frames/${sanitize(shot.name)}_${t.toFixed(2)}s_${stamp}`, '.png')
     await window.blockout.exportWriteFile(out, png)
     s.setExportProgress({ lastPackagePath: out })
@@ -475,7 +476,7 @@ export async function exportAnimatic(
   if (originalShot) s.selectShot(originalShot)
 
   // Fork: timestamped like export_shot, so a re-export never overwrites the last animatic.
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const stamp = exportStamp()
   const out = freshPath(`${folder}/exports/${sanitize(scene.name)}/animatic-${stamp}`, '.mp4')
   const concat = await window.blockout.exportConcat(out, clips)
   if (!concat.ok) return { ok: false, error: concat.error }
@@ -547,7 +548,7 @@ export async function exportContactSheet(): Promise<ExportResult> {
   const blob = await new Promise<Blob | null>((r) => sheet.toBlob(r, 'image/png'))
   if (!blob) return { ok: false, error: 'PNG encode failed' }
   // Fork: timestamped like export_shot, so a re-export never overwrites the last sheet.
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  const stamp = exportStamp()
   const out = freshPath(`${folder}/exports/${sanitize(scene.name)}/contact-sheet-${stamp}`, '.png')
   await window.blockout.exportWriteFile(out, await blob.arrayBuffer())
   return { ok: true, packagePath: out }

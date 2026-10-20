@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts); see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -46,10 +46,15 @@ function lerpJoints(
   const out: Record<string, number> = {}
   const keys = new Set([...Object.keys(from ?? {}), ...Object.keys(to ?? {})])
   for (const key of keys) {
-    out[key] = (from?.[key] ?? 0) + ((to?.[key] ?? 0) - (from?.[key] ?? 0)) * u
+    // Fork: the root channels (rootX / rootY / rootZ) are angles of the whole
+    // body and take the shortest arc, so a full roll never spins back.
+    if (ROOT_CHANNELS.has(key)) out[key] = lerpAngle(from?.[key] ?? 0, to?.[key] ?? 0, u)
+    else out[key] = (from?.[key] ?? 0) + ((to?.[key] ?? 0) - (from?.[key] ?? 0)) * u
   }
   return out
 }
+
+const ROOT_CHANNELS = new Set(['rootX', 'rootY', 'rootZ'])
 
 interface Leg<M extends MarkBase> {
   from: M
@@ -330,7 +335,6 @@ export class ShotEvaluator {
                 { y: from.position.y, joints: from.joints },
                 { y: to.position.y, joints: to.joints },
                 joints,
-                r.position.y,
                 easedProgress(r.legProgress, from.easeOut, to.easeIn)
               )
             }

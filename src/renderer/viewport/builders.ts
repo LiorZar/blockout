@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts); see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -164,6 +164,7 @@ function numParam(params: Record<string, number | string> | undefined, key: stri
 
 interface PersonJoints {
   root: THREE.Group // child of group; we tip THIS for lie/fall, not the group
+  pelvis: THREE.Group // fork: turned by the motion root channels (rootX / rootY / rootZ)
   torso: THREE.Group
   head: THREE.Group
   hipL: THREE.Group
@@ -273,6 +274,7 @@ function buildPerson(assetId: string, params?: Record<string, number | string>):
 
   const j: PersonJoints = {
     root,
+    pelvis,
     torso,
     head,
     hipL: legL.hip,
@@ -326,7 +328,7 @@ function buildMannequin(assetId: string, params?: Record<string, number | string
   const build = Math.min(1.3, Math.max(0.8, numParam(params, 'build', 1)))
   const bones = { pelvis, torso, head, shoulderL, shoulderR, elbowL, elbowR, hipL, hipR, kneeL, kneeR }
   dressMannequin(bones, dims, assetId === 'person.mannequinFemale', build)
-  const j: PersonJoints = { root, torso, head, hipL, hipR, kneeL, kneeR, shoulderL, shoulderR, elbowL, elbowR, legLen, baseLean: dims.baseLean, shape: bodyShape(assetId, params) }
+  const j: PersonJoints = { root, pelvis, torso, head, hipL, hipR, kneeL, kneeR, shoulderL, shoulderR, elbowL, elbowR, legLen, baseLean: dims.baseLean, shape: bodyShape(assetId, params) }
   const setTint = makeSetTint(group)
   const animate = (input: AnimInput) => animatePerson(j, input)
   animate({ gait: 'stand', phase: 0, speed: 0, distance: 0, time: 0 })
@@ -336,6 +338,7 @@ function buildMannequin(assetId: string, params?: Record<string, number | string
 function resetPersonPose(j: PersonJoints): void {
   j.root.rotation.set(0, 0, 0)
   j.root.position.set(0, 0, 0)
+  j.pelvis.rotation.set(0, 0, 0)
   j.torso.rotation.set(0, 0, 0)
   j.head.rotation.set(0, 0, 0)
   j.hipL.rotation.set(0, 0, 0)
@@ -434,6 +437,9 @@ function runLeg(phase: number, c: RunCycle, d: PersonDims, duty: number): { hip:
 /** Fork: the gait pose's lowest point over the root (engine floor.ts proxy, before the manual joint offsets). */
 function gaitLowest(j: PersonJoints): number {
   const joints = {
+    rootX: -j.pelvis.rotation.x,
+    rootY: j.pelvis.rotation.y,
+    rootZ: -j.pelvis.rotation.z,
     torsoX: j.baseLean - j.torso.rotation.x,
     torsoY: j.torso.rotation.y,
     torsoZ: -j.torso.rotation.z,
@@ -598,6 +604,9 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
   // "out" went inward). skeleton.ts poseEffectors mirrors this block.
   const ov = input.overrides
   if (ov) {
+    // Fork: the gait pose's lowest point before the offsets (for the final grounding below).
+    const ownPose = input.gait !== 'stand' && input.gait !== 'gesture'
+    const before = ownPose ? gaitLowest(j) : 0
     j.shoulderL.rotation.x -= ov.shoulderLX ?? 0
     j.shoulderR.rotation.x -= ov.shoulderRX ?? 0
     j.shoulderL.rotation.z -= ov.shoulderLZ ?? 0
@@ -619,6 +628,14 @@ function animatePerson(j: PersonJoints, input: AnimInput): void {
     j.head.rotation.x -= ov.headX ?? 0
     j.head.rotation.y += ov.headY ?? 0
     j.head.rotation.z -= ov.headZ ?? 0
+    // Fork: the root channels turn the whole body about the pelvis joint
+    // (skeleton.ts poseFrames): pitch (+ forward), yaw, roll (+ right).
+    j.pelvis.rotation.set(-(ov.rootX ?? 0), ov.rootY ?? 0, -(ov.rootZ ?? 0))
+    // Fork: ground the final pose. The evaluator rests the stand pose plus
+    // these joints on the floor (floor.ts, fight and motion marks), so the
+    // gait plus the joints rests where that pose rests: a walk under a
+    // fighter's guard keeps its feet down (it floated by the guard's knee bend).
+    if (ownPose) j.root.position.y += before - gaitLowest(j) + lowestY(j.shape, ov) - lowestY(j.shape, undefined)
   }
 }
 

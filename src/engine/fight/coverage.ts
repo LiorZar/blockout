@@ -28,6 +28,9 @@
  * the attacker's guard stays under the defender's face; follow is a
  * handheld two-shot led by the attacker.
  *
+ * Clear views (fork, fix-camera-set): with `clear`, every framing is given a
+ * clear view of the set and cast over the time it drives (camera-clear.ts).
+ *
  * PURE: no DOM / three.js / Electron.
  */
 
@@ -48,6 +51,8 @@ export interface CoverageMark {
 export interface CoverageOptions {
   /** Each fighter's longest held weapon, grip to business end (m); 0 unarmed. */
   reach?: [number, number]
+  /** Gives a framing a clear view over [its time, the next framing's time] (the store passes camera-clear.ts's). */
+  clear?: (shot: ShotSpec, span: [number, number]) => ShotSpec
 }
 
 /** Weapon reach class: 0 unarmed (or a knife, pistol, shield), 1 short (axe, bat), 2 long (sword, katana, spear, long gun). */
@@ -63,6 +68,18 @@ export function fightCoverage(
   mode: CoverageMode,
   lineSide: 1 | -1,
   opts: CoverageOptions = {}
+): CoverageMark[] {
+  const marks = coverageMarks(fight, report, mode, lineSide, opts)
+  const clear = opts.clear
+  return clear ? marks.map((m, i) => ({ ...m, shot: clear(m.shot, [m.time, marks[i + 1]?.time ?? Infinity]) })) : marks
+}
+
+function coverageMarks(
+  fight: FightDoc,
+  report: FightSolution['report'],
+  mode: CoverageMode,
+  lineSide: 1 | -1,
+  opts: CoverageOptions
 ): CoverageMark[] {
   const [a, b] = fight.fighterIds
   const armed = reachClass(Math.max(0, ...(opts.reach ?? [0, 0])))

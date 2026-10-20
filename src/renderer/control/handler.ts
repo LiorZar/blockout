@@ -33,6 +33,7 @@ import type { FramingKind } from '../bus'
 import { SHOT_SIZES } from '@engine/camera'
 import { ShotEvaluator } from '@engine/evaluate'
 import { parseShotWords } from '@engine/shot-words'
+import { viewNote } from '@engine/camera-clear'
 import type { ShotAngle, ShotSide, ShotSpec } from '@engine/shot'
 import { MOVE_ALIASES, SHOT_MOVES, STRIKE_IDS, listFightMoves, listShotMoves } from '@engine/fight/moves'
 import { defaultTarget, formatFightScript, parseFightScript, randomFightScript } from '@engine/fight/script'
@@ -741,7 +742,10 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const side = str(params, 'side')
       if (side !== undefined && side !== 'left' && side !== 'right') throw new Error('fight_coverage: side must be left or right.')
       const r = s.coverFight(fightId, mode as NonNullable<FightDoc['coverage']>, side)
-      return { fightId, mode, lineSide: r.lineSide, cameraMarks: r.cameraMarks }
+      // Fork (fix-camera-set): framings moved off a blocked view, and those with no clear view.
+      const st = useStore.getState()
+      const views = st.shot()!.camera.marks.filter((m) => m.shot?.view).map((m) => ({ time: m.time, ...viewNote(st.scene()!, m.shot!, m.focalLength / (m.shot!.view!.closer ?? 1)) }))
+      return { fightId, mode, lineSide: r.lineSide, cameraMarks: r.cameraMarks, ...(views.length > 0 ? { views } : {}) }
     }
 
     case 'get_fight': {
@@ -777,8 +781,10 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const st = useStore.getState()
       const shot = st.shot()!
       const mark = shot.camera.marks.find((m) => m.id === markId)!
-      const solved = new ShotEvaluator(st.scene()!, shot).solveShotAt(spec, mark.time, mark.focalLength)
-      return { markId, time: mark.time, ...(solved?.achievedSize ? { achievedSize: solved.achievedSize } : {}) }
+      const solved = new ShotEvaluator(st.scene()!, shot).solveShotAt(mark.shot ?? spec, mark.time, mark.focalLength)
+      // Fork (fix-camera-set): a blocked view was moved to the nearest clear one; say how (or that none is clear).
+      const view = mark.shot ? viewNote(st.scene()!, mark.shot, mark.focalLength / (mark.shot.view?.closer ?? 1)) : {}
+      return { markId, time: mark.time, ...(solved?.achievedSize ? { achievedSize: solved.achievedSize } : {}), ...view }
     }
 
     case 'set_shot': {
@@ -842,8 +848,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
           throw new Error(`No entity "${missing[0]}" in the current scene — call get_state for ids.`)
         }
       }
-      requireManager().applyFraming(kind, entityIds)
-      return { applied: kind }
+      const view = requireManager().applyFraming(kind, entityIds) // fork (fix-camera-set): note / warning
+      return { applied: kind, ...view }
     }
 
     case 'apply_camera_move': {
@@ -859,8 +865,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
           `Unknown presetId "${presetId}". Valid: ${CAMERA_MOVE_PRESETS.map((p) => p.id).join(', ')}`
         )
       }
-      requireManager().applyCameraMove(presetId, subjectId)
-      return { applied: presetId }
+      const view = requireManager().applyCameraMove(presetId, subjectId) // fork (fix-camera-set): note / warning
+      return { applied: presetId, ...view }
     }
 
     case 'list_camera_moves': {

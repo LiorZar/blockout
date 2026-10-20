@@ -105,6 +105,11 @@ const LEG_PITCH = 0.9
 const ABDUCT_PITCH = 0.6
 /** Reach (fork): a blow that can't land tries again with those pitch ranges this much wider. */
 const WIDE_REACH = 1.8
+/** Reach (fork): an arm blow still this far off after the wider pitch leans the torso too, at most MAX_LEAN. */
+const LEAN_TOLERANCE = 0.015
+const MAX_LEAN = (20 * Math.PI) / 180
+/** An elbow to the head lands on the jaw: the head's surface this far below its middle (rad, fork). */
+const ELBOW_JAW = (35 * Math.PI) / 180
 /** A kick that can't reach rises onto the toes / hops — at most this high (m). */
 export const MAX_KICK_LIFT = 0.5
 /** A body kick lands this far up the torso (fork): the midsection, between the belt and the lower ribs. */
@@ -294,6 +299,11 @@ export function fightTarget(
   const w = (p: V3): V3 => toWorld(p, position, heading, scale)
   const t = unit(toward)
   const push = (p: V3, d: number): V3 => ({ x: p.x + t.x * d, y: p.y, z: p.z + t.z * d })
+  if (zone === 'head' && effector.startsWith('elbow')) {
+    // Fork: an elbow lands on the jaw, the head's surface ELBOW_JAW below its middle.
+    const h = w(fx.head)
+    return push({ ...h, y: h.y - dims.headR * scale * Math.sin(ELBOW_JAW) }, dims.headR * scale * Math.cos(ELBOW_JAW))
+  }
   if (zone === 'head') return push(w(fx.head), dims.headR * scale)
   if (zone === 'legs') {
     const l = w(fx.kneeL)
@@ -416,6 +426,54 @@ function solvePitch(f: Fighter, joints: Joints, e: Effector, rootY: number, targ
   const elbow = `elbow${e.endsWith('L') ? 'L' : 'R'}`
   const third = solveChannel(f, withOffsets(joints, out), e, rootY, targetY, elbow, WEAPON_ELBOW)
   return third.err < err ? { ...out, [elbow]: third.delta } : out
+}
+
+/**
+ * Reach (fork): a torso lean (pitch torsoX and side bend torsoZ, on top of
+ * the move's own, at most MAX_LEAN) plus the limb pitch re-solved on it, that
+ * bring an arm blow's effector to height y: in the lean direction that comes
+ * closest at the full lean (or `dir`, found on an earlier pass), the
+ * smallest lean that reaches, else the full lean. `spacing` is how far the
+ * attacker placed in a pose stays out of the defender's body; a lean that
+ * takes it into the body, or deeper than upright, is out.
+ */
+function solveLean(
+  f: Fighter,
+  joints: Joints,
+  e: Effector,
+  rootY: number,
+  targetY: number,
+  wide: number,
+  spacing: (joints: Joints) => number,
+  dir?: number
+): { offsets: Joints; dir?: number } {
+  let minSpacing = -Infinity
+  const at = (r: number, a: number): { o: Joints; err: number; a: number; space: number } => {
+    const lean: Joints = { torsoX: r * Math.cos(a), torsoZ: r * Math.sin(a) }
+    const o = { ...solvePitch(f, withOffsets(joints, lean), e, rootY, targetY, wide), ...lean }
+    const posed = withOffsets(joints, o)
+    const space = spacing(posed)
+    return { o, err: space < minSpacing ? Infinity : Math.abs(rootY + contactLocal(f, posed, e).y * f.scale - targetY), a, space }
+  }
+  const upright = at(0, 0)
+  if (upright.err <= 1e-3) return { offsets: upright.o, dir }
+  minSpacing = Math.min(upright.space, 0) - 0.005
+  const DIRS = 12
+  let full = at(MAX_LEAN, dir ?? 0)
+  for (let d = 1; dir === undefined && d < DIRS; d++) {
+    const c = at(MAX_LEAN, (2 * Math.PI * d) / DIRS)
+    if (c.err < full.err) full = c
+  }
+  if (full.err >= upright.err) return { offsets: upright.o, dir }
+  if (full.err > 1e-3) return { offsets: full.o, dir: full.a }
+  let lo = 0
+  let hi = MAX_LEAN
+  for (let i = 0; i < 10; i++) {
+    const mid = (lo + hi) / 2
+    if (at(mid, full.a).err <= 1e-3) hi = mid
+    else lo = mid
+  }
+  return { offsets: at(hi, full.a).o, dir: full.a }
 }
 
 function withOffsets(joints: Joints, offsets: Joints): Joints {
@@ -757,13 +815,14 @@ export function solveFight(
         const aimJoints = o === 'slip' || o === 'duck' || o === 'miss' ? guard : dState.joints
         const aimPos: V3 = o === 'slip' || o === 'duck' || o === 'miss' ? { x: D.x, y: groundY(def.floor, guard), z: D.z } : dPos
         const kick = imp.effector.startsWith('foot') || imp.effector.startsWith('knee')
-        // One placement; `wide` scales the limbs' pitch ranges (fork: the reach retry below).
-        const placeAt = (wide: number) => {
+        // One placement; `wide` scales the limbs' pitch ranges, `lean` leans the torso too (fork: the reach retry below).
+        const placeAt = (wide: number, lean = false) => {
           // Floor contact (fork): the root height rests the pitched pose's lowest point on the floor.
           let rootY = groundY(atk.floor, kf.joints)
           let R: XZ = add(aimPos, unit(sub(A0, aimPos)), 0.8)
           let result = { root: R, heading: 0, pitch: {} as Joints, lift: 0, base: R, target: aimPos, error: Infinity, rootY }
           let armFix: Joints = {}
+          let leanDir: number | undefined
           for (let it = 0; it < 8; it++) {
             const toward = unit(sub(R, aimPos))
             let T3 = fightTarget(def.dims, def.scale, aimJoints, aimPos, hd, toward, beat.target, imp.effector, def.torso)
@@ -797,7 +856,22 @@ export function solveFight(
               T3 = { x: hand.x + toward.x * 0.05 * def.scale, y: hand.y, z: hand.z + toward.z * 0.05 * def.scale }
             }
             // A two-hand grip pitches both arms alike, so the off hand stays on the grip.
-            const pitch = gripPitch(beat.move, solvePitch(atk, kf.joints, imp.effector, rootY, T3.y, wide))
+            // A lean (fork): the attacker placed in a pose as below, and how far its torso and head stay out of the defender.
+            const spacing = (j: Joints): number => {
+              const e = contactLocal(atk, j, imp.effector)
+              const u = unit(sub(A0, T3), unit(sub(A0, aimPos)))
+              const root = add(T3, u, Math.hypot(e.x, e.z) * atk.scale)
+              const at: V3 = { x: root.x, y: rootY, z: root.z }
+              const heading = Math.atan2(u.x, u.z) - Math.atan2(-e.x, -e.z)
+              const toward = unit(sub(aimPos, root))
+              const head = toWorld(poseEffectors(atk.dims, j).head, at, heading, atk.scale)
+              const points = [0.3, 0.6, 0.9].map((y) => torsoSurface(atk.torso, atk.dims, atk.scale, j, at, heading, toward, y))
+              points.push({ x: head.x + toward.x * atk.dims.headR * atk.scale, y: head.y, z: head.z + toward.z * atk.dims.headR * atk.scale })
+              return Math.min(...points.map((q) => bodyClearance(def.torso, def.dims, def.build, def.scale, aimJoints, aimPos, hd, q)))
+            }
+            const fit = lean ? solveLean(atk, kf.joints, imp.effector, rootY, T3.y, wide, spacing, leanDir) : null
+            leanDir = fit?.dir
+            const pitch = gripPitch(beat.move, fit ? fit.offsets : solvePitch(atk, kf.joints, imp.effector, rootY, T3.y, wide))
             const joints = withOffsets(kf.joints, pitch)
             const e = contactLocal(atk, joints, imp.effector)
             // A kick still short of the target lifts the kicker, only as much as needed.
@@ -832,6 +906,14 @@ export function solveFight(
           if (better) {
             result = wider.result
             armFix = wider.armFix
+          }
+        }
+        // An arm blow still off the surface (an elbow up to a taller head) leans the torso into it, ≤ 20°.
+        if ((o === 'hit' || o === 'ko') && !kick && result.error > LEAN_TOLERANCE) {
+          const leaned = placeAt(WIDE_REACH, true)
+          if (leaned.result.error < result.error - 1e-3) {
+            result = leaned.result
+            armFix = leaned.armFix
           }
         }
         const ev = blockEvents.get(i)
@@ -917,8 +999,8 @@ export function solveFight(
       if (j === 0) {
         const lastMark = atk.marks[atk.marks.length - 1]!
         const d = flat(sub(pos, { x: lastMark.position.x, z: lastMark.position.z }))
-        const v = d / Math.max(1e-6, t - lastMark.time)
-        gait = d < 0.05 ? 'stand' : v <= 2.0 ? 'walk' : 'jog'
+        // Fork: a step-in (≤ MAX_STEP_SPEED) walks; a jog's flight lifted both feet off the floor.
+        gait = d < 0.05 ? 'stand' : 'walk'
       }
       addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j)), gait, joints, pl.heading)
     }

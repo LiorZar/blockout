@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -29,7 +29,9 @@ import {
 import { entityHeight } from '@engine/assets'
 import { headingOf } from '@engine/path'
 import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
-import { pickFramingSubjectIds } from '@engine/framing'
+import { groupShotPose, pickFramingSubjectIds } from '@engine/framing'
+import type { ViewOutcome } from '@engine/camera-clear'
+import { clearFollowMarks, clearFramingPose } from '../camera-view'
 import type { Entity, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
 import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
@@ -37,6 +39,7 @@ import { buildAsset, markMesh, labelSprite, type BuiltAsset } from './builders'
 import { heldWeaponMatrix, steadyArm } from './hold'
 import { canHoldWeapons, weaponSpec } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
+import { StageEnvironment, toneMapSky } from './environment'
 
 const RAD2DEG = 180 / Math.PI
 
@@ -110,6 +113,8 @@ export class SceneManager {
    *  (deterministic scattering from the sun position); hidden in depth/normal
    *  passes and whenever a non-sky preset is active. */
   private sky: Sky
+  /** Fork (fix-env): the ground and graded sky behind the action (environment.ts). */
+  private stage = new StageEnvironment()
   private skyEnabled = false
   /** Bottom-right orientation gizmo (editor-only; never rendered into exports). */
   private viewHelper: ViewHelper | null = null
@@ -254,6 +259,9 @@ export class SceneManager {
     this.sky.visible = false
     this.sky.name = '__sky'
     this.scene.add(this.sky)
+    // Fork (fix-env): a ground to the horizon under a graded sky, not a flat void.
+    this.scene.add(this.stage.group)
+    toneMapSky(this.sky.material, this.renderer.toneMappingExposure)
 
     // Camera body visual (selectable, draggable in shoot mode)
     this.cameraBody = this.buildCameraBody()
@@ -841,6 +849,7 @@ export class SceneManager {
     }
 
     this.scene.fog = env.fog > 0.01 ? new THREE.FogExp2(p.bg, env.fog * 0.06) : null
+    this.stage.apply(this.scene, env.lighting) // fork (fix-env)
   }
 
   /* ------------------------------ interaction --------------------------- */
@@ -1544,10 +1553,11 @@ export class SceneManager {
     pos: THREE.Vector3,
     pan: number,
     tilt: number,
-    roll?: number
+    roll?: number,
+    focalLength?: number
   ): void {
     const s = this.currentState()
-    const lens = this.currentLens()
+    const lens = focalLength ?? this.currentLens()
     const mark = this.activeCameraMark()
     if (!mark) {
       s.dropCameraMark({ x: pos.x, y: pos.y, z: pos.z }, pan, tilt, lens)
@@ -1573,6 +1583,7 @@ export class SceneManager {
               m.pan = pan
               m.tilt = tilt
               if (roll !== undefined) m.roll = roll
+              if (focalLength !== undefined) m.focalLength = focalLength // fork (fix-camera-set)
             }
           }
       })
@@ -1587,8 +1598,29 @@ export class SceneManager {
     return { pan, tilt }
   }
 
+  /**
+   * Fork (fix-camera-set): write a framing preset's pose, moved to the nearest
+   * clear view of its subjects over the shot (engine/camera-clear.ts), and say so.
+   */
+  private writeFramedPose(
+    label: string,
+    pos: THREE.Vector3,
+    look: THREE.Vector3,
+    subjects: { id: string }[],
+    aim?: { pan: number; tilt: number }
+  ): ViewOutcome {
+    if (!this.docScene || !this.shot) return {}
+    const r = clearFramingPose(this.docScene, this.shot, { position: pos, look, focalLength: this.currentLens() }, subjects.map((x) => x.id))
+    const moved = r.variant.turnDeg !== 0 || r.variant.raise !== 0 || r.variant.closer !== 1
+    const p = moved ? new THREE.Vector3(r.position.x, r.position.y, r.position.z) : pos
+    const { pan, tilt } = aim ?? this.panTiltToward(p, look)
+    this.writeCameraPose(label, p, pan, tilt, undefined, r.variant.closer !== 1 ? r.focalLength : undefined)
+    if (r.warning ?? r.note) this.currentState().toast((r.warning ?? r.note)!, r.warning ? 'error' : 'info')
+    return { ...(r.note ? { note: r.note } : {}), ...(r.warning ? { warning: r.warning } : {}) }
+  }
+
   /** One-click cinematography: 2-shot, OTS, reverse, overhead, low, dutch. */
-  applyFraming(kind: import('../bus').FramingKind, subjectIds?: string[]): void {
+  applyFraming(kind: import('../bus').FramingKind, subjectIds?: string[]): ViewOutcome | undefined {
     const s = this.currentState()
     if (!this.shot || !this.evaluator) return
     const subjects = this.framingSubjects(2, subjectIds)
@@ -1635,9 +1667,7 @@ export class SceneManager {
           : primary.pos.clone()
       const pos = new THREE.Vector3(2 * mid.x - camPos.x, camPos.y, 2 * mid.z - camPos.z)
       const look = mid.clone().setY(primary.pos.y + primary.height * 0.75)
-      const { pan, tilt } = this.panTiltToward(pos, look)
-      this.writeCameraPose('reverse angle', pos, pan, tilt)
-      return
+      return this.writeFramedPose('reverse angle', pos, look, subjects)
     }
 
     if (kind === 'OTS') {
@@ -1661,9 +1691,7 @@ export class SceneManager {
         .add(side.multiplyScalar(0.45))
         .setY(near.pos.y + near.height * 0.92)
       const look = far.pos.clone().setY(far.pos.y + far.height * 0.88)
-      const { pan, tilt } = this.panTiltToward(pos, look)
-      this.writeCameraPose('over-the-shoulder', pos, pan, tilt)
-      return
+      return this.writeFramedPose('over-the-shoulder', pos, look, [near, far])
     }
 
     if (kind === 'TOP') {
@@ -1676,8 +1704,7 @@ export class SceneManager {
       const vfov = verticalFov(sensor, lens, aspect)
       const h = Math.max(4, span / 2 / Math.tan(vfov / 2) + 1)
       const pos = new THREE.Vector3(mid.x, mid.y + h, mid.z + 0.01)
-      this.writeCameraPose('overhead', pos, camState.pan, -Math.PI / 2 + 0.001)
-      return
+      return this.writeFramedPose('overhead', pos, mid, subjects, { pan: camState.pan, tilt: -Math.PI / 2 + 0.001 })
     }
 
     if (kind === 'LOW') {
@@ -1691,9 +1718,7 @@ export class SceneManager {
         .add(toCam.multiplyScalar(dist))
         .setY(primary.pos.y + 0.35)
       const look = primary.pos.clone().setY(primary.pos.y + primary.height * 0.95)
-      const { pan, tilt } = this.panTiltToward(pos, look)
-      this.writeCameraPose('low angle', pos, pan, tilt)
-      return
+      return this.writeFramedPose('low angle', pos, look, [primary])
     }
 
     // 2S — group framing perpendicular to the pair (works for 3/4-shots too:
@@ -1702,34 +1727,11 @@ export class SceneManager {
       s.toast('A two-shot needs two characters — select them first.', 'info')
       return
     }
-    const a = subjects[0]!
-    const b = subjects[subjects.length - 1]!
-    const mid = new THREE.Vector3()
-    for (const sub of subjects) mid.add(sub.pos)
-    mid.multiplyScalar(1 / subjects.length)
-    const axis = b.pos.clone().sub(a.pos).setY(0)
-    if (axis.lengthSq() < 1e-6) axis.set(1, 0, 0)
-    axis.normalize()
-    const perp = new THREE.Vector3(axis.z, 0, -axis.x)
-    // Stay on the camera's current side of the line (the 180° rule).
-    if (camPos.clone().sub(mid).dot(perp) < 0) perp.negate()
-    let span = 0
-    for (const sub of subjects) {
-      span = Math.max(span, Math.abs(sub.pos.clone().sub(mid).dot(axis)) * 2)
-    }
-    span += 1.6 // shoulder margin on both ends
-    const tallest = Math.max(...subjects.map((sub) => sub.height))
-    const hfov = horizontalFov(sensor, lens)
-    const vfov = verticalFov(sensor, lens, aspect)
-    const dist = Math.max(
-      span / 2 / Math.tan(hfov / 2),
-      (tallest + 0.4) / 2 / Math.tan(vfov / 2),
-      1.5
-    )
-    const pos = mid.clone().add(perp.multiplyScalar(dist)).setY(mid.y + tallest * 0.62)
-    const look = mid.clone().setY(mid.y + tallest * 0.55)
-    const { pan, tilt } = this.panTiltToward(pos, look)
-    this.writeCameraPose(subjects.length > 2 ? 'group shot' : 'two-shot', pos, pan, tilt)
+    // Fork (fix-camera-set): the 2S math lives in engine/framing.ts (groupShotPose), unchanged.
+    const pose = groupShotPose(subjects, camPos, { hfov: horizontalFov(sensor, lens), vfov: verticalFov(sensor, lens, aspect) })
+    const pos = new THREE.Vector3(pose.position.x, pose.position.y, pose.position.z)
+    const look = new THREE.Vector3(pose.look.x, pose.look.y, pose.look.z)
+    return this.writeFramedPose(subjects.length > 2 ? 'group shot' : 'two-shot', pos, look, subjects)
   }
 
   /**
@@ -1740,7 +1742,7 @@ export class SceneManager {
    * calls for it. One undo step; adjust any mark afterwards. `subjectId`
    * builds the move around that entity; otherwise a single selection counts.
    */
-  applyCameraMove(presetId: string, subjectId?: string): void {
+  applyCameraMove(presetId: string, subjectId?: string): ViewOutcome | undefined {
     const s = this.currentState()
     const preset = CAMERA_MOVE_PRESETS.find((p) => p.id === presetId)
     if (!preset || !this.shot || !this.evaluator || !this.docScene) return
@@ -1773,8 +1775,11 @@ export class SceneManager {
       },
       duration
     })
+    // Fork (fix-camera-set): a people-follow move keeps clear of the set and other cast (camera-view.ts).
+    const cleared =
+      preset.category === 'follow' && entity.assetId.startsWith('person.') ? clearFollowMarks(this.docScene, this.shot, specs, subject.id) : null
     const shotId = this.shot.id
-    const marks = specs.map((spec) => ({
+    const marks = (cleared?.marks ?? specs).map((spec) => ({
       id: newId('cmark'),
       time: spec.time,
       hold: spec.hold,
@@ -1800,9 +1805,10 @@ export class SceneManager {
     })
     s.setSelection({ kind: 'camera' })
     s.toast(
-      `${preset.name} on ${entity.label?.text || entity.name} — ▶ to watch, then drag any mark to adjust.`,
-      'success'
+      `${preset.name} on ${entity.label?.text || entity.name} — ▶ to watch, then drag any mark to adjust.${cleared?.warning ? ` ${cleared.warning}` : cleared?.note ? ` ${cleared.note}` : ''}`,
+      cleared?.warning ? 'error' : 'success'
     )
+    return { ...(cleared?.note ? { note: cleared.note } : {}), ...(cleared?.warning ? { warning: cleared.warning } : {}) }
   }
 
   /**
@@ -2494,6 +2500,7 @@ export class SceneManager {
     // box it would swamp the depth/normal passes (background, not geometry).
     const skyWas = this.sky.visible
     if (pass !== 'clean') this.sky.visible = false
+    const restoreStage = this.stage.hideForPass(pass) // fork (fix-env)
     const bgWas = this.scene.background
     const fogWas = this.scene.fog
     if (pass === 'depth') {
@@ -2528,6 +2535,7 @@ export class SceneManager {
     this.scene.background = bgWas
     this.scene.fog = fogWas
     this.sky.visible = skyWas
+    restoreStage()
     // Restore the editor selection tint.
     this.tintedMaterials.forEach((t, i) => {
       const w = tintWas[i]

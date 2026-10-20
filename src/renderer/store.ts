@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words, Fight Director and held-weapon actions; see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director, held-weapon actions and clear camera views; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -34,6 +34,7 @@ import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
 import { randomFightScript } from '@engine/fight/script'
 import { clearShift } from '@engine/fight/obstacles'
 import { fightObstacles } from './fight-obstacles'
+import { clearShotSpec, shotWordsClearer } from './camera-view'
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
 export type Mode = 'stage' | 'shoot' | 'deliver'
@@ -396,7 +397,8 @@ function writeCoverage(scene: Scene, shot: Shot, fight: FightDoc, report: FightS
   const cam = shot.camera
   const focal = [...cam.marks].sort((a, b) => a.time - b.time).at(-1)?.focalLength ?? 35
   const ev = new ShotEvaluator(scene, shot)
-  cam.marks = fightCoverage(fight, report, mode, lineSide, { reach: fightReach(scene, fight) }).map((m) => {
+  const clear = shotWordsClearer(scene, shot, focal) // fork (fix-camera-set): coverage keeps a clear view
+  cam.marks = fightCoverage(fight, report, mode, lineSide, { reach: fightReach(scene, fight), clear }).map((m) => {
     const solved = ev.solveShotAt(m.shot, m.time, focal)
     const mark = createCameraMark(solved ? { ...solved.position } : { x: 0, y: 1.6, z: 5 }, m.time, solved?.pan ?? 0, solved?.tilt ?? 0, solved?.focalLength ?? focal)
     mark.roll = solved?.roll ?? 0
@@ -516,6 +518,18 @@ export function refightShot(scene: Scene, shot: Shot, except?: string): { fightI
 function routineFightBeats(seed: number, style: string | undefined, ending: string | undefined, duration: number): FightBeat[] {
   const pool = style === 'martial-arts' || style === 'sparring' ? style : 'brawl'
   return randomFightScript(seed, pool, duration, { ending: ending === 'sparring' ? 'standing' : 'ko' })
+}
+
+/** Fork (fix-routines): a routine lasts the Choreographer's Duration (the shot's length when it has none). */
+function routineDuration(spec: import('@engine/choreography').RoutineSpec): number {
+  return spec.durationS > 0 ? spec.durationS : (useStore.getState().shot()?.duration ?? 8)
+}
+
+/** Fork (fix-routines): inside a routine's mutate, a shorter shot grows to the routine (never shrinks) and its fights re-solve. */
+function fitShotToRoutine(scene: Scene, shot: Shot, duration: number): void {
+  if (duration <= shot.duration + 1e-9) return
+  shot.duration = duration
+  refightShot(scene, shot)
 }
 
 /** Stage a routine's two-person fight through stageFight (toasts the outcome); false if it couldn't. */
@@ -1159,6 +1173,8 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const existing = shot.camera.marks.find((m) => Math.abs(m.time - t) <= tol)
     const ordered = [...shot.camera.marks].sort((a, b) => a.time - b.time)
     const focal = spec.lens ?? existing?.focalLength ?? ordered[ordered.length - 1]?.focalLength ?? 35
+    // Fork (fix-camera-set): a blocked view takes the nearest clear one (engine/camera-clear.ts).
+    if (spec.subjectIds.every((id) => scene.entities.some((e) => e.id === id))) spec = clearShotSpec(scene, shot, spec, t, focal).spec
     const solved = new ShotEvaluator(scene, shot).solveShotAt(spec, t, focal)
     if (!solved) {
       get().toast('Could not frame that shot — a subject is missing.', 'error')
@@ -1477,7 +1493,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       return
     }
     const { sceneId, shotId } = get()
-    const duration = get().shot()?.duration ?? spec.durationS
+    const duration = routineDuration(spec) // fork (fix-routines): the Choreographer's Duration
     // Fork (gap 3): a two-person fight goes through the fight solver.
     if (spec.kind === 'fight' && spec.performers === 2) {
       stageRoutineFight({ beats: routineFightBeats(spec.seed, spec.style, spec.ending, duration), at })
@@ -1490,6 +1506,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       const shot = scene?.shots.find((s) => s.id === shotId)
       const take = scene?.blocking.find((b) => b.id === shot?.blockingTakeId)
       if (!scene || !take) return
+      fitShotToRoutine(scene, shot!, duration)
       for (const espec of specs) {
         const entity = createEntity(espec.assetId, espec.name, { ...espec.position })
         entity.transform.rotationY = espec.rotationY
@@ -1542,7 +1559,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const cx = people.reduce((s, e) => s + e.transform.position.x, 0) / people.length
     const cz = people.reduce((s, e) => s + e.transform.position.z, 0) / people.length
     const heading = people[0]!.transform.rotationY
-    const duration = get().shot()?.duration ?? spec.durationS
+    const duration = routineDuration(spec) // fork (fix-routines): the Choreographer's Duration
     // Fork (gap 3): two people fight through the fight solver (their bodies and spots stay).
     if (spec.kind === 'fight' && people.length === 2) {
       const beats = routineFightBeats(spec.seed, spec.style, spec.ending, duration)
@@ -1558,6 +1575,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       const shot = dScene?.shots.find((s) => s.id === shotId)
       const take = dScene?.blocking.find((b) => b.id === shot?.blockingTakeId)
       if (!dScene || !take) return
+      fitShotToRoutine(dScene, shot!, duration)
       for (let i = 0; i < people.length && i < specs.length; i++) {
         const entity = dScene.entities.find((e) => e.id === people[i]!.id)
         const espec = specs[i]!

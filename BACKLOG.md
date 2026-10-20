@@ -11,14 +11,14 @@
 - Upstream classic people render 0.14·s taller than their catalog height (man 1.78 → 1.92 m) because of fixed pelvis/neck offsets in `buildPerson`; the mannequins absorb those offsets and match their catalog height.
 - ~~`tests/e2e/control-tools.spec.ts` reads the discovery file from `~/.config/blockout`, which is wrong on Windows (use `resolveConfigPath` + `BLOCKOUT_CONFIG_DIR`).~~ DONE (Lior's ruling: fix the one line; private `BLOCKOUT_CONFIG_DIR`)
 - ~~`stills/*_topdown.png` leaks the gizmo into the export.~~ DONE (fixed in 4899552: gizmo, selection boxes and tint hidden in renderTopDown)
-- The default "day" lighting renders a flat grey void behind the action.
-- Fight rest steps and step-ins: the walk cycle plays under the guard joints, so the legs float 5–6 cm for a few frames (`animatePerson` grounds the walk before the joint overrides; found by fix-fight-geom, 2026-10-19).
-- Elbow strike up to a taller head still misses by 7.1 cm (classic) / 3.3 cm (mannequins), warned; closing it needs a torso lean.
+- ~~The default "day" lighting renders a flat grey void behind the action.~~ DONE (fix-env: every preset gets a ground to the horizon under a graded sky or a dim room surround; the `*Sky` presets are no longer white; `environment.ts`)
+- ~~Fight rest steps and step-ins: the walk cycle plays under the guard joints, so the legs float 5–6 cm for a few frames (`animatePerson` grounds the walk before the joint overrides; found by fix-fight-geom, 2026-10-19).~~ DONE (fix-fight-legs: the gait is grounded after the joint overrides; step-ins walk; lowest foot within ±2 cm on six bodies)
+- ~~Elbow strike up to a taller head still misses by 7.1 cm (classic) / 3.3 cm (mannequins), warned; closing it needs a torso lean.~~ DONE (fix-fight-legs: elbows aim at the jaw, arm blows lean ≤ 20° without entering the defender; 0.5 / 0.0 cm)
 - Push-ups, cartwheel, crawl (hands on floor), kneel-tie-shoe (rear knee down) and lying falls need a root pitch channel; they touch the floor now but can't make the pose. `sit-down` data reads as kneeling; `mosh-jump` / `cheer-jump` fake a hop with tucked legs and now read as crouch-bounces.
 - The Choreographer's Duration field is ignored: routines take the shot length (`spawnChoreography`, `store.ts`).
-- Camera framing ignores walls and other cast: `apply_framing 2S` on 6 dancers places the camera outside the nightclub walls (all-black clip), and pursuers block the runner in a chase follow (qa-export 2026-10-19).
+- ~~Camera framing ignores walls and other cast: `apply_framing 2S` on 6 dancers places the camera outside the nightclub walls (all-black clip), and pursuers block the runner in a chase follow (qa-export 2026-10-19).~~ DONE (fix-camera-set: shot words, coverage, framings and people-follow moves take the nearest clear view and say so; `src/engine/camera-clear.ts`)
 - Choreographer chase and dance routines ignore the set and run through buildings (they head toward the editor camera).
-- Export folder stamps are UTC (`export-2026-10-19-19-32-01` at 22:32 local).
+- ~~Export folder stamps are UTC (`export-2026-10-19-19-32-01` at 22:32 local).~~ DONE (fix-env: local time, same format; `export/stamp.ts`)
 
 ## Features
 
