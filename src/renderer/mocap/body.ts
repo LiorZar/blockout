@@ -133,6 +133,14 @@ export function buildMocapPerson(
     root.add(o)
     markers.set(f, o)
   }
+  // Phase 3: a held weapon rides the hand bone (a clip bends the wrist): `gripL` / `gripR` are
+  // stand-in elbow frames turned as the hand, with the palm at (0, −lowerArmLen, 0) (hold.ts).
+  const grips = (['L', 'R'] as const).map((side) => {
+    const o = new THREE.Object3D()
+    o.name = `grip${side}`
+    root.add(o)
+    return { side, o }
+  })
 
   const tmp = new THREE.Matrix4()
   const pos = new THREE.Vector3()
@@ -152,6 +160,14 @@ export function buildMocapPerson(
     for (const [f, o] of markers) {
       const g = p.G[BONE_INDEX[FRAME_BONE[f]]]!
       o.position.set(fr[f].p.x, fr[f].p.y, fr[f].p.z)
+      o.quaternion.set(g[0], g[1], g[2], g[3])
+    }
+    for (const { side, o } of grips) {
+      const w = fr[side === 'L' ? 'wristL' : 'wristR']!
+      const g = p.G[BONE_INDEX[side === 'L' ? 'LeftHand' : 'RightHand']]!
+      const palm = m.rig.palm[side]
+      const off = qrot(g, { x: palm.x * m.k, y: palm.y * m.k + dims.lowerArmLen, z: palm.z * m.k })
+      o.position.set(w.p.x + off.x, w.p.y + off.y, w.p.z + off.z)
       o.quaternion.set(g[0], g[1], g[2], g[3])
     }
     // three caches a skinned mesh's bounds from the pose it first measures (export depth range,

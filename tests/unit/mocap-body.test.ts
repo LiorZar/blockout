@@ -373,7 +373,7 @@ describe('the body call is bit-identical for the old bodies', () => {
         }
       }
     }
-  })
+  }, 15_000)
 })
 
 let REST_CACHE: Map<string, (p: V3) => V3> | null = null

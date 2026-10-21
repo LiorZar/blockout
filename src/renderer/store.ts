@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies and mocap clip runs; see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies, mocap clip runs and mocap fights (solve cache, staging busy state); see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -25,6 +25,8 @@ import { generateSequence, choreographMotion } from '@engine/sequences'
 import { buildRoutine, mirrorJoints } from '@engine/choreography'
 import { mirrorForHolder } from '@engine/fight/moves'
 import { seatSpots } from '@engine/mocap/library-clips'
+import { mocapClipVersion } from '@engine/mocap/clip'
+import { mocapRig, mocapVersion } from '@engine/mocap/registry'
 import { ACTION_PRESETS } from '@engine/action-presets'
 import { ShotEvaluator } from '@engine/evaluate'
 import type { ShotSpec } from '@engine/shot'
@@ -229,9 +231,10 @@ interface BlockoutState {
   /**
    * Drop a full choreography routine — a dance number, a paired fight, a
    * chase — into the scene at `at`, spawning fresh performers, as one
-   * undoable step.
+   * undoable step. Fork (mocap fights): `now` stages a slow (bot) fight at
+   * once, the caller having said so.
    */
-  spawnChoreography(spec: import('@engine/choreography').RoutineSpec, at: { x: number; z: number; heading: number }): void
+  spawnChoreography(spec: import('@engine/choreography').RoutineSpec, at: { x: number; z: number; heading: number }, now?: boolean): void
   /**
    * Apply a choreography routine to the currently selected PERSON entities:
    * keeps their assets/labels, replaces their track in the active take.
@@ -331,6 +334,58 @@ export interface StageFightInput {
 /** RoutineSpec.style that marks a Fight Director placement (see spawnChoreography). */
 export const FIGHT_DIRECTOR_STYLE = 'fight-director'
 
+/** Mocap fights (fork): whether staging `input` (or re-solving the fight `fightId`) takes seconds: a fighter is a loaded bot. */
+export function slowFight(input: Omit<StageFightInput, 'at'> | { fightId: string }): boolean {
+  const scene = useStore.getState().scene()
+  const asset = (id: string): string => scene?.entities.find((e) => e.id === id)?.assetId ?? ''
+  const bodies =
+    'fightId' in input
+      ? (scene?.fights?.find((f) => f.id === input.fightId)?.fighterIds.map(asset) ?? [])
+      : input.fighters
+        ? input.fighters.map(asset)
+        : (input.assets ?? ['person.man', 'person.woman'])
+  return bodies.some((a) => !!mocapRig(a))
+}
+
+/**
+ * Mocap fights (fork): whether a routine stages a fight with a loaded bot:
+ * on `entityIds` (choreographEntities: two people fight), else spawned
+ * (spawnChoreography: a two-performer fight in the spec's bodies).
+ */
+export function slowRoutine(spec: import('@engine/choreography').RoutineSpec, entityIds?: string[]): boolean {
+  if (spec.kind !== 'fight') return false
+  if (!entityIds) return spec.performers === 2 && slowFight({ beats: [], ...(spec.bodies ? { assets: spec.bodies } : {}) })
+  const scene = useStore.getState().scene()
+  const people = entityIds.filter((id) => scene?.entities.find((e) => e.id === id)?.assetId.startsWith('person.'))
+  return people.length === 2 && slowFight({ beats: [], fighters: [people[0]!, people[1]!] })
+}
+
+/** How long a staging notice waits where no frame will come (no window, a hidden one), and at most in a visible one, ms. */
+const NOTICE_WAIT = 50
+const NOTICE_MAX = 1000
+
+/**
+ * Mocap fights (fork): before a seconds-long solve, say so and let it paint:
+ * resolves after the second frame (the first may come before the toast is
+ * committed); where no frame will come, after NOTICE_WAIT. A loaded machine
+ * can take longer than that per frame, so a visible window waits for its
+ * frames (at most NOTICE_MAX).
+ */
+export function fightNotice(text: string): Promise<void> {
+  useStore.getState().toast(text, 'info')
+  return new Promise((resolve) => {
+    let done = false
+    const go = (): void => {
+      if (done) return
+      done = true
+      resolve()
+    }
+    const frames = typeof requestAnimationFrame === 'function' && !(typeof document !== 'undefined' && document.hidden)
+    if (frames) requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(go, 0)))
+    setTimeout(go, frames ? NOTICE_MAX : NOTICE_WAIT)
+  })
+}
+
 /** A fighter for the solver, with the weapons it holds in `scene` (fork) plus `extra` (about to be put in its hands). */
 export function fighterInput(e: Entity, scene: Scene, extra: Entity[] = []): FighterInput {
   const held = [...extra, ...scene.entities].filter((w) => w.heldBy?.entityId === e.id && weaponSpec(w.assetId))
@@ -365,7 +420,10 @@ function writeFightTracks(take: BlockingTake, fighterIds: [string, string], sol:
       gait: m.gait,
       arriveHeading: m.arriveHeading,
       joints: m.joints ? { ...m.joints } : undefined,
-      lockFacing: true
+      lockFacing: true,
+      // Mocap fights: a bot's clip marks and posed moves.
+      ...(m.clip ? { clip: { ...m.clip } } : {}),
+      ...(m.posedMove ? { posedMove: true } : {})
     }))
   })
 }
@@ -431,6 +489,16 @@ function fightersOf(scene: Scene, ids: [string, string]): [Entity, Entity] {
   return [pair[0]!, pair[1]!]
 }
 
+/**
+ * Mocap fights (fork): the last solutions, by everything a solve reads (the
+ * fight, the fighters' inputs, the shot's timing, the props, the loaded bots
+ * and clips). A bot's solve takes seconds, so reading a fight (get_fight,
+ * the Fight Director's live report) must not solve it again; an edit that
+ * changes an input misses. Each caller gets its own copy.
+ */
+const SOLVES = new Map<string, FightSolution>()
+const SOLVES_KEPT = 16
+
 /** Solve a fight of `scene` for `shot`'s timing (`extra`: weapons about to be put in the fighters' hands). */
 export function solveInScene(
   scene: Scene,
@@ -442,12 +510,20 @@ export function solveInScene(
 ): FightSolution {
   // Set props (fork, gap 8): the scene's static props, unless solving `free` (paths only, to place the fight).
   const take = scene.blocking.find((b) => b.id === shot.blockingTakeId)
-  return solveFight(
-    fight,
-    [fighterInput(fighters[0], scene, extra), fighterInput(fighters[1], scene, extra)],
-    { duration: shot.duration, fps: shot.fps },
-    free ? { paths: true } : { obstacles: fightObstacles(scene, take) }
-  )
+  const inputs: [FighterInput, FighterInput] = [fighterInput(fighters[0], scene, extra), fighterInput(fighters[1], scene, extra)]
+  const timing = { duration: shot.duration, fps: shot.fps }
+  const opts = free ? { paths: true } : { obstacles: fightObstacles(scene, take) }
+  const key = JSON.stringify([fight, inputs, timing, opts, mocapVersion(), mocapClipVersion()])
+  const known = SOLVES.get(key)
+  if (known) {
+    SOLVES.delete(key)
+    SOLVES.set(key, known)
+    return structuredClone(known)
+  }
+  const sol = solveFight(fight, inputs, timing, opts)
+  if (SOLVES.size >= SOLVES_KEPT) SOLVES.delete(SOLVES.keys().next().value!)
+  SOLVES.set(key, structuredClone(sol))
+  return sol
 }
 
 /** Set props (gap 8): the solver had to stop a push-back at a prop, or a path still runs into one. */
@@ -1433,7 +1509,10 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const origin = opts.origin ?? { x: 0, z: 0, heading: 0 }
     // Fork (gap 3): a two-performer fight goes through the fight solver.
     if (opts.type === 'fight' && opts.count === 2) {
-      stageRoutineFight({ beats: routineFightBeats(Math.floor(Math.random() * 1_000_000_000), 'brawl', 'finish', duration), at: origin })
+      // Mocap fights (fork): the chosen bodies fight; with a loaded bot the solve takes seconds, so say so first.
+      const input = { beats: routineFightBeats(Math.floor(Math.random() * 1_000_000_000), 'brawl', 'finish', duration), at: origin, ...(opts.bodies ? { assets: opts.bodies } : {}) }
+      if (slowFight(input)) void fightNotice('Staging fight…').then(() => stageRoutineFight(input))
+      else stageRoutineFight(input)
       return
     }
     const specs = generateSequence({
@@ -1484,25 +1563,33 @@ export const useStore = create<BlockoutState>((set, get) => ({
     }
   },
 
-  spawnChoreography(spec, at) {
+  spawnChoreography(spec, at, now) {
     // Fork: a Fight Director placement click stages the armed scripted fight.
     const pending = get().pendingFight
     if (spec.kind === 'fight' && spec.style === FIGHT_DIRECTOR_STYLE && pending) {
       set({ pendingFight: null })
-      try {
-        const { report } = get().stageFight({ ...pending, at })
-        const warn = report.warnings.length ? `, ${report.warnings.length} warning${report.warnings.length > 1 ? 's' : ''}` : ''
-        get().toast(`Fight staged: ${report.beats.length} beats${warn}. Press play to watch.`, 'success')
-      } catch (e) {
-        get().toast((e as Error).message, 'error')
+      const stage = (): void => {
+        try {
+          const { report } = get().stageFight({ ...pending, at })
+          const warn = report.warnings.length ? `, ${report.warnings.length} warning${report.warnings.length > 1 ? 's' : ''}` : ''
+          get().toast(`Fight staged: ${report.beats.length} beats${warn}. Press play to watch.`, 'success')
+        } catch (e) {
+          get().toast((e as Error).message, 'error')
+        }
       }
+      // Mocap fights (fork): a bot fight's solve takes seconds; say so first.
+      if (!now && slowFight(pending)) void fightNotice('Staging fight…').then(stage)
+      else stage()
       return
     }
     const { sceneId, shotId } = get()
     const duration = routineDuration(spec) // fork (fix-routines): the Choreographer's Duration
     // Fork (gap 3): a two-person fight goes through the fight solver.
     if (spec.kind === 'fight' && spec.performers === 2) {
-      stageRoutineFight({ beats: routineFightBeats(spec.seed, spec.style, spec.ending, duration), at, ...(spec.bodies ? { assets: spec.bodies } : {}) })
+      const input = { beats: routineFightBeats(spec.seed, spec.style, spec.ending, duration), at, ...(spec.bodies ? { assets: spec.bodies } : {}) }
+      // Mocap fights (fork): with a loaded bot the solve takes seconds; say so first.
+      if (!now && slowRoutine(spec)) void fightNotice('Staging fight…').then(() => stageRoutineFight(input))
+      else stageRoutineFight(input)
       return
     }
     const specs = buildRoutine({ ...spec, durationS: duration }, { origin: at })
@@ -1549,7 +1636,10 @@ export const useStore = create<BlockoutState>((set, get) => ({
   },
 
   choreographSelected(spec) {
-    get().choreographEntities(selectedEntityIds(get().selection), spec)
+    const ids = selectedEntityIds(get().selection)
+    // Mocap fights (fork): two people fighting with a loaded bot solve for seconds; say so first.
+    if (slowRoutine(spec, ids)) void fightNotice('Staging fight…').then(() => get().choreographEntities(ids, spec))
+    else get().choreographEntities(ids, spec)
   },
 
   choreographEntities(entityIds, spec) {

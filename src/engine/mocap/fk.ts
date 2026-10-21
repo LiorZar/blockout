@@ -148,19 +148,23 @@ export function mocapEffectors(m: MocapDims, joints: Record<string, number> | un
   return effectorsOf(m, mocapFrames(m, joints))
 }
 
-/** Effectors from a bot's frames (any pose: rig or clip). */
+/**
+ * Effectors from a bot's frames (any pose: rig or clip). Phase 3: the palm
+ * and the toe ride the hand and foot bones (`wrist*` / `ankle*` frames), as
+ * the rendered body does; on a keyframe pose those are rigid with the
+ * forearm and shin, so the points are the rig's.
+ */
 export function effectorsOf(m: MocapDims, fr: PoseFrames): Record<Effector, V3> {
   const d = m.rig.dims
   const k = m.k
-  const hand = -d.lowerArmLen * k
-  const toe = m.rig.toe
+  const { toe, palm } = m.rig
   return {
-    handL: point(fr.elbowL, 0, hand, 0),
-    handR: point(fr.elbowR, 0, hand, 0),
+    handL: point(fr.wristL!, palm.L.x * k, palm.L.y * k, palm.L.z * k),
+    handR: point(fr.wristR!, palm.R.x * k, palm.R.y * k, palm.R.z * k),
     elbowL: fr.elbowL.p,
     elbowR: fr.elbowR.p,
-    footL: point(fr.kneeL, toe.L.x * k, toe.L.y * k, toe.L.z * k),
-    footR: point(fr.kneeR, toe.R.x * k, toe.R.y * k, toe.R.z * k),
+    footL: point(fr.ankleL!, toe.L.x * k, toe.L.y * k, toe.L.z * k),
+    footR: point(fr.ankleR!, toe.R.x * k, toe.R.y * k, toe.R.z * k),
     kneeL: fr.kneeL.p,
     kneeR: fr.kneeR.p,
     head: point(fr.head, 0, (d.headR + 0.06 * d.s) * k, 0),

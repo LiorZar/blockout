@@ -13,9 +13,12 @@
  */
 
 import { assetSpec } from '../assets'
-import type { Body } from '../floor'
+import { clipImpactTime, defenseClip, defenseReadyTime, fallLandTime, moveClips, reactionClip } from '../fight/clip-moves'
+import { DEFENSES, strikeImpacts } from '../fight/moves'
+import { defaultTarget } from '../fight/script'
+import { bodyLowY, type Body } from '../floor'
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
-import { personDims, toWorld } from '../skeleton'
+import { personDims, poseEffectors, toWorld } from '../skeleton'
 import type { Entity, MarkClip, V3 } from '../types'
 import { clipRoot, clipScale, mocapClip } from './clip'
 import { BLEND } from './clip-marks'
@@ -358,26 +361,162 @@ export function copyTag<T extends object>(from: object, to: T): T {
   return to
 }
 
+/** Phase 3: the routine and sequence defenses (motions.ts ids) as the Fight Director's, and the side of the blow its clip is picked for. */
+const DEFENSE_PLAYS: Record<string, { outcome: keyof typeof DEFENSES; high: boolean; side: 'L' | 'R' }> = {
+  'block-high': { outcome: 'block', high: true, side: 'R' },
+  'block-low': { outcome: 'block', high: false, side: 'R' },
+  'parry-deflect': { outcome: 'parry', high: true, side: 'R' },
+  // The dodge clip slips away from a blow on the left (to the right): dodging left is it mirrored.
+  'dodge-left': { outcome: 'slip', high: true, side: 'R' },
+  'dodge-right': { outcome: 'slip', high: true, side: 'L' },
+  'duck-under': { outcome: 'duck', high: true, side: 'L' },
+  'weave-bob': { outcome: 'duck', high: false, side: 'L' }
+}
+
+/** Phase 3: routine falls (motions.ts ids) on the Fight Director's fall clips: a knockdown, or a KO. */
+const FALL_PLAYS: Record<string, { ko: boolean }> = { 'knocked-down': { ko: false }, 'knockdown-fall': { ko: false }, 'ko-collapse': { ko: true } }
+/** The get-up after each fall clip. */
+const GET_UP_AFTER: Record<string, string> = { knockedDown: 'getUpKnockdown', koBack: 'getUpBack', koStomach: 'getUpStomach' }
+const GET_UP = 'get-up-from-ground'
+const GUARD_BOUNCE = 'boxing-guard-bounce'
+
+/**
+ * A keyframe fall on a body: when its hips come down to the floor (within a
+ * tenth of their drop, as `fallLandTime` reads a clip's; between keyframes
+ * by straight lines), and whether it lands on its front (the head ahead of
+ * the hips).
+ */
+function keyframeLanding(preset: MotionPreset, body: Body): { t: number; front: boolean } {
+  const dims = personDims(body.assetId, body.params)
+  const keys = preset.keyframes.map((kf) => {
+    const fx = poseEffectors(dims, kf.joints)
+    return { t: kf.t, y: fx.pelvis.y - bodyLowY(body, kf.joints), front: fx.head.z < fx.pelvis.z }
+  })
+  const lo = Math.min(...keys.map((k) => k.y))
+  const at = lo + 0.1 * (keys[0]!.y - lo)
+  const k = Math.max(0, keys.findIndex((x) => x.y <= at + 1e-9))
+  const a = keys[Math.max(0, k - 1)]!
+  const b = keys[k]!
+  const u = k > 0 && a.y - b.y > 1e-9 ? (a.y - at) / (a.y - b.y) : 1
+  return { t: a.t + (b.t - a.t) * u, front: b.front }
+}
+
+/**
+ * Phase 3: a routine's or sequence's fight move on a bot as the Fight
+ * Director's clips (fight/clip-moves.ts), or null (its keyframes: a move
+ * with no clip). A strike one run per impact, each impact frame on the
+ * keyframe move's impact (the routine's exchanges are timed on those), each
+ * run from where the last one ended; a defense its guard frame on the
+ * keyframe defense's ready time; a fall (by the way it falls) its
+ * floor-contact frame on the keyframe fall's landing; a get-up the one for
+ * the fall before it (`fell`), standing at the keyframe get-up's end (from
+ * `after` on, played faster if it must); the guard bounce the fight idle on
+ * shot time; any other its own clip.
+ */
+function fightRun(play: MotionPlay, body: Body, heading: number, fell?: string, after = -Infinity): ClipRunMark[] | null {
+  const h = play.heading ?? heading
+  const impacts = strikeImpacts(play.presetId)
+  if (impacts.length > 0) {
+    const blows = moveClips(play.presetId, defaultTarget(play.presetId))
+    if (!blows || blows.length !== impacts.length) return null
+    const at = impacts.map((imp) => play.startT + imp.t)
+    const out: ClipRunMark[] = []
+    blows.forEach((b, i) => {
+      const tau = clipImpactTime(b)
+      const start = Math.max(i === 0 ? play.startT : (at[i - 1]! + at[i]!) / 2, at[i]! - tau)
+      const end = i === blows.length - 1 ? play.endT : (at[i]! + at[i + 1]!) / 2
+      const from = out.length > 0 ? { ...out[out.length - 1]!.position } : play.pos
+      const run = clipRun({ clip: b.clip, from: tau - (at[i]! - start) }, body, from, h, start, end, play.mirror)
+      const prev = out[out.length - 1]
+      if (prev && prev.time >= run[0]!.time - 1e-6) endEarly(out[out.length - 2]!, prev, body)
+      out.push(...run)
+    })
+    return out
+  }
+  const preset = MOTION_PRESETS.find((p) => p.id === play.presetId)
+  const d = DEFENSE_PLAYS[play.presetId]
+  const pick = d && defenseClip(d.outcome, d.high, d.side)
+  if (d && pick && preset) {
+    const ready = play.startT + DEFENSES[d.outcome].readyFraction * preset.duration
+    const r = defenseReadyTime(pick.id)
+    const start = Math.max(play.startT, ready - r)
+    return clipRun({ clip: pick.id, from: r - (ready - start), mirror: pick.mirror }, body, play.pos, h, start, play.endT, play.mirror)
+  }
+  const fall = FALL_PLAYS[play.presetId]
+  if (fall && preset) {
+    const land = keyframeLanding(preset, body)
+    const clip = reactionClip({ result: 'knockdown', ko: fall.ko, zone: 'body', moveId: play.presetId, side: 'R', pushFront: land.front })
+    if (clip) {
+      const T = play.startT + land.t
+      const tau = fallLandTime(clip.id)
+      const start = Math.max(play.startT, T - tau)
+      return clipRun({ clip: clip.id, from: tau - (T - start), mirror: clip.mirror }, body, play.pos, h, start, play.endT, play.mirror)
+    }
+  }
+  if (play.presetId === GET_UP) {
+    const id = [fell && GET_UP_AFTER[fell], 'getUpKnockdown', 'getUpBack'].find((c): c is string => !!c && !!mocapClip(c))
+    if (id) {
+      const len = mocapClip(id)!.duration
+      const start = Math.max(after, play.endT - len)
+      const run = clipRun({ clip: id }, body, play.pos, h, start, start + len, play.mirror)
+      if (start + len > play.endT) run[1]!.time = Math.round(play.endT * 1e6) / 1e6
+      return run
+    }
+  }
+  if (play.presetId === GUARD_BOUNCE && mocapClip('fightIdle')) return clipRun({ clip: 'fightIdle', from: play.startT }, body, play.pos, h, play.startT, play.endT, play.mirror)
+  return motionRun(play.presetId, body, play.pos, h, play.startT, play.endT, play.mirror)
+}
+
+/** The fall clips (a get-up after one matches it). */
+const FALL_CLIPS = new Set(Object.keys(GET_UP_AFTER))
+
+/** A routine's plain stand mark (no pose of its own): the push-back after a reaction, or a fallen fighter held down. */
+function bare(m: object): m is { time: number; position: V3; gait: string } {
+  const k = m as { joints?: unknown; clip?: unknown; gait?: string }
+  return !k.joints && !k.clip && k.gait === 'stand' && !PLAYS.has(m)
+}
+
 /**
  * A performer's marks with every tagged play whose preset has a clip
  * replaced by its clip run, when the body is a loaded bot; else the marks
- * unchanged. Strikes and blocks (the fight category) keep their keyframes:
- * a routine's exchanges are timed on them (the Fight Director's moves come
- * with phase 3); reactions, falls and get-ups play their clips.
+ * unchanged. Phase 3: fight moves play the Fight Director's clips
+ * (`fightRun`: strikes and defenses on the keyframe move's impact and ready
+ * times, falls on its landing, get-ups standing at its end, the guard
+ * bounce on shot time); only a move with no clip keeps its keyframes. A
+ * routine's plain stand mark at a run's (or its play's) end moves the run's
+ * end there (a push-back); after a fall, plain stand marks hold the fall's
+ * last frame.
  */
 export function clipPlays<M extends { time: number }>(marks: M[], body: Body, heading = 0): (M | ClipRunMark)[] {
   if (!playsClips(body)) return marks
   const out: (M | ClipRunMark)[] = []
+  let fell: string | undefined
   for (let i = 0; i < marks.length; ) {
     const play = PLAYS.get(marks[i]!)
+    const last = out[out.length - 1] as ClipRunMark | undefined
+    if (!play && fell && last?.clip && bare(marks[i]!)) {
+      // Down: held on the fall's last frame where the mark puts the body.
+      const m = marks[i]! as unknown as { time: number; position: V3 }
+      out.push({ ...last, time: m.time, position: { x: m.position.x, y: last.position.y, z: m.position.z } })
+      i++
+      continue
+    }
     const fight = MOTION_PRESETS.find((p) => p.id === play?.presetId)?.category === 'fight'
-    const run = play && !fight ? motionRun(play.presetId, body, play.pos, play.heading ?? heading, play.startT, play.endT, play.mirror) : null
+    const run = !play ? null : fight ? fightRun(play, body, heading, fell, last?.time) : motionRun(play.presetId, body, play.pos, play.heading ?? heading, play.startT, play.endT, play.mirror)
     if (!play || !run) {
       out.push(marks[i]!)
       i++
       continue
     }
+    fell = FALL_CLIPS.has(run[0]!.clip.id) ? run[0]!.clip.id : undefined
     while (i < marks.length && PLAYS.get(marks[i]!) === play) i++
+    // A push-back at the run's (or the play's) end: the run ends where it puts the body.
+    const end = run[run.length - 1]!
+    while (i < marks.length && bare(marks[i]!) && Math.min(Math.abs(marks[i]!.time - end.time), Math.abs(marks[i]!.time - play.endT)) < 1e-4) {
+      const p = (marks[i]! as unknown as { position: V3 }).position
+      end.position = { x: p.x, y: end.position.y, z: p.z }
+      i++
+    }
     // A run that starts as the last one ends: the last ends a moment early, so the two crossfade.
     const prev = out[out.length - 1] as ClipRunMark | undefined
     const prevStart = out[out.length - 2] as ClipRunMark | undefined

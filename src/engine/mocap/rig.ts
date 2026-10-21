@@ -80,11 +80,15 @@ const PARENT: Record<MocapBone, MocapBone | null> = {
   RightToeBase: 'RightFoot'
 }
 
-/** Proxy frames beyond the rig's 11: the lower spine and the neck bend with the torso and head. */
-export type MocapFrame = 'spine' | 'spine1' | 'neck'
+/**
+ * Proxy frames beyond the rig's 11: the lower spine and the neck bend with the
+ * torso and head; phase 3: the wrists and ankles (a clip bends them, so the
+ * palm, the toe, a held weapon and the hand and foot capsules ride them).
+ */
+export type MocapFrame = 'spine' | 'spine1' | 'neck' | 'wristL' | 'wristR' | 'ankleL' | 'ankleR'
 export type FrameKey = Bone | MocapFrame
 
-export const FRAME_KEYS: FrameKey[] = ['pelvis', 'spine', 'spine1', 'torso', 'neck', 'head', 'shoulderL', 'shoulderR', 'elbowL', 'elbowR', 'hipL', 'hipR', 'kneeL', 'kneeR']
+export const FRAME_KEYS: FrameKey[] = ['pelvis', 'spine', 'spine1', 'torso', 'neck', 'head', 'shoulderL', 'shoulderR', 'elbowL', 'elbowR', 'hipL', 'hipR', 'kneeL', 'kneeR', 'wristL', 'wristR', 'ankleL', 'ankleR']
 
 /** The bone each frame rides. */
 export const FRAME_BONE: Record<FrameKey, MocapBone> = {
@@ -101,7 +105,11 @@ export const FRAME_BONE: Record<FrameKey, MocapBone> = {
   hipL: 'LeftUpLeg',
   hipR: 'RightUpLeg',
   kneeL: 'LeftLeg',
-  kneeR: 'RightLeg'
+  kneeR: 'RightLeg',
+  wristL: 'LeftHand',
+  wristR: 'RightHand',
+  ankleL: 'LeftFoot',
+  ankleR: 'RightFoot'
 }
 
 /** The frame a bone's surface is rigid with (hands with the forearm, feet with the shin, clavicles with the chest). */
@@ -196,11 +204,29 @@ export interface MocapSourceBone {
 /**
  * What the renderer reads out of a character file: bones parent-first, and
  * the skinned vertices at bind with each one's dominant bone. Entity space:
- * metres, +Y up, facing −Z, +X the character's right.
+ * metres, +Y up, facing −Z, +X the character's right. Phase 3: each
+ * vertex's four skin influences too (source bone indices, −1 for none, and
+ * weights), so the engine skins it as the renderer does.
  */
 export interface MocapSource {
   bones: MocapSourceBone[]
-  verts: { p: ArrayLike<number>; bone: ArrayLike<number> }
+  verts: { p: ArrayLike<number>; bone: ArrayLike<number>; inf?: { bone: ArrayLike<number>; weight: ArrayLike<number>; tri?: ArrayLike<number> } }
+}
+
+/**
+ * Phase 3: the skinned vertices, blended as the renderer skins them: per
+ * vertex four influences (a core index, or the core count plus an extra's;
+ * −1 for none), their weights, each influence's A-rest offset from its
+ * bone's joint (rig metres at height ×1), the dominant influence, and its
+ * triangles (vertex indices, three each), when given.
+ */
+export interface MocapSkin {
+  n: number
+  bone: Int32Array
+  weight: Float32Array
+  off: Float32Array
+  dom: Int32Array
+  tri?: Int32Array
 }
 
 export interface MocapPoint {
@@ -247,8 +273,14 @@ export interface MocapRig {
   dims: Omit<PersonDims, 'mocap'>
   /** Frame origins at rest (the rig frames' rotations are all identity there). */
   origin: Record<FrameKey, V3>
-  /** Toe effectors in the knee frames. */
+  /** Toe effectors (the ToeBase joints) in the ankle frames. */
   toe: { L: V3; R: V3 }
+  /**
+   * Phase 3: the hand effectors in the wrist frames: the phase-1 palm, the
+   * point (0, −lowerArmLen, 0) below the elbow, carried on the hand bone (on
+   * a keyframe pose the hand is rigid with the forearm, so it is unchanged).
+   */
+  palm: { L: V3; R: V3 }
   /** Shoulder joints in the torso frame (arm IK). */
   shoulder: { L: V3; R: V3 }
   /** Floor proxy: support points of each bone's surface, frame-local. */
@@ -259,6 +291,8 @@ export interface MocapRig {
   torso: { ys: number[]; rings: [number, number][][] }
   /** Phase 2: the bones beyond the core, parent-first. Clips turn them; otherwise they ride their core bone. */
   extra: MocapExtraBone[]
+  /** Phase 3: the skin, when the source gave its influences (fight contact skins it, `surface.ts`). */
+  skin?: MocapSkin
 }
 
 /** The bone name without the mixamorig prefix ("mixamorig:Hips", "mixamorig9Hips" → "Hips"). */
@@ -496,6 +530,7 @@ export function fitMocapRig(src: MocapSource, height: number): MocapRig {
   // Contact proxy: capsules along each limb, across the pelvis, up the neck and head.
   const capsules: MocapCapsule[] = []
   const local = (b: MocapBone): V3[] => byBone[BONE_INDEX[b]]!.map((p) => vsub(p, origin[BONE_FRAME[b]]))
+  const localIn = (b: MocapBone, frame: FrameKey): V3[] => byBone[BONE_INDEX[b]]!.map((p) => vsub(p, origin[frame]))
   const joint = (name: string, frame: FrameKey): V3 => vsub(at(name), origin[frame])
   const add = (c: MocapCapsule | null): void => {
     if (c) capsules.push(c)
@@ -507,12 +542,12 @@ export function fitMocapRig(src: MocapSource, height: number): MocapRig {
     const x = sd === 'Left' ? 'L' : 'R'
     add(capsuleOf(`shoulder${x}`, local(`${sd}Arm`), v3(0, 0, 0), DOWN))
     add(capsuleOf(`elbow${x}`, local(`${sd}ForeArm`), v3(0, 0, 0), DOWN))
-    add(capsuleOf(`elbow${x}`, local(`${sd}Hand`), joint(`${sd}Hand`, `elbow${x}`), DOWN))
+    // Phase 3: the hand and foot ride their own bones (a clip bends the wrist and ankle).
+    add(capsuleOf(`wrist${x}`, localIn(`${sd}Hand`, `wrist${x}`), v3(0, 0, 0), DOWN))
     add(capsuleOf(`hip${x}`, local(`${sd}UpLeg`), v3(0, 0, 0), DOWN))
     add(capsuleOf(`knee${x}`, local(`${sd}Leg`), v3(0, 0, 0), DOWN))
-    const foot = [...local(`${sd}Foot`), ...local(`${sd}ToeBase`)]
-    const heel = joint(`${sd}Foot`, `knee${x}`)
-    add(capsuleOf(`knee${x}`, foot, heel, vsub(joint(`${sd}ToeBase`, `knee${x}`), heel)))
+    const foot = [...localIn(`${sd}Foot`, `ankle${x}`), ...localIn(`${sd}ToeBase`, `ankle${x}`)]
+    add(capsuleOf(`ankle${x}`, foot, v3(0, 0, 0), joint(`${sd}ToeBase`, `ankle${x}`)))
   }
 
   // Torso loft: convex sections of the chest and belly, sampled on 32 rays from the torso axis.
@@ -536,7 +571,41 @@ export function fitMocapRig(src: MocapSource, height: number): MocapRig {
     rings.push(ring)
   }
 
+  // Phase 3: the skin's influences, each vertex's offset from each influence's joint in the A-rest.
+  let skin: MocapSkin | undefined
+  const inf = src.verts.inf
+  if (inf) {
+    const combined = (i: number): number => {
+      const k = (MOCAP_BONES as readonly string[]).indexOf(src.bones[i]!.name)
+      return k >= 0 ? k : MOCAP_BONES.length + extraIndex.get(i)!
+    }
+    skin = {
+      n: m,
+      bone: new Int32Array(4 * m).fill(-1),
+      weight: new Float32Array(4 * m),
+      off: new Float32Array(12 * m),
+      dom: new Int32Array(m),
+      ...(inf.tri ? { tri: Int32Array.from(inf.tri) } : {})
+    }
+    for (let v = 0; v < m; v++) {
+      const x = { x: vp[3 * v]!, y: vp[3 * v + 1]!, z: vp[3 * v + 2]! }
+      let sum = 0
+      for (let k = 0; k < 4; k++) sum += inf.bone[4 * v + k]! >= 0 ? inf.weight[4 * v + k]! : 0
+      for (let k = 0; k < 4; k++) {
+        const i = inf.bone[4 * v + k]!
+        const w = inf.weight[4 * v + k]!
+        if (i < 0 || !(w > 0) || !(sum > 0)) continue
+        skin.bone[4 * v + k] = combined(i)
+        skin.weight[4 * v + k] = w / sum
+        const o = vscale(qrot(W[i]!, qrot(qconj(B[i]!), vsub(x, P[i]!))), scale)
+        skin.off.set([o.x, o.y, o.z], 12 * v + 3 * k)
+      }
+      skin.dom[v] = combined(vb[v]!)
+    }
+  }
+
   return {
+    ...(skin ? { skin } : {}),
     parent,
     rest,
     offset: rest.map((p, i) => (parent[i]! < 0 ? p : vsub(p, rest[parent[i]!]!))),
@@ -546,7 +615,11 @@ export function fitMocapRig(src: MocapSource, height: number): MocapRig {
     centre,
     dims,
     origin,
-    toe: { L: joint('LeftToeBase', 'kneeL'), R: joint('RightToeBase', 'kneeR') },
+    toe: { L: joint('LeftToeBase', 'ankleL'), R: joint('RightToeBase', 'ankleR') },
+    palm: {
+      L: vsub(v3(0, -dims.lowerArmLen, 0), vsub(at('LeftHand'), at('LeftForeArm'))),
+      R: vsub(v3(0, -dims.lowerArmLen, 0), vsub(at('RightHand'), at('RightForeArm')))
+    },
     shoulder: { L: vsub(at('LeftArm'), T0), R: vsub(at('RightArm'), T0) },
     points,
     capsules,

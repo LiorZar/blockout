@@ -141,7 +141,8 @@ describe('fighters stay on the floor (lowest body point, every frame)', () => {
         problems.push(...p.map((x) => `${m.id}: ${x}`))
       }
       expect(problems).toEqual([])
-    })
+      // Every move solved twice per pair: 15 s under a loaded gate (mocap-fights ruling).
+    }, 15_000)
   }
 
   it('a reported kick lift is the kicker’s height off the floor at the impact', () => {

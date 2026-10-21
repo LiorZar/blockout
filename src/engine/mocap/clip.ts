@@ -448,20 +448,73 @@ function extraLocals(m: MocapDims, pose: MocapPose): Quat[] {
   })
 }
 
-/** The lowest surface point of a posed bot (its support points, each on its own bone), entity-local. */
+/** Support points grouped by the bone they ride (each group's offsets' centre and radius), with and without the finger bones. */
+interface LowGroup {
+  sub: boolean
+  bone: number
+  c: V3
+  r: number
+  pts: { x: number; y: number; z: number }[]
+}
+const LOW_GROUPS = new WeakMap<object, { core: LowGroup[]; subs: LowGroup[] }>()
+
+function lowGroups(m: MocapDims, subs: boolean): LowGroup[] {
+  let g = LOW_GROUPS.get(m.rig)
+  if (!g) {
+    const build = (withSub: boolean): LowGroup[] => {
+      const by = new Map<string, LowGroup>()
+      for (const pt of m.rig.points) {
+        const sub = withSub && pt.sub !== undefined
+        const key = sub ? `x${pt.sub}` : `b${pt.bone}`
+        let grp = by.get(key)
+        if (!grp) {
+          grp = { sub, bone: sub ? pt.sub! : pt.bone, c: { x: 0, y: 0, z: 0 }, r: 0, pts: [] }
+          by.set(key, grp)
+        }
+        grp.pts.push(sub ? pt.subOff! : pt.off)
+      }
+      for (const grp of by.values()) {
+        const n = grp.pts.length
+        grp.c = { x: grp.pts.reduce((a, o) => a + o.x, 0) / n, y: grp.pts.reduce((a, o) => a + o.y, 0) / n, z: grp.pts.reduce((a, o) => a + o.z, 0) / n }
+        grp.r = Math.max(...grp.pts.map((o) => Math.hypot(o.x - grp.c.x, o.y - grp.c.y, o.z - grp.c.z)))
+      }
+      return [...by.values()]
+    }
+    g = { core: build(false), subs: build(true) }
+    LOW_GROUPS.set(m.rig, g)
+  }
+  return subs ? g.subs : g.core
+}
+
+/**
+ * The lowest surface point of a posed bot (its support points, each on its
+ * own bone), entity-local. Phase 3: bone by bone, lowest-reaching first,
+ * skipping a bone whose points' sphere can't reach below the lowest found
+ * (the same minimum, far fewer points).
+ */
 export function poseLowY(m: MocapDims, pose: MocapPose): number {
-  let low = Infinity
   const k = m.k
-  for (const pt of m.rig.points) {
-    // A finger point rides its own bone when the pose turns the fingers.
-    const sub = pose.XG && pt.sub !== undefined
-    const [x, y, z, w] = sub ? pose.XG![pt.sub!]! : pose.G[pt.bone]!
-    const o = sub ? pt.subOff! : pt.off
-    // qrot's y, inline (the hot loop of every grounding).
+  const groups = lowGroups(m, !!pose.XG)
+  // qrot's y, inline (the hot loop of every grounding).
+  const yOf = (q: Quat, base: V3, o: { x: number; y: number; z: number }): number => {
+    const [x, y, z, w] = q
     const tx = 2 * (y * o.z * k - z * o.y * k)
     const tz = 2 * (x * o.y * k - y * o.x * k)
-    const py = (sub ? pose.XP![pt.sub!]! : pose.P[pt.bone]!).y + o.y * k + w * (2 * (z * o.x * k - x * o.z * k)) + z * tx - x * tz
-    if (py < low) low = py
+    return base.y + o.y * k + w * (2 * (z * o.x * k - x * o.z * k)) + z * tx - x * tz
+  }
+  const bound = groups.map((g, i) => {
+    const q = g.sub ? pose.XG![g.bone]! : pose.G[g.bone]!
+    const base = g.sub ? pose.XP![g.bone]! : pose.P[g.bone]!
+    return { i, q, base, lo: yOf(q, base, g.c) - g.r * k - 1e-9 }
+  })
+  bound.sort((a, b) => a.lo - b.lo)
+  let low = Infinity
+  for (const b of bound) {
+    if (b.lo >= low) break
+    for (const o of groups[b.i]!.pts) {
+      const py = yOf(b.q, b.base, o)
+      if (py < low) low = py
+    }
   }
   return low
 }
@@ -500,10 +553,14 @@ export function mocapClipPose(m: MocapDims, st: ClipState, joints?: Record<strin
   return groundPose(m, pose, clear)
 }
 
+/** A bot's pose for joints and an optional clip state: the clip's (joints as its overlay), else the rig pose. */
+export function botPose(m: MocapDims, joints: Record<string, number> | undefined, clip?: ClipState): MocapPose {
+  return (clip ? mocapClipPose(m, clip, joints) : null) ?? mocapPose(m, jointLocals(joints))
+}
+
 /** A bot's frames for joints and an optional clip state (the body call, `skeleton.ts`). */
 export function botFrames(m: MocapDims, joints: Record<string, number> | undefined, clip?: ClipState): PoseFrames {
-  const pose = clip ? mocapClipPose(m, clip, joints) : null
-  return poseFramesOf(m, pose ?? mocapPose(m, jointLocals(joints)))
+  return poseFramesOf(m, botPose(m, joints, clip))
 }
 
 export function botEffectors(m: MocapDims, joints: Record<string, number> | undefined, clip?: ClipState): Record<Effector, V3> {

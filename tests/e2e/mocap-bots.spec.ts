@@ -4,8 +4,11 @@
  * config dir, loads Y Bot / X Bot, renders them skinned in every pass, and
  * exports deterministically. Phase 2 (docs/plans/2026-10-20-mocap-clips.md):
  * the clips load, the motion library plays them on bots, and a bot playing
- * a clip exports deterministically. Skipped without the library (it is never
- * in the repo); nothing from it is written into the repo.
+ * a clip exports deterministically. Phase 3 (docs/plans/2026-10-20-mocap-fights.md):
+ * a bot fight says it is staging before its solve and reads back without
+ * one, and a bot fight exports byte-identically twice. Skipped without the
+ * library (it is never in the repo); nothing from it is written into the
+ * repo.
  */
 
 import { _electron as electron, test, expect, type ElectronApplication, type Page } from '@playwright/test'
@@ -238,6 +241,71 @@ test.describe('mocap bots', () => {
       expect(res.ok, res.error).toBe(true)
       pkgs.push(res.data!.packagePath)
       expect(res.data!.prompt.toLowerCase()).toContain('salsa')
+    }
+    const ffmpeg = process.env.BLOCKOUT_FFMPEG || 'ffmpeg'
+    for (const suffix of ['_reference.mp4', '_depth.mp4']) {
+      const [a, b] = pkgs.map((p) => join(p, readdirSync(p).find((f) => f.endsWith(suffix))!))
+      const md5 = (f: string): string => execFileSync(ffmpeg, ['-v', 'error', '-i', f, '-f', 'framemd5', '-']).toString().replace(/^#.*$/gm, '')
+      expect(md5(a!), suffix).toBe(md5(b!))
+      expect(readFileSync(a!).equals(readFileSync(b!)), `${suffix} bytes`).toBe(true)
+    }
+  })
+
+  test('a bot fight says it is staging, paints that, then solves; reading it back solves nothing', async () => {
+    test.setTimeout(120_000)
+    expect((await rpc('set_shot', { duration: 8 })).ok).toBe(true)
+    // Watch for the notice, every frame, and the moment the store's stageFight starts.
+    await page.evaluate(() => {
+      const w = window as unknown as { __mfStage: { toastAt: number; stageAt: number; frames: number[]; done: boolean }; __blockout: { store: { getState(): Record<string, unknown>; setState(p: Record<string, unknown>): void } } }
+      const rec = (w.__mfStage = { toastAt: 0, stageAt: 0, frames: [] as number[], done: false })
+      const seen = (): void => {
+        if (!rec.toastAt && Array.from(document.querySelectorAll('.toast')).some((t) => t.textContent?.includes('Staging fight'))) rec.toastAt = performance.now()
+      }
+      new MutationObserver(seen).observe(document.body, { childList: true, subtree: true, characterData: true })
+      const frame = (): void => {
+        rec.frames.push(performance.now())
+        if (!rec.done) requestAnimationFrame(frame)
+      }
+      requestAnimationFrame(frame)
+      const store = w.__blockout.store
+      const stage = store.getState().stageFight as (input: unknown) => unknown
+      store.setState({
+        stageFight: (input: unknown) => {
+          rec.stageAt = performance.now()
+          store.setState({ stageFight: stage })
+          return stage(input)
+        }
+      })
+    })
+    const staged = await rpc<{ fightId: string; report: unknown }>('stage_fight', { script: 'A jab to head -> hit\nB hook to head -> block', assets: ['person.mocapMale', 'person.mocapFemale'], x: 12, z: -6 })
+    expect(staged.ok, staged.error).toBe(true)
+    const rec = await page.evaluate(() => {
+      const r = (window as unknown as { __mfStage: { toastAt: number; stageAt: number; frames: number[]; done: boolean } }).__mfStage
+      r.done = true
+      return r
+    })
+    expect(rec.toastAt).toBeGreaterThan(0)
+    expect(rec.stageAt).toBeGreaterThan(rec.toastAt)
+    expect(rec.frames.some((f) => f > rec.toastAt && f < rec.stageAt), 'a frame between the notice and the solve').toBe(true)
+    // get_fight reads the solution back: no solve (a bot solve takes a second or more).
+    const t0 = Date.now()
+    const read = await rpc<{ report: unknown }>('get_fight', { fightId: staged.data!.fightId })
+    expect(read.ok, read.error).toBe(true)
+    expect(Date.now() - t0).toBeLessThan(250)
+    expect(read.data!.report).toEqual(staged.data!.report)
+  })
+
+  test('a double export of a bot fight on clips is byte-identical', async () => {
+    test.setTimeout(300_000)
+    expect((await rpc('new_scene', { name: 'Bot fight export' })).ok).toBe(true)
+    const staged = await rpc<{ report: { beats: { plays: string }[] } }>('stage_fight', { script: 'A jab cross to head -> block, hit power 0.8\nB hook to head -> hit power 0.8', assets: ['person.mocapMale', 'person.mocapFemale'], x: 0, z: -4 })
+    expect(staged.ok, staged.error).toBe(true)
+    expect(staged.data!.report.beats.every((b) => b.plays.startsWith('mocap:'))).toBe(true)
+    const pkgs: string[] = []
+    for (let k = 0; k < 2; k++) {
+      const res = await rpc<{ packagePath: string }>('export_shot', { passes: { clean: true, depth: true, normal: false } })
+      expect(res.ok, res.error).toBe(true)
+      pkgs.push(res.data!.packagePath)
     }
     const ffmpeg = process.env.BLOCKOUT_FFMPEG || 'ffmpeg'
     for (const suffix of ['_reference.mp4', '_depth.mp4']) {

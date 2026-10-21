@@ -178,11 +178,13 @@ function shoulderOffset(dims: PersonDims, side: Hand): V3 {
  * `skeleton.ts` (a test pins the two together).
  */
 export function handFrame(dims: PersonDims, joints: Record<string, number> | undefined, hand: Hand, clip?: ClipState): HandFrame {
-  // Fork: a mocap bot's hand rides its own forearm frame (skeleton.ts body call), clip and all.
+  // Fork: a mocap bot's hand rides its own hand bone (skeleton.ts body call), clip and all: the palm, turned as the hand.
   if (dims.mocap) {
     const fr = poseFrames(dims, joints, clip)
-    const elbow = fr[hand === 'L' ? 'elbowL' : 'elbowR']
-    return { p: add(elbow.p, apply(elbow.r, v(0, -dims.lowerArmLen, 0))), r: elbow.r, shoulder: fr[hand === 'L' ? 'shoulderL' : 'shoulderR'].p, torso: fr.torso.r }
+    const wrist = fr[hand === 'L' ? 'wristL' : 'wristR']!
+    const palm = dims.mocap.rig.palm[hand]
+    const k = dims.mocap.k
+    return { p: add(wrist.p, apply(wrist.r, v(palm.x * k, palm.y * k, palm.z * k))), r: wrist.r, shoulder: fr[hand === 'L' ? 'shoulderL' : 'shoulderR'].p, torso: fr.torso.r }
   }
   const j = (k: string): number => joints?.[k] ?? 0
   const torso = torsoFrame(dims, j)

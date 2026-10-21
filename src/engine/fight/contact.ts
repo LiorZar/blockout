@@ -8,14 +8,15 @@
  * tables are copied here, sampled at the mesh's 32 ring angles, so the
  * surface is the mesh's own). `bodyClearance` is how far a point is from the
  * whole body (body / legs misses). `tests/unit/fight-contact.test.ts` checks
- * both against the built meshes.
+ * both against the built meshes. A mocap bot playing a clip (fork, mocap
+ * fights) is measured on its clip pose.
  *
  * PURE: no DOM / three.js / Electron.
  */
 
 import { mocapStandIn } from '../mocap/registry'
 import { framePoint, poseFrames, type PersonDims } from '../skeleton'
-import type { V3 } from '../types'
+import type { ClipState, V3 } from '../types'
 
 /** A torso section (mannequin-mesh.ts): y, half-width a, half-depth b, centre cz / cx, front bump, back bulge. */
 type Section = [y: number, a: number, b: number, cz?: number, cx?: number, bump?: number, back?: number]
@@ -145,9 +146,11 @@ export function torsoSurface(
   position: V3,
   heading: number,
   toward: { x: number; z: number },
-  yFrac: number
+  yFrac: number,
+  clip?: ClipState
 ): V3 {
-  const torso = poseFrames(dims, joints).torso
+  // Fork (mocap fights): a bot playing a clip, the clip's torso.
+  const torso = poseFrames(dims, joints, clip).torso
   const axis = framePoint(torso, { x: 0, y: yFrac * dims.torsoLen, z: 0 })
   // The direction in the entity frame (un-yawed), then in the torso frame (Rᵀ·d).
   const c = Math.cos(heading)
@@ -232,7 +235,8 @@ export function bodyClearance(
   joints: Record<string, number> | undefined,
   position: V3,
   heading: number,
-  point: V3
+  point: V3,
+  clip?: ClipState
 ): number {
   // The point in the entity frame (unscaled), then the torso frame.
   const c = Math.cos(heading)
@@ -240,7 +244,7 @@ export function bodyClearance(
   const wx = (point.x - position.x) / scale
   const wz = (point.z - position.z) / scale
   const p: V3 = { x: wx * c - wz * s, y: (point.y - position.y) / scale, z: wx * s + wz * c }
-  const fr = poseFrames(dims, joints)
+  const fr = poseFrames(dims, joints, clip)
   const t = fr.torso
   const r = t.r
   const d = { x: p.x - t.p.x, y: p.y - t.p.y, z: p.z - t.p.z }

@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots and their clips) in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots, their clips and their fights) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -7,7 +7,7 @@
  * does is undoable, autosaved, and visible live.
  */
 
-import { useStore, currentProjectJson, refightShot, releaseHeldBy, solveInScene } from '../store'
+import { useStore, currentProjectJson, fightNotice, refightShot, releaseHeldBy, slowFight, slowRoutine, solveInScene } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { isMocapAsset } from '@engine/mocap/registry'
 import { assetListed } from '../mocap/library'
@@ -709,7 +709,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const exaggeration = flt(params, 'exaggeration')
       const coverage = fightCoverage(params, 'stage_fight')
       const weapons = fightWeapons(params)
-      const { fightId, report } = s.stageFight({
+      const input = {
         beats,
         at: { x: flt(params, 'x') ?? 0, z: flt(params, 'z') ?? 0, heading: toRad(flt(params, 'headingDeg') ?? 0) },
         ...(fighterIds.length === 2 ? { fighters: [fighterIds[0]!, fighterIds[1]!] as [string, string] } : {}),
@@ -717,7 +717,10 @@ async function execute(action: string, params: Params): Promise<unknown> {
         ...(weapons ? { weapons } : {}),
         ...(exaggeration !== undefined ? { exaggeration } : {}),
         ...(coverage ? { coverage } : {})
-      })
+      }
+      // Mocap fights (fork): a bot fight's solve takes seconds; the app says so first.
+      if (slowFight(input)) await fightNotice('Staging fight…')
+      const { fightId, report } = s.stageFight(input)
       return fightResult(fightId, report)
     }
 
@@ -731,6 +734,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const beats = fightBeatsFromParams(params, 'update_fight', fightLabels(scene, fight.fighterIds), shot.duration)
       const exaggeration = flt(params, 'exaggeration')
       const coverage = fightCoverage(params, 'update_fight')
+      if (slowFight({ fightId })) await fightNotice('Re-solving fight…')
       const report = s.updateFight(fightId, {
         ...(beats ? { beats } : {}),
         ...(exaggeration !== undefined ? { exaggeration } : {}),
@@ -1013,7 +1017,9 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const z = flt(params, 'z') ?? 0
       const headingDeg = flt(params, 'headingDeg') ?? 0
       const fightsBefore = s.scene()?.fights?.length ?? 0
-      s.spawnChoreography(spec, { x, z, heading: toRad(headingDeg) })
+      // Mocap fights (fork): a bot fight's solve takes seconds; the app says so first.
+      if (slowRoutine(spec)) await fightNotice('Staging fight…')
+      s.spawnChoreography(spec, { x, z, heading: toRad(headingDeg) }, true)
       const sel = useStore.getState().selection
       return {
         kind: spec.kind,
@@ -1031,6 +1037,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       }
       const spec = routineSpecFromParams(params)
       const fightsBefore = s.scene()?.fights?.length ?? 0
+      if (slowRoutine(spec, entityIds)) await fightNotice('Staging fight…')
       const applied = s.choreographEntities(entityIds, spec)
       if (applied === 0) {
         throw new Error('No matching performers — choreography applies to people (person.* entities).')

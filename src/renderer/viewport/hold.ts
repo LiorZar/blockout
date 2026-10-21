@@ -8,7 +8,9 @@
  * engine's grip math (src/engine/weapons.ts), so the rendered weapon and the
  * engine's tip agree exactly. The rig's world matrices must be current. A
  * mocap bot carries the same named frames, set from its FK every frame
- * (renderer/mocap/body.ts), the palm at `(0, −lowerArmLen, 0)`.
+ * (renderer/mocap/body.ts), the palm at `(0, −lowerArmLen, 0)`; its hand
+ * bone bends at the wrist on a clip, so a bot holds the weapon in its
+ * `gripL` / `gripR` frame (the elbow frame's stand-in on the hand bone).
  */
 
 import * as THREE from 'three'
@@ -43,7 +45,7 @@ export function heldWeaponMatrix(
   weaponScale: number,
   out = new THREE.Matrix4()
 ): THREE.Matrix4 | null {
-  const elbow = person.getObjectByName(hand === 'L' ? 'elbowL' : 'elbowR')
+  const elbow = person.getObjectByName(hand === 'L' ? 'gripL' : 'gripR') ?? person.getObjectByName(hand === 'L' ? 'elbowL' : 'elbowR')
   const shoulder = person.getObjectByName(hand === 'L' ? 'shoulderL' : 'shoulderR')
   const torso = person.getObjectByName('torso')
   if (!elbow || !shoulder) return null

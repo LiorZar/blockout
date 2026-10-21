@@ -6,7 +6,7 @@
  */
 
 import { useMemo, useState } from 'react'
-import { solveInScene, useStore } from '../store'
+import { fightNotice, slowFight, solveInScene, useStore } from '../store'
 import type { BeatReport } from '@engine/fight/solve'
 import { assetSpec } from '@engine/assets'
 import { WEAPON_SPECS } from '@engine/weapons'
@@ -133,22 +133,33 @@ export function FightDirector(): JSX.Element {
       z: (ents[0]!.transform.position.z + ents[1]!.transform.position.z) / 2,
       heading: 0
     }
-    try {
-      const r = stageFight({ beats: parsed.beats, at, fighters: [selected[0]!, selected[1]!], ...settings(), ...weapons() })
-      setFightId(r.fightId)
-      toast(`Fight staged on the 2 selected: ${r.report.beats.length} beats.`, 'success')
-    } catch (e) {
-      toast((e as Error).message, 'error')
+    const input = { beats: parsed.beats, at, fighters: [selected[0]!, selected[1]!] as [string, string], ...settings(), ...weapons() }
+    const stage = (): void => {
+      try {
+        const r = stageFight(input)
+        setFightId(r.fightId)
+        toast(`Fight staged on the 2 selected: ${r.report.beats.length} beats.`, 'success')
+      } catch (e) {
+        toast((e as Error).message, 'error')
+      }
     }
+    // Mocap fights (fork): a bot fight's solve takes seconds; say so first.
+    if (slowFight(input)) void fightNotice('Staging fight…').then(stage)
+    else stage()
   }
 
   const onResolve = (): void => {
     if ('error' in parsed || !fight) return
-    try {
-      updateFight(fight.id, { beats: parsed.beats, ...settings(), ...(coverage ? {} : { coverage: undefined }) })
-    } catch (e) {
-      toast((e as Error).message, 'error')
+    const patch = { beats: parsed.beats, ...settings(), ...(coverage ? {} : { coverage: undefined }) }
+    const resolve = (): void => {
+      try {
+        updateFight(fight.id, patch)
+      } catch (e) {
+        toast((e as Error).message, 'error')
+      }
     }
+    if (slowFight({ fightId: fight.id })) void fightNotice('Re-solving fight…').then(resolve)
+    else resolve()
   }
 
   return (

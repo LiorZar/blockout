@@ -7,7 +7,7 @@ import { buildAsset, type AnimInput } from '@renderer/viewport/builders'
 import { registerClipTake, registerMocapTemplate } from '@renderer/mocap/library'
 import { clearMocapClips, mocapClip, mocapClipIds, mocapClipPose, poseLowY } from '@engine/mocap/clip'
 import { clipStride, clipWarp, gaitClipId, gaitPose } from '@engine/mocap/gait-clips'
-import { BONE_INDEX } from '@engine/mocap/rig'
+import { BONE_INDEX, MOCAP_BONES } from '@engine/mocap/rig'
 import { qrot } from '@engine/mocap/quat'
 import type { MocapDims, MocapPose } from '@engine/mocap/fk'
 import { clearMocapBodies } from '@engine/mocap/registry'
@@ -57,6 +57,19 @@ function ballLow(m: MocapDims, pose: MocapPose, bone: number): number {
   return low
 }
 
+/** The lowest surface point of a bone (its support points, a hand's fingers too). */
+function surfaceLow(m: MocapDims, pose: MocapPose, bone: number): number {
+  let low = Infinity
+  for (const pt of m.rig.points) {
+    if (pt.bone !== bone) continue
+    const sub = !!pose.XG && pt.sub !== undefined
+    const o = sub ? pt.subOff! : pt.off
+    const q = qrot(sub ? pose.XG![pt.sub!]! : pose.G[bone]!, { x: o.x * m.k, y: o.y * m.k, z: o.z * m.k })
+    low = Math.min(low, (sub ? pose.XP![pt.sub!]! : pose.P[bone]!).y + q.y)
+  }
+  return low
+}
+
 /** The gaits and speeds a bot is checked at (the sit on the floor, and on a seat). */
 const GAIT_RUNS: [GaitId, number, boolean?][] = [['stand', 0], ['gesture', 0], ['walk', 1.4], ['jog', 3], ['run', 5.5], ['crouch', 0], ['crouch', 0.8], ['sit', 0], ['sit', 0, true], ['lie', 0], ['fall', 0]]
 
@@ -86,7 +99,14 @@ function motionHeights(id: string, move: string, fractions: number[], seats: Sea
     const st = ev.evaluate(end * f).entities[0]!
     const fx = poseEffectors(d, st.joints, st.clip)
     const y = (k: keyof typeof fx): number => toWorld(fx[k], st.position, st.heading, 1).y
-    return { head: y('head'), pelvis: y('pelvis'), hand: Math.min(y('handL'), y('handR')), handMax: Math.max(y('handL'), y('handR')), knee: Math.min(y('kneeL'), y('kneeR')), foot: Math.min(y('footL'), y('footR')), footMax: Math.max(y('footL'), y('footR')) }
+    // A hand or foot is on the floor when its surface is (the palm and the ball of the foot ride their bones:
+    // a hand on its edge holds the palm up, a flat foot the ToeBase joint).
+    const m = d.mocap!
+    const pose = mocapClipPose(m, st.clip!, st.joints)!
+    const low = (bones: (typeof MOCAP_BONES)[number][]): number => st.position.y + Math.min(...bones.map((b) => surfaceLow(m, pose, BONE_INDEX[b])))
+    const hands = [low(['LeftHand']), low(['RightHand'])]
+    const feet = [low(['LeftFoot', 'LeftToeBase']), low(['RightFoot', 'RightToeBase'])]
+    return { head: y('head'), pelvis: y('pelvis'), hand: Math.min(...hands), handMax: Math.max(...hands), knee: Math.min(y('kneeL'), y('kneeR')), foot: Math.min(...feet), footMax: Math.max(...feet) }
   })
 }
 

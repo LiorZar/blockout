@@ -10,6 +10,8 @@
  * The evaluator interpolates joints and root height linearly between marks,
  * and the lowest point of a pose isn't linear in its joints: `groundBetween`
  * inserts a grounded mark wherever the in-between pose would float or sink.
+ * Mocap bots (fork, mocap fights): a clip mark's y is its floor (the clip
+ * pose grounds itself), and legs touching one are left to the evaluator.
  *
  * PURE: no DOM / three.js / Electron.
  */
@@ -17,6 +19,7 @@
 import { lerpAngle } from '../easing'
 import { bodyShape, lowestY, type BodyShape } from '../floor'
 import type { ChoreoMarkSpec } from '../choreography'
+import type { ClipState } from '../types'
 
 type Joints = Record<string, number>
 
@@ -37,8 +40,14 @@ export function floorBody(assetId: string, params: Record<string, number | strin
   return { shape: bodyShape(assetId, params), scale, y }
 }
 
-/** Root height that rests a posed fighter's lowest point on its floor, `lift` above it. */
-export function groundY(b: FloorBody, joints: Joints | undefined, lift = 0): number {
+/**
+ * Root height that rests a posed fighter's lowest point on its floor, `lift`
+ * above it. A mocap bot on a clip (fork, mocap fights) stands on its floor:
+ * the clip pose grounds itself on the root (mocap/clip.ts), so its mark's y
+ * is the floor, plus the lift.
+ */
+export function groundY(b: FloorBody, joints: Joints | undefined, lift = 0, clip?: ClipState): number {
+  if (clip && b.shape.dims.mocap) return b.y + lift
   return b.y - lowestY(b.shape, joints) * b.scale + lift
 }
 
@@ -61,7 +70,8 @@ export function groundBetween<M extends ChoreoMarkSpec & { arriveHeading?: numbe
   while (k < marks.length - 1 && marks.length < cap) {
     const m0 = marks[k]!
     const m1 = marks[k + 1]!
-    if (m1.time - m0.time < 2 * MIN_GAP || !m0.joints || !m1.joints) {
+    // A leg touching a clip mark is grounded by the evaluator (the clip pose on the floor line).
+    if (m1.time - m0.time < 2 * MIN_GAP || !m0.joints || !m1.joints || m0.clip || m1.clip) {
       k++
       continue
     }

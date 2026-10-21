@@ -20,20 +20,52 @@
  * defender's blade or shield, and a gun beat (SHOT_MOVES) aims the barrel
  * line through the target, with the reaction on the shot frame.
  *
+ * Mocap bots (fork, mocap fights; clip-moves.ts): a loaded bot plays the
+ * library's fight clips. A strike is one clip run per impact (combos chain
+ * them, crossfaded), its impact frame on the beat's frame; the reach solve
+ * above runs on the clip pose and sits on the impact mark as an overlay,
+ * ramped in and out. Blocks, parries, slips and ducks play the block and
+ * dodge clips with their guard frame on the impact; landed blows the hit
+ * clips by target and the side they land on; staggers, knockdowns and KOs
+ * the hit and fall clips on the physics' knockback root and timing. Between
+ * beats a bot holds the fight idle. A move with no clip plays its
+ * keyframes, crossfaded from and back to the idle. Every other body fights
+ * exactly as before.
+ *
  * PURE and deterministic: no DOM / three.js / Electron, no randomness.
  */
 
 import { mirrorJoints, type ChoreoMarkSpec } from '../choreography'
+import { smoothstep } from '../easing'
 import { ShotEvaluator } from '../evaluate'
+import { botPose, clipRoot, clipScale, mocapClip } from '../mocap/clip'
+import { effectorsOf, poseFramesOf } from '../mocap/fk'
+import { playsClips } from '../mocap/library-clips'
+import { boneSkin, fighterPose, meshDepth, partAhead, skinDepth, skinMesh, skinPoints, supportPoints, targetSkin, type SkinMesh } from '../mocap/surface'
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, toWorld, type Effector, type PersonDims } from '../skeleton'
-import type { EntityState, FightBeat, FightDoc, FightOutcome, GaitId, Scene, Shot, V3 } from '../types'
+import type { ClipState, EntityState, FightBeat, FightDoc, FightOutcome, GaitId, MarkClip, Scene, Shot, V3 } from '../types'
 import { SUPPORT_SLACK, heldPointLocal, holdJoints, supportReach, weaponContact, weaponSpec, type HeldWeapon } from '../weapons'
 import { DEFENSES, REACTIONS, SHIELD_BLOCK, SHOT_MOVES, fightMotion, gripPitch, gunAimMove, shotHand, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
 import { impact, snapAmplitude, snapCurve, weaponHeft, type ImpactResult } from './physics'
 import { BODY_RADIUS, clearRun, pathCrossings, type FightObstacle, type PathSample } from './obstacles'
 import { floorBody, groundBetween, groundY, type FloorBody } from './ground'
 import { bodyClearance, torsoShape, torsoSurface, type TorsoShape } from './contact'
+import {
+  backTravel,
+  clipImpactTime,
+  defenseClip,
+  defenseReadyTime,
+  fallLandTime,
+  getUpClip,
+  gunClips,
+  idleClip,
+  moveClips,
+  reactionClip,
+  reactionOnset,
+  type ClipBlow,
+  type ClipPick
+} from './clip-moves'
 
 export interface FighterInput {
   entityId: string
@@ -61,8 +93,10 @@ export interface BeatReport {
   liftM: number[]
   physics: ImpactResult[]
   warnings: string[]
-  /** The motion the beat played: a shot's gun or bow aim, a replaced move's fork motion. */
+  /** The motion the beat played: a shot's gun or bow aim, a replaced move's fork motion; a bot's clips (`mocap:jabHead+cross`). */
   plays: string
+  /** Mocap bots (fork): the effector each impact struck with as played (a bot's jab is its left hand). */
+  effectors?: string[]
 }
 
 export interface FightSolution {
@@ -108,6 +142,58 @@ const WIDE_REACH = 1.8
 /** Reach (fork): an arm blow still this far off after the wider pitch leans the torso too, at most MAX_LEAN. */
 const LEAN_TOLERANCE = 0.015
 const MAX_LEAN = (20 * Math.PI) / 180
+/** Mocap bots (fork): a knee to a bot's body lands this far up its torso: the belly, above the thighs. */
+const BOT_KNEE = 0.4
+/** A bot's striking knee tucks its heel by up to TUCK_MAX (rad, found to within TUCK_STEP); its shin counts from TUCK_FROM below the knee (m at height ×1). */
+const TUCK_MAX = 0.8
+const TUCK_STEP = 0.05
+const TUCK_FROM = 0.12
+/** A bot's leg in the defender's legs splays out (hip abduction) by up to LEG_SPLAY (crd2: ≤ 10°), found to within SPLAY_STEP (rad). */
+const LEG_SPLAY = (10 * Math.PI) / 180
+const SPLAY_STEP = 0.01
+/** Roots further apart than this can't have their legs meet (m at height ×1). */
+const SPLAY_NEAR = 1.4
+/**
+ * A bot blow whose approach (its last ORBIT_LEAD) still sinks one body more
+ * than ORBIT_TOL into the other comes in swung about the target by the
+ * first of ORBIT_STEPS (deg) that clears it, else the one that helps most (by
+ * ORBIT_GAIN at least, or that gets it under ORBIT_BAR; crd2: ≤ 30°).
+ */
+const ORBIT_LEAD = 0.125
+const ORBIT_TOL = 0.022
+const ORBIT_GAIN = 0.005
+/** The coarse angles first; the finer ones beside the best of them after them, only while it is still over ORBIT_BAR (m); whatever gets under it wins. */
+const ORBIT_STEPS = [15, -15, 30, -30, 8, -8, 22, -22]
+const ORBIT_COARSE = 4
+const ORBIT_BAR = 0.025
+/** An orbit must land its blow as well as straight on, or within ORBIT_CONTACT (m). */
+const ORBIT_CONTACT = 0.005
+/** A bot's bare guard a blocked blow still sinks past (a spinning backfist sweeping across) reaches across toward it first: shoulder adduction (rad). */
+const GUARD_ACROSS = 0.45
+/** A warm-started pitch solve's first step and how far from its start it may go (rad), else it scans. */
+const WARM_STEP = 0.02
+const WARM_REACH = 0.5
+/** A later lean pass (bots) looks this near the last pass's lean (rad). */
+const LEAN_NEAR = 0.02
+/**
+ * Bots kept apart after a blow (separate): skins sampled every SEP_STEP to
+ * SEP_WINDOW after a beat's last blow; more than SEP_TOL in each other
+ * pushes the defender back, plus SEP_MARGIN (s, m).
+ */
+const SEP_STEP = 1 / 12
+const SEP_WINDOW = 1
+/** For this long after the blow it is sampled every frame (s). */
+const SEP_CLOSE = 0.25
+/** Between two blows a push is gone SEP_BACK before the next (s). */
+const SEP_BACK = 0.1
+const SEP_TOL = 0.01
+const SEP_MARGIN = 0.005
+/** A push is found to within SEP_RES, at most SEP_MAX; one that can't clear the bodies must help by SEP_GAIN (m). */
+const SEP_RES = 0.005
+const SEP_MAX = 0.15
+const SEP_GAIN = 0.01
+/** Two bones' boxes (their support points) meet within BONE_PAD of each other (m): their skins are compared there. */
+const BONE_PAD = 0.015
 /** An elbow to the head lands on the jaw: the head's surface this far below its middle (rad, fork). */
 const ELBOW_JAW = (35 * Math.PI) / 180
 /** A kick that can't reach rises onto the toes / hops — at most this high (m). */
@@ -122,9 +208,52 @@ const WEAPON_ELBOW = 0.8
 const GUARD_ROCK = 0.35
 const SNAP_HZ = 15
 const SNAP_S = 0.6
+/**
+ * Mocap bots (fork): a strike clip plays from up to CLIP_LEAD before its
+ * impact to CLIP_TAIL after it inside a combo, CLIP_END after the last;
+ * combo clips crossfade over CLIP_XFADE; the overlay ramps in over RAMP_IN
+ * and out over RAMP_OUT; clip runs are marked every CLIP_STEP of clip time.
+ */
+const CLIP_LEAD = 0.5
+const CLIP_TAIL = 0.45
+const CLIP_END = 0.9
+const CLIP_XFADE = 0.12
+const RAMP_IN = 0.2
+const RAMP_OUT = 0.25
+const CLIP_STEP = 0.1
+/** A bot defense plays from DEF_LEAD before its guard frame to DEF_TAIL after it. */
+const DEF_LEAD = 0.45
+const DEF_TAIL = 0.5
+/** A bot settles out of the idle over BOT_LEAD, steps in at BOT_STEP m/s, crossfades between defender clips over BOT_XFADE, and gets up BOT_GETUP after a knockdown ends. */
+const BOT_LEAD = 0.2
+const BOT_STEP = 1.2
+const BOT_XFADE = 0.15
+const BOT_GETUP = 0.4
+/** Defender clip runs are marked this often (s). */
+const DEF_STEP = 1 / 15
+/** A guard in a blow's way opens from GUARD_LEAD before it, all the way by GUARD_FULL before (s; bots). */
+const GUARD_LEAD = 0.25
+const GUARD_FULL = 0.08
+/** A defender's hand or forearm within GUARD_CLEAR of a landed blow's skin is in its way; it swings back over GUARD_REOPEN. */
+const GUARD_CLEAR = 0.01
+const GUARD_REOPEN = 0.4
 
 type XZ = { x: number; z: number }
 type Joints = Record<string, number>
+
+/** A motion key a fight plays: a keyframe, or (mocap bots) a clip mark with its root travel in the fighter's frame (m). */
+type FightKey = MotionPreset['keyframes'][number] & { clip?: MarkClip; travel?: XZ }
+/** What a fighter plays for a beat: keyframes, or a bot's clip runs as keys. */
+interface FightMotion {
+  id: string
+  duration: number
+  keyframes: FightKey[]
+}
+
+/** A mark clip as a clip state. */
+const stateOf = (c: MarkClip | undefined): ClipState | undefined => (c ? (c.mirror ? { id: c.id, t: c.at, mirror: true } : { id: c.id, t: c.at }) : undefined)
+/** A clip state as a mark clip. */
+const markOf = (c: ClipState | undefined): MarkClip | undefined => (c ? (c.mirror ? { id: c.id, at: c.t, mirror: true } : { id: c.id, at: c.t }) : undefined)
 
 const BY_ID = new Map(MOTION_PRESETS.map((m) => [m.id, m]))
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v))
@@ -140,6 +269,13 @@ function unit(d: XZ, fallback: XZ = { x: 0, z: -1 }): XZ {
 const dist3 = (a: V3, b: V3): number => Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
 
 /** Joints + root move of a motion at local time t (linear, missing keys = 0 — the evaluator's rule). */
+/** `p` turned by `a` (rad) about `c` in the ground plane. */
+function turnAbout(p: XZ, c: XZ, a: number): XZ {
+  const x = p.x - c.x
+  const z = p.z - c.z
+  return { x: c.x + x * Math.cos(a) - z * Math.sin(a), z: c.z + x * Math.sin(a) + z * Math.cos(a) }
+}
+
 function sampleMotion(m: MotionPreset, t: number): { joints: Joints; forward: number; up: number } {
   const k = m.keyframes
   const at = (i: number): { joints: Joints; forward: number; up: number } => ({
@@ -197,6 +333,8 @@ interface Fighter {
   floor: FloorBody
   /** Body blows land on this torso's surface (fork, contact.ts). */
   torso: TorsoShape
+  /** Mocap bots (fork, clip-moves.ts): the idle clip a loaded bot holds between beats; null for every other body (keyframes). */
+  idle: string | null
 }
 
 function fighterOf(input: FighterInput): Fighter {
@@ -220,7 +358,8 @@ function fighterOf(input: FighterInput): Fighter {
     held,
     shotRange: 0,
     floor: floorBody(input.assetId, input.params, input.scale > 0 ? input.scale : 1, input.start.y),
-    torso: torsoShape(input.assetId, input.params, personDims(input.assetId, input.params))
+    torso: torsoShape(input.assetId, input.params, personDims(input.assetId, input.params)),
+    idle: playsClips({ assetId: input.assetId, params: input.params }) ? idleClip(held.find((h) => h.spec.kind === 'gun')?.spec.mount) : null
   }
 }
 
@@ -240,24 +379,55 @@ function strikeEffector(f: Fighter, e: Effector): Effector {
   return w ? (w.hand === 'L' ? 'handL' : 'handR') : e
 }
 
+/** Mocap bots (fork): a bot's unarmed contact points by pose (contactLocal), the last CONTACT_CACHE asked. */
+const CONTACTS = new WeakMap<Fighter, Map<string, V3>>()
+const CONTACT_CACHE = 512
+
 /**
  * Fighter-local point where an effector meets things. Unarmed: the rig
  * effector. A hand with a weapon: the weapon's strike or guard point (a gun
  * beat's: `shotRange` down the barrel line), in the pose the evaluator gives
  * the fighter (the grip poses of `holdJoints`; `evaluated` joints have them).
  */
-function contactLocal(f: Fighter, joints: Joints | undefined, e: Effector, role: 'strike' | 'guard' = 'strike', evaluated = false): V3 {
+function contactLocal(f: Fighter, joints: Joints | undefined, e: Effector, role: 'strike' | 'guard' = 'strike', evaluated = false, clip?: ClipState): V3 {
   const w = weaponOf(f, e)
-  if (!w) return poseEffectors(f.dims, joints)[e]
-  const j = evaluated ? joints : holdJoints(f.dims, joints, f.held)
+  if (!w) {
+    if (!f.dims.mocap) return poseEffectors(f.dims, joints, clip)[e]
+    // Mocap bots (fork): the solves ask of the same pose again and again (a pitch scan repeats on every placement pass).
+    let cache = CONTACTS.get(f)
+    if (!cache) {
+      cache = new Map()
+      CONTACTS.set(f, cache)
+    }
+    const key = `${e}|${role}|${JSON.stringify(clip ?? null)}|${JSON.stringify(joints ?? null)}`
+    const known = cache.get(key)
+    if (known) return { ...known }
+    let out: V3
+    if (role !== 'strike') out = poseEffectors(f.dims, joints, clip)[e]
+    else {
+      // Mocap bots (fork, mocap/surface.ts): a blow lands with the part's front (the knuckles, the sole, the elbow's
+      // point), its skin furthest ahead of the effector along the strike (out from the body through the effector).
+      const m = f.dims.mocap
+      const pose = botPose(m, joints, clip)
+      const p = effectorsOf(m, poseFramesOf(m, pose))[e]
+      const u = unit({ x: p.x, z: p.z })
+      const a = partAhead(m, joints, clip, e, p, { x: u.x, y: 0, z: u.z }, pose)
+      out = { x: p.x + u.x * a, y: p.y, z: p.z + u.z * a }
+    }
+    if (cache.size >= CONTACT_CACHE) cache.delete(cache.keys().next().value!)
+    cache.set(key, out)
+    return { ...out }
+  }
+  // A bot on a clip holds the weapon in the clip's own hands (no hold pose; weapons.ts applyHolds).
+  const j = evaluated || clip ? joints : holdJoints(f.dims, joints, f.held)
   const range = role === 'strike' ? f.shotRange / w.scale : 0
   const t = w.spec.tip
   const a = w.spec.aim
   const p = range > 0 ? { x: t.x + a.x * range, y: t.y + a.y * range, z: t.z + a.z * range } : weaponContact(w.spec, role)
-  return heldPointLocal(f.dims, j, w.hand, w.spec, p, w.scale)
+  return heldPointLocal(f.dims, j, w.hand, w.spec, p, w.scale, clip)
 }
 
-function addMark(f: Fighter, time: number, pos: XZ, y: number, gait: GaitId, joints: Joints, heading: number): void {
+function addMark(f: Fighter, time: number, pos: XZ, y: number, gait: GaitId, joints: Joints, heading: number, clip?: MarkClip, posed = false): void {
   const last = f.marks[f.marks.length - 1]
   if (last && time <= last.time + 1e-6) f.marks.pop()
   f.marks.push({
@@ -269,7 +439,10 @@ function addMark(f: Fighter, time: number, pos: XZ, y: number, gait: GaitId, joi
     hold: 0,
     joints: { ...joints },
     arriveHeading: heading,
-    lockFacing: true
+    lockFacing: true,
+    // Mocap bots (fork): a clip mark, and a posed move (the evaluator keeps the clip's root travel and floor line).
+    ...(clip ? { clip: { ...clip } } : {}),
+    ...(posed ? { posedMove: true as const } : {})
   })
 }
 
@@ -279,8 +452,8 @@ function truncate(f: Fighter, t: number): void {
 }
 
 /** World-space effector (or weapon point) of a fighter in a pose at a root/heading. */
-function effectorWorld(f: Fighter, joints: Joints, root: XZ, y: number, heading: number, e: Effector, role: 'strike' | 'guard' = 'strike'): V3 {
-  return toWorld(contactLocal(f, joints, e, role), { x: root.x, y, z: root.z }, heading, f.scale)
+function effectorWorld(f: Fighter, joints: Joints, root: XZ, y: number, heading: number, e: Effector, role: 'strike' | 'guard' = 'strike', clip?: ClipState): V3 {
+  return toWorld(contactLocal(f, joints, e, role, false, clip), { x: root.x, y, z: root.z }, heading, f.scale)
 }
 
 /** The point a blow aims at on the defender (also used by blocks via the guard hand). */
@@ -293,12 +466,23 @@ export function fightTarget(
   toward: XZ,
   zone: FightBeat['target'],
   effector: Effector,
-  torso: TorsoShape
+  torso: TorsoShape,
+  clip?: ClipState
 ): V3 {
-  const fx = poseEffectors(dims, joints)
+  const fx = poseEffectors(dims, joints, clip)
   const w = (p: V3): V3 => toWorld(p, position, heading, scale)
   const t = unit(toward)
   const push = (p: V3, d: number): V3 => ({ x: p.x + t.x * d, y: p.y, z: p.z + t.z * d })
+  if (zone === 'head' && dims.mocap) {
+    // Mocap bots (fork, mocap/surface.ts): the head's own skin toward the attacker (an elbow's jaw ELBOW_JAW below
+    // the middle), from its support points: a bot's head is no sphere.
+    const c = Math.cos(heading)
+    const s = Math.sin(heading)
+    const down = effector.startsWith('elbow') ? ELBOW_JAW : 0
+    const dir = { x: (t.x * c - t.z * s) * Math.cos(down), y: -Math.sin(down), z: (t.x * s + t.z * c) * Math.cos(down) }
+    const a = partAhead(dims.mocap, joints, clip, 'head', fx.head, dir)
+    return w({ x: fx.head.x + dir.x * a, y: fx.head.y + dir.y * a, z: fx.head.z + dir.z * a })
+  }
   if (zone === 'head' && effector.startsWith('elbow')) {
     // Fork: an elbow lands on the jaw, the head's surface ELBOW_JAW below its middle.
     const h = w(fx.head)
@@ -308,14 +492,23 @@ export function fightTarget(
   if (zone === 'legs') {
     const l = w(fx.kneeL)
     const r = w(fx.kneeR)
-    const lead = flat(sub(l, add(position, t))) <= flat(sub(r, add(position, t))) ? l : r
+    const leadL = flat(sub(l, add(position, t))) <= flat(sub(r, add(position, t)))
+    const lead = leadL ? l : r
+    if (dims.mocap) {
+      // Mocap bots (fork): the lead leg's own skin toward the attacker.
+      const c = Math.cos(heading)
+      const s = Math.sin(heading)
+      const knee = leadL ? 'kneeL' : 'kneeR'
+      return push(lead, partAhead(dims.mocap, joints, clip, knee, fx[knee], { x: t.x * c - t.z * s, y: 0, z: t.x * s + t.z * c }) * scale)
+    }
     return push(lead, 0.08)
   }
   // Body (fork, contact.ts): on the torso's surface toward the attacker — the
   // chest for fists and elbows, the lower torso for a knee, the midsection
   // (belt to lower ribs) for a kick.
-  const yFrac = effector.startsWith('knee') ? 0.2 : effector.startsWith('foot') ? KICK_MIDSECTION : 0.55
-  return torsoSurface(torso, dims, scale, joints, position, heading, t, yFrac)
+  // Mocap bots (fork): a knee lands on the belly (BOT_KNEE), clear of the thighs below it.
+  const yFrac = effector.startsWith('knee') ? (dims.mocap ? BOT_KNEE : 0.2) : effector.startsWith('foot') ? KICK_MIDSECTION : 0.55
+  return torsoSurface(torso, dims, scale, joints, position, heading, t, yFrac, clip)
 }
 
 /**
@@ -325,6 +518,255 @@ export function fightTarget(
  */
 function guardHand(attackerLocalX: number): 'handL' | 'handR' {
   return attackerLocalX < 0 ? 'handR' : 'handL'
+}
+
+/** Mocap bots (fork, mocap/surface.ts): the limb a blow strikes with, shoulder to fist or hip to toe. */
+const LIMB: Partial<Record<Effector, string>> = { handL: 'armL', elbowL: 'armL', handR: 'armR', elbowR: 'armR', footL: 'kickL', kneeL: 'kickL', footR: 'kickR', kneeR: 'kickR' }
+
+/** Mocap bots (fork): the target skins a fighter's poses showed, as meshes (the solver asks of the same pose again and again). */
+const MESHES = new WeakMap<Fighter, Map<string, SkinMesh | null>>()
+const MESH_CACHE = 24
+
+/** A bot's target skin (`surface.ts` targetSkin) posed at `pos` / `heading`, as a world mesh; null without the skin's triangles. */
+function targetMesh(f: Fighter, joints: Joints, clip: ClipState | undefined, pos: V3, heading: number, target: string): SkinMesh | null {
+  let cache = MESHES.get(f)
+  if (!cache) {
+    cache = new Map()
+    MESHES.set(f, cache)
+  }
+  const key = `${target}|${pos.x},${pos.y},${pos.z},${heading}|${JSON.stringify(joints)}|${JSON.stringify(clip ?? null)}`
+  const known = cache.get(key)
+  if (known !== undefined) return known
+  const own = targetSkin(f.dims.mocap!, joints, clip, target)
+  const mesh = own ? skinMesh(own.p.map((q) => toWorld(q, pos, heading, f.scale)), own.tri) : null
+  if (cache.size >= MESH_CACHE) cache.delete(cache.keys().next().value!)
+  cache.set(key, mesh)
+  return mesh
+}
+
+/**
+ * Mocap bots (fork, mocap/surface.ts): how deep a bot's striking part sits
+ * in the bot defender's target skin (m; negative: the gap), the attacker at
+ * `root` / `heading` in `joints` / `clip`, the defender likewise (`limb`:
+ * by the whole striking limb); null when either isn't a bot or the blow
+ * lands with a weapon.
+ */
+function blowDepth(
+  atk: Fighter,
+  aj: Joints,
+  ac: ClipState | undefined,
+  e: Effector,
+  root: V3,
+  heading: number,
+  def: Fighter,
+  dj: Joints,
+  dc: ClipState | undefined,
+  dpos: V3,
+  dheading: number,
+  target: string,
+  limb = false
+): number | null {
+  if (!atk.dims.mocap || !def.dims.mocap || weaponOf(atk, e)) return null
+  const near = poseEffectors(atk.dims, aj, ac)[e]
+  // `limb`: the whole striking limb (a blocked blow stops where its arm first meets the guard).
+  const strike = (limb && LIMB[e] ? skinPoints(atk.dims.mocap, aj, ac, LIMB[e]!) : skinPoints(atk.dims.mocap, aj, ac, e, near)).map((p) => toWorld(p, root, heading, atk.scale))
+  // Against the target's mesh; without the skin's triangles, its support hull near the blow (in its own frame).
+  const mesh = targetMesh(def, dj, dc, dpos, dheading, target)
+  if (mesh) return meshDepth(strike, mesh)
+  const hit = toWorld(contactLocal(atk, aj, e, 'strike', false, ac), root, heading, atk.scale)
+  const c = Math.cos(dheading)
+  const s = Math.sin(dheading)
+  const wx = (hit.x - dpos.x) / def.scale
+  const wz = (hit.z - dpos.z) / def.scale
+  const local = { x: wx * c - wz * s, y: (hit.y - dpos.y) / def.scale, z: wx * s + wz * c }
+  const skin = skinPoints(def.dims.mocap, dj, dc, target, local).map((p) => toWorld(p, dpos, dheading, def.scale))
+  return skinDepth(strike, skin)
+}
+
+/**
+ * Mocap bots (fork): a knee strike tucks its heel. The least extra knee bend
+ * (rad, to within TUCK_STEP, at most TUCK_MAX) that keeps the striking leg's shin and foot
+ * (beyond TUCK_FROM of the knee: the knee lands) GUARD_CLEAR out of the bot
+ * defender's legs; 0 when they are clear, or either isn't a skinned bot.
+ */
+function kneeTuck(atk: Fighter, e: Effector, aj: Joints, ac: ClipState | undefined, root: V3, heading: number, def: Fighter, dj: Joints, dc: ClipState | undefined, dpos: V3, dheading: number): number {
+  if (!atk.dims.mocap?.rig.skin || (e !== 'kneeL' && e !== 'kneeR')) return 0
+  const mesh = def.dims.mocap ? targetMesh(def, dj, dc, dpos, dheading, 'legs') : null
+  if (!mesh) return 0
+  const m = atk.dims.mocap
+  const shin = e === 'kneeL' ? 'shinL' : 'shinR'
+  const from = (TUCK_FROM * m.k) ** 2
+  const clear = (bend: number): boolean => {
+    const j = bend > 0 ? withOffsets(aj, { [e]: bend }) : aj
+    const knee = poseEffectors(atk.dims, j, ac)[e]
+    const pts = skinPoints(m, j, ac, shin)
+      .filter((p) => (p.x - knee.x) ** 2 + (p.y - knee.y) ** 2 + (p.z - knee.z) ** 2 > from)
+      .map((p) => toWorld(p, root, heading, atk.scale))
+    return meshDepth(pts, mesh) < -GUARD_CLEAR
+  }
+  if (clear(0)) return 0
+  if (!clear(TUCK_MAX)) return TUCK_MAX
+  // The least bend that clears, to TUCK_STEP (bisection: more bend tucks the shin further back).
+  let lo = 0
+  let hi = TUCK_MAX
+  while (hi - lo > TUCK_STEP / 2) {
+    const mid = (lo + hi) / 2
+    if (clear(mid)) hi = mid
+    else lo = mid
+  }
+  return hi
+}
+
+/**
+ * Mocap bots (fork): a strike's legs stay out of the defender's. Each of the
+ * attacker's legs but the striking one that comes within GUARD_CLEAR of the
+ * bot defender's legs abducts (hip Z, outward) by the least that clears it,
+ * to within SPLAY_STEP, at most LEG_SPLAY; {} when they are clear, or either
+ * isn't a skinned bot.
+ */
+function legSplay(atk: Fighter, e: Effector, aj: Joints, ac: ClipState | undefined, root: V3, heading: number, def: Fighter, dj: Joints, dc: ClipState | undefined, dpos: V3, dheading: number): Joints {
+  if (!atk.dims.mocap?.rig.skin || Math.hypot(root.x - dpos.x, root.z - dpos.z) > SPLAY_NEAR * Math.max(atk.scale, def.scale)) return {}
+  const mesh = def.dims.mocap ? targetMesh(def, dj, dc, dpos, dheading, 'legs') : null
+  if (!mesh) return {}
+  const m = atk.dims.mocap
+  const out: Joints = {}
+  for (const side of ['L', 'R'] as const) {
+    if (LIMB[e] === `kick${side}`) continue
+    const key = `hip${side}Z`
+    const clear = (a: number): boolean => meshDepth(skinPoints(m, a > 0 ? withOffsets(aj, { [key]: a }) : aj, ac, `kick${side}`).map((p) => toWorld(p, root, heading, atk.scale)), mesh) < -GUARD_CLEAR
+    if (clear(0)) continue
+    if (!clear(LEG_SPLAY)) {
+      out[key] = LEG_SPLAY
+      continue
+    }
+    // The least splay that clears (bisection: more splay swings the leg further out).
+    let lo = 0
+    let hi = LEG_SPLAY
+    while (hi - lo > SPLAY_STEP) {
+      const mid = (lo + hi) / 2
+      if (clear(mid)) hi = mid
+      else lo = mid
+    }
+    out[key] = hi
+  }
+  return out
+}
+
+/** The skin a blow lands on: the guard's for a block or parry, else its target's (the lead leg for the legs). */
+function skinOf(def: Fighter, dj: Joints, dc: ClipState | undefined, zone: FightBeat['target'], outcome: FightOutcome, guard: 'handL' | 'handR', toward: XZ, heading: number): string {
+  if (outcome === 'block' || outcome === 'parry') return guard === 'handL' ? 'guardL' : 'guardR'
+  if (zone !== 'legs') return zone === 'head' ? 'head' : 'body'
+  const fx = poseEffectors(def.dims, dj, dc)
+  const c = Math.cos(heading)
+  const s = Math.sin(heading)
+  const t = { x: toward.x * c - toward.z * s, z: toward.x * s + toward.z * c }
+  return fx.kneeL.x * t.x + fx.kneeL.z * t.z >= fx.kneeR.x * t.x + fx.kneeR.z * t.z ? 'legL' : 'legR'
+}
+
+/** The attacker (its pose, root and heading) and the defender, at one moment of a blow's approach (guardOpening). */
+interface GuardSample {
+  /** Its moment (s). */
+  t: number
+  aj: Joints
+  ac: ClipState | undefined
+  root: V3
+  heading: number
+  st: { pos: XZ; y: number; joints: Joints; clip?: ClipState }
+}
+
+/**
+ * Mocap bots (fork, mocap/surface.ts): the guard a landed blow has to get
+ * through, over its approach (each of `samples`). An arm the striking limb's skin (shoulder to fist,
+ * hip to toe: an elbow's upper arm sweeps through a guard too) touches, or
+ * comes within GUARD_CLEAR of, is in its way; it swings (shoulder X, down or up,
+ * whichever is less) by the least that leaves it GUARD_CLEAR clear, at most
+ * 1.2 rad; a leg in its way (`legs`) swings out (hip abduction, at most LEG_SPLAY).
+ * Null when nothing is in the way.
+ */
+function guardOpening(atk: Fighter, e: Effector, samples: GuardSample[], def: Fighter, hd: number, legs = true): Joints | null {
+  if (!def.dims.mocap) return null
+  // Per sample, the striking limb as a mesh, once (it stays put while the guard swings); each swing's guard skin against it.
+  const at = samples.map((s) => {
+    const own = atk.dims.mocap && LIMB[e] && !weaponOf(atk, e) ? targetSkin(atk.dims.mocap, s.aj, s.ac, LIMB[e]!) : null
+    return { ...s, pos: { x: s.st.pos.x, y: s.st.y, z: s.st.pos.z }, limb: own ? skinMesh(own.p.map((q) => toWorld(q, s.root, s.heading, atk.scale)), own.tri) : null }
+  })
+  const clearAt = (s: (typeof at)[number], swing: Joints, side: 'L' | 'R'): boolean => {
+    const j = withOffsets(s.st.joints, swing)
+    if (s.limb) return meshDepth(skinPoints(def.dims.mocap!, j, s.st.clip, `arm${side}`).map((q) => toWorld(q, s.pos, hd, def.scale)), s.limb) < -GUARD_CLEAR
+    const d = blowDepth(atk, s.aj, s.ac, e, s.root, s.heading, def, j, s.st.clip, s.pos, hd, `guard${side}`)
+    return d === null || d < -GUARD_CLEAR
+  }
+  // Every sample (or only one), the last to fail checked first.
+  const order = [...at]
+  const clear = (swing: Joints, side: 'L' | 'R', only?: number): boolean => {
+    if (only !== undefined) return clearAt(at[only]!, swing, side)
+    for (let k = 0; k < order.length; k++) {
+      if (clearAt(order[k]!, swing, side)) continue
+      order.unshift(...order.splice(k, 1))
+      return false
+    }
+    return true
+  }
+  const out: Joints = {}
+  for (const side of ['L', 'R'] as const) {
+    if (clear({}, side)) continue
+    const key = `shoulder${side}X`
+    // The way it swings: the least swing that clears the impact (down on a tie); then as far that way as clears the approach too.
+    let way = 1
+    let from = 1
+    for (let k = 1; k <= 12; k++) {
+      const d = [k * 0.1, -k * 0.1].find((a) => clear({ [key]: a }, side, 0))
+      if (d !== undefined) {
+        way = Math.sign(d)
+        from = k
+        break
+      }
+    }
+    let swing = 1.2 * way
+    for (let k = from; k <= 12; k++) {
+      if (clear({ [key]: way * k * 0.1 }, side)) {
+        swing = way * k * 0.1
+        break
+      }
+    }
+    out[key] = swing
+  }
+  // A leg the striking limb comes through (a kick's shin past the lead thigh) swings out of its way: the least hip abduction that clears it, at most LEG_SPLAY.
+  for (const side of ['L', 'R'] as const) {
+    if (!legs || !at.some((s) => s.limb)) break
+    const key = `hip${side}Z`
+    const legClear = (a: number): boolean => {
+      for (let k = 0; k < order.length; k++) {
+        const s = order[k]!
+        if (!s.limb || meshDepth(skinPoints(def.dims.mocap!, withOffsets(s.st.joints, { ...out, [key]: a }), s.st.clip, `leg${side}`).map((q) => toWorld(q, s.pos, hd, def.scale)), s.limb) < -GUARD_CLEAR) continue
+        order.unshift(...order.splice(k, 1))
+        return false
+      }
+      return true
+    }
+    if (legClear(0)) continue
+    if (!legClear(LEG_SPLAY)) {
+      out[key] = LEG_SPLAY
+      continue
+    }
+    let lo = 0
+    let hi = LEG_SPLAY
+    while (hi - lo > SPLAY_STEP) {
+      const mid = (lo + hi) / 2
+      if (legClear(mid)) hi = mid
+      else lo = mid
+    }
+    out[key] = hi
+  }
+  return Object.keys(out).length > 0 ? out : null
+}
+
+/** Mocap bots (fork, mocap/surface.ts): how far a bot's guard hand reaches toward the attacker (`toward`, a unit world direction), scaled. */
+function guardReach(f: Fighter, joints: Joints | undefined, clip: ClipState | undefined, side: 'handL' | 'handR', toward: XZ, heading: number): number {
+  const p = poseEffectors(f.dims, joints, clip)[side]
+  const c = Math.cos(heading)
+  const s = Math.sin(heading)
+  return partAhead(f.dims.mocap!, joints, clip, side, p, { x: toward.x * c - toward.z * s, y: 0, z: toward.x * s + toward.z * c }) * f.scale
 }
 
 /** Weapons: an armed defender takes a blocked blow on its blade or shield, whichever hand holds it. */
@@ -368,13 +810,33 @@ function solveChannel(
   targetY: number,
   key: string,
   range: number,
-  role: 'strike' | 'guard' = 'strike'
+  role: 'strike' | 'guard' = 'strike',
+  clip?: ClipState,
+  guess?: number
 ): { delta: number; err: number } {
   const err = (d: number): number => {
     const j = { ...joints, [key]: (joints[key] ?? 0) + d }
-    return rootY + contactLocal(f, j, e, role).y * f.scale - targetY
+    return rootY + contactLocal(f, j, e, role, false, clip).y * f.scale - targetY
   }
-  const N = 48
+  if (f.dims.mocap && guess !== undefined && Math.abs(guess) <= range) {
+    // Mocap bots (fork): from the last pass's answer by secant (between passes the channel moves little); the scan if it strays.
+    let d0 = guess
+    let e0 = err(d0)
+    if (Math.abs(e0) < 1e-7) return { delta: d0, err: Math.abs(e0) }
+    let d1 = d0 + (d0 < range - WARM_STEP ? WARM_STEP : -WARM_STEP)
+    let e1 = err(d1)
+    for (let i = 0; i < 8 && Math.abs(e1) >= 1e-7 && Math.abs(e1 - e0) > 1e-12; i++) {
+      const d2 = d1 - (e1 * (d1 - d0)) / (e1 - e0)
+      if (!(Math.abs(d2) <= range) || Math.abs(d2 - guess) > WARM_REACH) break
+      d0 = d1
+      e0 = e1
+      d1 = d2
+      e1 = err(d2)
+    }
+    if (Math.abs(e1) < 1e-7) return { delta: d1, err: Math.abs(e1) }
+  }
+  // Mocap bots (fork): a coarser scan (each evaluation poses the rig); the root is refined below.
+  const N = f.dims.mocap ? 16 : 48
   let best = 0
   let bestErr = Math.abs(err(0))
   let prevD = -range
@@ -394,6 +856,30 @@ function solveChannel(
   if (!bracket) return { delta: best, err: bestErr }
   let [lo, hi] = bracket
   let elo = err(lo)
+  if (f.dims.mocap) {
+    // Mocap bots (fork): regula falsi (Illinois) on the bracket, to 1e-7 m.
+    let ehi = err(hi)
+    let side = 0
+    let d = lo
+    for (let i = 0; i < 40; i++) {
+      d = (lo * ehi - hi * elo) / (ehi - elo)
+      const ed = err(d)
+      if (Math.abs(ed) < 1e-7 || hi - lo < 1e-9) break
+      if (Math.sign(ed) === Math.sign(elo)) {
+        lo = d
+        elo = ed
+        if (side === -1) ehi /= 2
+        side = -1
+      }
+      else {
+        hi = d
+        ehi = ed
+        if (side === 1) elo /= 2
+        side = 1
+      }
+    }
+    return { delta: d, err: Math.abs(err(d)) }
+  }
   for (let i = 0; i < 50; i++) {
     const mid = (lo + hi) / 2
     const em = err(mid)
@@ -412,19 +898,20 @@ function solveChannel(
  * y: the shoulder or hip X channel first; if that alone can't reach (a hook's
  * forearm runs sideways), the abduction (Z) channel on top of it.
  */
-function solvePitch(f: Fighter, joints: Joints, e: Effector, rootY: number, targetY: number, wide = 1): Joints {
+function solvePitch(f: Fighter, joints: Joints, e: Effector, rootY: number, targetY: number, wide = 1, clip?: ClipState, prev?: Joints): Joints {
   const x = pitchJoint(e)
-  const first = solveChannel(f, joints, e, rootY, targetY, x, (x.startsWith('hip') ? LEG_PITCH : ARM_PITCH) * wide)
-  if (first.err <= 1e-3) return { [x]: first.delta }
   const z = x.replace(/X$/, 'Z')
+  // Mocap bots (fork): `prev`, the last pass's answer, warm-starts the channels it solved (solveChannel ignores it otherwise).
+  const first = solveChannel(f, joints, e, rootY, targetY, x, (x.startsWith('hip') ? LEG_PITCH : ARM_PITCH) * wide, 'strike', clip, prev && !(z in prev) ? prev[x] : undefined)
+  if (first.err <= 1e-3) return { [x]: first.delta }
   const withX = { ...joints, [x]: (joints[x] ?? 0) + first.delta }
-  const second = solveChannel(f, withX, e, rootY, targetY, z, ABDUCT_PITCH * wide)
+  const second = solveChannel(f, withX, e, rootY, targetY, z, ABDUCT_PITCH * wide, 'strike', clip, prev?.[z])
   const out = second.err < first.err ? { [x]: first.delta, [z]: second.delta } : { [x]: first.delta }
   // A weapon that still falls short (a short axe, a low follow-through) bends the elbow too.
   const err = Math.min(first.err, second.err)
   if (err <= 1e-3 || !weaponOf(f, e)) return out
   const elbow = `elbow${e.endsWith('L') ? 'L' : 'R'}`
-  const third = solveChannel(f, withOffsets(joints, out), e, rootY, targetY, elbow, WEAPON_ELBOW)
+  const third = solveChannel(f, withOffsets(joints, out), e, rootY, targetY, elbow, WEAPON_ELBOW, 'strike', clip)
   return third.err < err ? { ...out, [elbow]: third.delta } : out
 }
 
@@ -445,35 +932,83 @@ function solveLean(
   targetY: number,
   wide: number,
   spacing: (joints: Joints) => number,
-  dir?: number
-): { offsets: Joints; dir?: number } {
+  dir?: number,
+  clip?: ClipState,
+  lastR?: number,
+  warm?: Joints
+): { offsets: Joints; dir?: number; r?: number; upright: Joints } {
   let minSpacing = -Infinity
+  // Mocap bots (fork): each pitch solve warm-starts from the last one's answer (the first from `warm`, the last pass's upright pitch).
+  let guess: Joints | undefined = warm
   const at = (r: number, a: number): { o: Joints; err: number; a: number; space: number } => {
     const lean: Joints = { torsoX: r * Math.cos(a), torsoZ: r * Math.sin(a) }
-    const o = { ...solvePitch(f, withOffsets(joints, lean), e, rootY, targetY, wide), ...lean }
+    const pitch = solvePitch(f, withOffsets(joints, lean), e, rootY, targetY, wide, clip, guess)
+    guess = pitch
+    const o = { ...pitch, ...lean }
     const posed = withOffsets(joints, o)
     const space = spacing(posed)
-    return { o, err: space < minSpacing ? Infinity : Math.abs(rootY + contactLocal(f, posed, e).y * f.scale - targetY), a, space }
+    return { o, err: space < minSpacing ? Infinity : Math.abs(rootY + contactLocal(f, posed, e, 'strike', false, clip).y * f.scale - targetY), a, space }
   }
   const upright = at(0, 0)
-  if (upright.err <= 1e-3) return { offsets: upright.o, dir }
+  if (upright.err <= 1e-3) return { offsets: upright.o, dir, upright: upright.o }
   minSpacing = Math.min(upright.space, 0) - 0.005
+  if (f.dims.mocap && dir !== undefined && lastR !== undefined) {
+    // Mocap bots (fork): a later pass looks near the last pass's lean (between passes the target moves little).
+    let lo = Math.max(0, lastR - LEAN_NEAR)
+    let hi = Math.min(MAX_LEAN, lastR + LEAN_NEAR)
+    let top = at(hi, dir)
+    if (top.err <= 1e-3 && (lo === 0 || at(lo, dir).err > 1e-3)) {
+      for (let i = 0; i < 3; i++) {
+        const mid = (lo + hi) / 2
+        const c = at(mid, dir)
+        if (c.err <= 1e-3) {
+          hi = mid
+          top = c
+        }
+        else lo = mid
+      }
+      return { offsets: top.o, dir, r: hi, upright: upright.o }
+    }
+  }
   const DIRS = 12
+  if (f.dims.mocap && dir === undefined) {
+    // Mocap bots (fork): the directions ranked by the upright pitch under the full lean (one posed rig each); solved in the best.
+    const reach = (a: number): number => {
+      const posed = withOffsets(joints, { ...upright.o, torsoX: MAX_LEAN * Math.cos(a), torsoZ: MAX_LEAN * Math.sin(a) })
+      return Math.abs(rootY + contactLocal(f, posed, e, 'strike', false, clip).y * f.scale - targetY)
+    }
+    let best = 0
+    let bestErr = Infinity
+    for (let d = 0; d < DIRS; d++) {
+      const err = reach((2 * Math.PI * d) / DIRS)
+      if (err < bestErr) {
+        bestErr = err
+        best = (2 * Math.PI * d) / DIRS
+      }
+    }
+    dir = best
+  }
   let full = at(MAX_LEAN, dir ?? 0)
   for (let d = 1; dir === undefined && d < DIRS; d++) {
     const c = at(MAX_LEAN, (2 * Math.PI * d) / DIRS)
     if (c.err < full.err) full = c
   }
-  if (full.err >= upright.err) return { offsets: upright.o, dir }
-  if (full.err > 1e-3) return { offsets: full.o, dir: full.a }
+  if (full.err >= upright.err) return { offsets: upright.o, dir, upright: upright.o }
+  if (full.err > 1e-3) return { offsets: full.o, dir: full.a, upright: upright.o }
   let lo = 0
   let hi = MAX_LEAN
-  for (let i = 0; i < 10; i++) {
+  // Mocap bots (fork): 6 halvings (0.3°), and the last reaching solve kept — each costs a posed pitch solve.
+  let reached = full
+  for (let i = 0; i < (f.dims.mocap ? 6 : 10); i++) {
     const mid = (lo + hi) / 2
-    if (at(mid, full.a).err <= 1e-3) hi = mid
+    const c = at(mid, full.a)
+    if (c.err <= 1e-3) {
+      hi = mid
+      reached = c
+    }
     else lo = mid
   }
-  return { offsets: at(hi, full.a).o, dir: full.a }
+  return { offsets: f.dims.mocap ? reached.o : at(hi, full.a).o, dir: full.a, r: hi, upright: upright.o }
 }
 
 function withOffsets(joints: Joints, offsets: Joints): Joints {
@@ -503,6 +1038,8 @@ interface DefEvent {
   times: number[]
   /** Joint offsets on top of the motion (head snap). */
   extra: (t: number) => Joints | null
+  /** Mocap bots (fork): the clip the event plays (`anchors` map absolute time → clip time); joints are its overlay. */
+  clip?: ClipPick
 }
 
 function constantEvent(start: number, end: number, motion: MotionPreset | null, base: XZ, mirror = false): DefEvent {
@@ -522,7 +1059,17 @@ function constantEvent(start: number, end: number, motion: MotionPreset | null, 
   }
 }
 
-function eventPose(ev: DefEvent, t: number, guard: Joints): { joints: Joints; off: XZ; up: number } {
+function eventPose(ev: DefEvent, t: number, guard: Joints): { joints: Joints; off: XZ; up: number; clip?: ClipState } {
+  if (ev.clip) {
+    // Mocap bots (fork): the clip at its mapped time (a loop runs on), the extra as its overlay.
+    const c = mocapClip(ev.clip.id)!
+    const at = piecewise(ev.anchors)(t)
+    const joints: Joints = { ...ev.extra(t) }
+    const r = ev.root(t)
+    const st: ClipState = { id: ev.clip.id, t: c.loop ? at : clamp(at, 0, c.duration) }
+    if (ev.clip.mirror) st.mirror = true
+    return { joints, off: r.off, up: r.up, clip: st }
+  }
   const s = ev.motion ? sampleMotion(ev.motion, clamp(piecewise(ev.anchors)(t), 0, ev.motion.duration)) : { joints: { ...guard } }
   let joints = ev.mirror ? mirrorJoints(s.joints) : s.joints
   const extra = ev.extra(t)
@@ -532,6 +1079,181 @@ function eventPose(ev: DefEvent, t: number, guard: Joints): { joints: Joints; of
   }
   const r = ev.root(t)
   return { joints, off: r.off, up: r.up }
+}
+
+/**
+ * Mocap bots (fork): a clip event around clip time `clipAt` (the frame that
+ * meets the blow, played at `at`), from `lead` before it to `tail` after it,
+ * at the clip's own speed, its root travel turned to `heading`.
+ */
+function clipEvent(f: Fighter, pick: ClipPick, at: number, clipAt: number, lead: number, tail: number, base: XZ, heading: number): DefEvent {
+  const c = mocapClip(pick.id)!
+  const a = Math.max(0, clipAt - lead)
+  const b = Math.min(c.duration, clipAt + tail)
+  const start = at - (clipAt - a)
+  const end = at + (b - clipAt)
+  const k = clipScale(f.dims.mocap!, c.hipH) * f.scale
+  const r0 = clipRoot(c, a, pick.mirror)
+  return {
+    start,
+    end,
+    motion: null,
+    mirror: pick.mirror,
+    clip: pick,
+    anchors: [
+      [start, a],
+      [end, b]
+    ],
+    root: (t) => {
+      const r = clipRoot(c, clamp(a + (t - start), a, b), pick.mirror)
+      const w = toWorld({ x: (r.x - r0.x) * k, y: 0, z: (r.z - r0.z) * k }, { x: 0, y: 0, z: 0 }, heading, 1)
+      return { off: { x: w.x, z: w.z }, up: 0 }
+    },
+    base,
+    times: [],
+    extra: () => null
+  }
+}
+
+/** Mocap bots (fork): the idle loop on shot time, as an event. */
+function idleEvent(f: Fighter, start: number, end: number, base: XZ): DefEvent {
+  return {
+    start,
+    end,
+    motion: null,
+    mirror: false,
+    clip: { id: f.idle!, mirror: false },
+    anchors: [
+      [start, start],
+      [start + 1, start + 1]
+    ],
+    root: () => ({ off: { x: 0, z: 0 }, up: 0 }),
+    base,
+    times: [],
+    extra: () => null
+  }
+}
+
+/** A fight motion's pose at local time t: keyframes as the evaluator blends them, a bot's clip keys their clip time. */
+function motionPose(m: FightMotion, t: number): { joints: Joints; clip?: ClipState } {
+  const k = m.keyframes
+  if (!k[0]!.clip) return { joints: sampleMotion(m as MotionPreset, t).joints }
+  let i = 0
+  while (i < k.length - 2 && k[i + 1]!.t < t) i++
+  const a = k[i]!
+  const b = k[i + 1] ?? a
+  const u = b.t > a.t ? clamp((t - a.t) / (b.t - a.t), 0, 1) : 0
+  const joints: Joints = {}
+  for (const key of new Set([...Object.keys(a.joints), ...Object.keys(b.joints)])) joints[key] = (a.joints[key] ?? 0) + ((b.joints[key] ?? 0) - (a.joints[key] ?? 0)) * u
+  const ca = a.clip!
+  const cb = b.clip ?? ca
+  const run = ca.id === cb.id && !!ca.mirror === !!cb.mirror && cb.at >= ca.at
+  return { joints, clip: stateOf(run ? { ...ca, at: ca.at + (cb.at - ca.at) * u } : u < 0.5 ? ca : cb) }
+}
+
+/**
+ * Mocap bots (fork): the side of the defender a blow lands on, from where
+ * the striking point comes in (0.1 s before the impact, across the line to
+ * the target); a straight blow by its hand or foot (a left lands on the
+ * defender's right).
+ */
+function arrivalSide(f: Fighter, m: FightMotion, imp: StrikeImpact): 'L' | 'R' {
+  const at = (t: number): V3 => {
+    const s = motionPose(m, t)
+    return contactLocal(f, s.joints, imp.effector, 'strike', false, s.clip)
+  }
+  const pI = at(imp.t)
+  const pP = at(Math.max(0, imp.t - 0.1))
+  const d = unit({ x: pI.x, z: pI.z })
+  const lat = (pP.x - pI.x) * -d.z + (pP.z - pI.z) * d.x
+  const fromLeft = Math.abs(lat) > 0.02 ? lat < 0 : imp.effector.endsWith('L')
+  return fromLeft ? 'R' : 'L'
+}
+
+/** Moves that are a weapon's own: their clips strike with the right hand, so a left-hand weapon mirrors them. */
+const WEAPON_MOVES = new Set(['sword-slash-combo', 'knife-lunge'])
+
+/**
+ * Mocap bots (fork, clip-moves.ts): a strike as clip runs, or null (no clip:
+ * keyframes). One clip per impact; blows in a row on one clip play on in a
+ * single run, other clips crossfade over CLIP_XFADE. Keys every CLIP_STEP of
+ * clip time, on each impact and RAMP_IN before and RAMP_OUT after it (the
+ * overlay's ramp), each with the clip's root travel so far.
+ */
+function clipStrike(f: Fighter, beat: FightBeat, move: string, gun: HeldWeapon | undefined, speeds: number[]): { motion: FightMotion; impacts: StrikeImpact[]; clips: string[] } | null {
+  let blows: ClipBlow[] | null
+  let mirror: boolean
+  if (gun) {
+    blows = gun.spec.kind === 'gun' ? gunClips(gun.spec.mount) : null
+    mirror = gun.hand === 'L'
+  }
+  else {
+    const melee = f.held.find((h) => h.spec.kind === 'blade' || h.spec.kind === 'blunt' || h.spec.kind === 'polearm')
+    blows = moveClips(move, beat.target, melee, !!melee && f.held.some((h) => h.hand !== melee.hand))
+    // A weapon's own move on the weapon hand; a fist move onto the weapon hand when only the other is armed.
+    mirror = !!blows && (WEAPON_MOVES.has(move) ? melee?.hand === 'L' : blows.every((b) => !weaponOf(f, b.effector) && !!weaponOf(f, MIRROR_EFFECTOR[b.effector])))
+  }
+  if (!blows) return null
+  type Seg = { clip: string; a: number; b: number; hits: { tau: number; effector: Effector; i: number }[] }
+  const segs: Seg[] = []
+  blows.forEach((blow, i) => {
+    const e = mirror ? MIRROR_EFFECTOR[blow.effector] : blow.effector
+    const w = gun ? undefined : (weaponOf(f, e) ?? undefined)
+    const tau = clipImpactTime(blow, w)
+    const prev = segs[segs.length - 1]
+    if (prev && prev.clip === blow.clip && tau > prev.hits[prev.hits.length - 1]!.tau + 1e-9) prev.hits.push({ tau, effector: strikeEffector(f, e), i })
+    else segs.push({ clip: blow.clip, a: 0, b: 0, hits: [{ tau, effector: strikeEffector(f, e), i }] })
+  })
+  const m = f.dims.mocap!
+  const keys: FightKey[] = []
+  const impacts: StrikeImpact[] = []
+  let start = 0
+  let base: XZ = { x: 0, z: 0 }
+  segs.forEach((seg, n) => {
+    const clip = mocapClip(seg.clip)!
+    const first = seg.hits[0]!.tau
+    const lastTau = seg.hits[seg.hits.length - 1]!.tau
+    seg.a = Math.max(0, first - CLIP_LEAD)
+    seg.b = Math.min(clip.duration, lastTau + (n === segs.length - 1 ? CLIP_END : CLIP_TAIL))
+    const k = clipScale(m, clip.hipH) * f.scale
+    const r0 = clipRoot(clip, seg.a, mirror)
+    const at = new Set<number>([seg.a, seg.b])
+    for (let s = seg.a + CLIP_STEP; s < seg.b - 1e-6; s += CLIP_STEP) at.add(Math.round(s * 1e6) / 1e6)
+    for (const h of seg.hits) {
+      at.add(h.tau)
+      if (h.tau - RAMP_IN > seg.a + 1e-6) at.add(h.tau - RAMP_IN)
+      if (h.tau + RAMP_OUT < seg.b - 1e-6) at.add(h.tau + RAMP_OUT)
+    }
+    const sorted = [...at].sort((p, q) => p - q).filter((v, q, all) => q === 0 || v - all[q - 1]! > 1e-6 || seg.hits.some((h) => h.tau === v))
+    // Ramp keys too close to an impact go; the impact stays.
+    const times = sorted.filter((v) => seg.hits.some((h) => h.tau === v) || seg.hits.every((h) => Math.abs(h.tau - v) > 1 / 120))
+    for (const c of times) {
+      const r = clipRoot(clip, c, mirror)
+      keys.push({
+        t: start + (c - seg.a),
+        joints: {},
+        clip: mirror ? { id: seg.clip, at: c, mirror: true } : { id: seg.clip, at: c },
+        travel: { x: base.x + (r.x - r0.x) * k, z: base.z + (r.z - r0.z) * k }
+      })
+    }
+    for (const h of seg.hits) impacts[h.i] = { effector: h.effector, t: start + (h.tau - seg.a), speed: speeds[h.i] ?? speeds[speeds.length - 1] ?? 8 }
+    const rb = clipRoot(clip, seg.b, mirror)
+    base = { x: base.x + (rb.x - r0.x) * k, z: base.z + (rb.z - r0.z) * k }
+    start += seg.b - seg.a + CLIP_XFADE
+  })
+  const duration = keys[keys.length - 1]!.t
+  return { motion: { id: `mocap:${blows.map((b) => b.clip).join('+')}`, duration, keyframes: keys }, impacts, clips: blows.map((b) => b.clip) }
+}
+
+/** Mocap bots (fork): how far a fall clip carries the body behind its root (m), from `from` on. */
+function fallReachClip(f: Fighter, pick: ClipPick, from: number): number {
+  const c = mocapClip(pick.id)!
+  let reach = 0
+  for (let t = from; t <= c.duration + 1e-9; t += 1 / 15) {
+    const fx = poseEffectors(f.dims, undefined, pick.mirror ? { id: pick.id, t, mirror: true } : { id: pick.id, t })
+    reach = Math.max(reach, fx.head.z, fx.chest.z, fx.kneeL.z, fx.kneeR.z, fx.footL.z, fx.footR.z)
+  }
+  return reach * f.scale
 }
 
 export function solveFight(
@@ -556,7 +1278,12 @@ export function solveFight(
 
   F[0].heading = facing(F[0].spot, F[1].spot)
   F[1].heading = facing(F[1].spot, F[0].spot)
-  for (const f of F) addMark(f, 0, f.spot, groundY(f.floor, guard), 'stand', guard, f.heading)
+  /** A fighter at rest at time t: the guard, or (a mocap bot, fork) the idle clip on shot time. */
+  const restOf = (f: Fighter, t: number): { joints: Joints; clip?: MarkClip } => (f.idle ? { joints: {}, clip: { id: f.idle, at: t } } : { joints: guard })
+  for (const f of F) {
+    const r = restOf(f, 0)
+    addMark(f, 0, f.spot, groundY(f.floor, r.joints, 0, stateOf(r.clip)), 'stand', r.joints, f.heading, r.clip, !!f.idle)
+  }
   let prevEnd = 0
 
   for (let n = 0; n < fight.beats.length; n++) {
@@ -581,10 +1308,15 @@ export function solveFight(
       ? !!gun && gun.hand !== shotHand(move)
       : raw.length > 0 && raw.every((imp) => !weaponOf(atk, imp.effector) && !!weaponOf(atk, MIRROR_EFFECTOR[imp.effector]))
     const preset0 = fightMotion(move)
-    const preset = preset0 && mirror ? mirroredMove(preset0) : preset0
-    const impacts: StrikeImpact[] = !preset
-      ? []
-      : raw.map((imp) => ({ ...imp, effector: strikeEffector(atk, mirror ? MIRROR_EFFECTOR[imp.effector] : imp.effector) }))
+    const keyed = preset0 && mirror ? mirroredMove(preset0) : preset0
+    // Mocap bots (fork, clip-moves.ts): the move's clips when the library has them, else its keyframes (retargeted).
+    const strike = atk.idle && (!shotBeat || gun) ? clipStrike(atk, beat, move, gun, raw.map((imp) => imp.speed)) : null
+    const preset: FightMotion | undefined = strike?.motion ?? keyed
+    const impacts: StrikeImpact[] = strike
+      ? strike.impacts
+      : !keyed
+        ? []
+        : raw.map((imp) => ({ ...imp, effector: strikeEffector(atk, mirror ? MIRROR_EFFECTOR[imp.effector] : imp.effector) }))
     if (!preset || impacts.length === 0) {
       warnings.push(shotBeat ? `${label} dropped: ${beat.attacker === 0 ? 'A' : 'B'} has no gun or bow in hand` : `${label} dropped: ${beat.move} is not a strike`)
       continue
@@ -595,7 +1327,7 @@ export function solveFight(
       outcomes = outcomes.map((o): FightOutcome => (o === 'block' || o === 'parry' ? 'miss' : o))
       beatWarnings.push(`${label}: a shot can't be blocked or parried, so it misses`)
     }
-    if (gun?.spec.support && !atk.held.some((h) => h.hand !== gun.hand)) {
+    if (gun?.spec.support && !atk.held.some((h) => h.hand !== gun.hand) && !strike) {
       // An arm too short for the fore-end (weapons.ts supportReach) holds the gun further back: say so.
       const aim = preset.keyframes.find((kf) => Math.abs(kf.t - impacts[0]!.t) < 1e-9)!.joints
       const r = supportReach(atk.dims, holdJoints(atk.dims, aim, atk.held), gun.hand, gun.spec, gun.scale)
@@ -606,6 +1338,8 @@ export function solveFight(
     const clinch = CLINCH_MOVES.has(beat.move)
     const kIdx = impacts.map((imp) => preset.keyframes.findIndex((kf) => Math.abs(kf.t - imp.t) < 1e-9))
     const last = impacts[impacts.length - 1]!
+    // Mocap bots (fork): the side of the defender each blow lands on (its reaction and defense go away from it).
+    const sides = def.idle ? impacts.map((imp) => arrivalSide(atk, preset, imp)) : []
 
     // 1. Start time: explicit or after the previous beat, never before it ends.
     let desired = Math.max(beat.at ?? prevEnd + beatGap, firstStart)
@@ -621,8 +1355,8 @@ export function solveFight(
     atk.shotRange = 0
     if (shotBeat) {
       // The shot's contact point sits down the barrel line, about as far as the target: the shooter holds its ground.
-      const aim = preset.keyframes.find((kf) => Math.abs(kf.t - impacts[0]!.t) < 1e-9)!.joints
-      const muzzle = contactLocal(atk, aim, impacts[0]!.effector)
+      const aim = preset.keyframes.find((kf) => Math.abs(kf.t - impacts[0]!.t) < 1e-9)!
+      const muzzle = contactLocal(atk, aim.joints, impacts[0]!.effector, 'strike', false, stateOf(aim.clip))
       atk.shotRange = Math.max(0.3, flat(sub(D, A0)) - Math.hypot(muzzle.x, muzzle.z) * atk.scale - 0.15)
     }
     const physics = impacts.map((imp, i) => {
@@ -662,6 +1396,10 @@ export function solveFight(
       const events: DefEvent[] = []
       const avoidIdx: number[] = []
       const blockEvents = new Map<number, DefEvent>()
+      /** Mocap bots (fork): the reaction clip of each landed blow. */
+      const hitEvents = new Map<number, DefEvent>()
+      // Mocap bots (fork): guards that open for a blow (from GUARD_LEAD before it: 5b).
+      const opens: { T: number; joints: Joints }[] = []
       let base: XZ = { ...D }
       const away = unit(sub(D, A0), fwdOf(hd + Math.PI))
       for (let i = 0; i < impacts.length; i++) {
@@ -676,13 +1414,24 @@ export function solveFight(
           const start = T - d.readyFraction * m.duration
           // Slip away from the striking side.
           const mirror = shield ? shield === 'R' : o === 'slip' && impacts[i]!.effector.endsWith('R')
-          const ev = constantEvent(start, start + m.duration, m, base, mirror)
+          // Mocap bots (fork): the block or dodge clip, its guard frame on the impact.
+          const pick = def.idle ? defenseClip(o, zoneHigh, sides[i]!, shield ? { shieldHand: shield } : def.held.length > 0 ? { weapon: true } : undefined) : null
+          const ev = pick ? clipEvent(def, pick, T, defenseReadyTime(pick.id), DEF_LEAD, DEF_TAIL, base, hd) : constantEvent(start, start + m.duration, m, base, mirror)
+          const own = pick ? ev.root(ev.end).off : null
           const ph = physics[i]!
           if ((o === 'block' || o === 'parry') && (ph.result === 'stagger' || ph.result === 'knockdown')) {
             let back = ph.result === 'stagger' ? ph.stepBack : Math.min(0.6, ph.slide * 0.5)
             back = propStop(notes, label, beat.attacker === 0 ? 'B' : 'A', 'push-back', base, away, back, 0, obstacles)
             const dur = ph.result === 'stagger' ? ph.stepDuration : 0.4
-            ev.root = (t) => ({ off: { x: away.x * back * clamp((t - T) / dur, 0, 1), z: away.z * back * clamp((t - T) / dur, 0, 1) }, up: 0 })
+            if (pick) {
+              const clipRootAt = ev.root
+              ev.root = (t) => {
+                const r = clipRootAt(t)
+                const f = back * clamp((t - T) / dur, 0, 1)
+                return { off: { x: r.off.x + away.x * f, z: r.off.z + away.z * f }, up: r.up }
+              }
+            }
+            else ev.root = (t) => ({ off: { x: away.x * back * clamp((t - T) / dur, 0, 1), z: away.z * back * clamp((t - T) / dur, 0, 1) }, up: 0 })
             // The guard holds while the blow rocks the body back (torso, then head) and the feet give ground.
             const rock = GUARD_ROCK * clamp(ph.capture / (0.6 * def.dims.legLen), 0.6, 1)
             const span = dur + 0.25
@@ -695,18 +1444,71 @@ export function solveFight(
             base = add(base, away, back)
           }
           events.push(ev)
+          // A bot's dodge carries it back: what follows starts there.
+          if (own) base = add(base, own)
           if (o === 'block' || o === 'parry') blockEvents.set(i, ev)
           if (o === 'slip' || o === 'duck') avoidIdx.push(i)
         }
         else if (o === 'miss') {
           const prev = events[events.length - 1]
-          const ev = prev && prev.end > T ? { ...prev, times: [...prev.times] } : constantEvent(T - 0.25, T + 0.4, null, base)
+          const ev = prev && prev.end > T ? { ...prev, times: [...prev.times] } : def.idle ? idleEvent(def, T - 0.25, T + 0.4, base) : constantEvent(T - 0.25, T + 0.4, null, base)
           if (!(prev && prev.end > T)) events.push(ev)
           avoidIdx.push(i)
         }
         else {
           // hit / ko: the reaction starts on the impact frame.
           const ph = physics[i]!
+          // Mocap bots (fork): the reaction clip by target and the side the blow lands on, on the physics' root and timing.
+          const pickR = def.idle
+            ? reactionClip({
+                result: ph.result === 'knockdown' || ph.result === 'stagger' ? ph.result : 'hit',
+                ko: o === 'ko',
+                zone: beat.target,
+                moveId: beat.move,
+                side: sides[i]!,
+                pushFront: away.x * fwdOf(hd).x + away.z * fwdOf(hd).z > 0
+              })
+            : null
+          if (pickR) {
+            const c = mocapClip(pickR.id)!
+            const onset = reactionOnset(pickR.id)
+            const ev = clipEvent(def, pickR, T, onset, 0, c.duration - onset, base, hd)
+            let travel = 0
+            if (ph.result === 'stagger') {
+              // The step back on top of the clip, eased over the physics' step.
+              travel = ph.stepBack
+              const clipRootAt = ev.root
+              ev.root = (t) => {
+                const r = clipRootAt(t)
+                const f = travel * smoothstep(clamp((t - T) / ph.stepDuration, 0, 1))
+                return { off: { x: r.off.x + away.x * f, z: r.off.z + away.z * f }, up: r.up }
+              }
+            }
+            else if (ph.result === 'knockdown') {
+              // The fall lands on the physics' fall time; the body slides the physics' slide, shaped by the clip's own travel.
+              const land = Math.max(onset + 1 / c.fps, fallLandTime(pickR.id))
+              ev.anchors = [
+                [T, onset],
+                [T + ph.fallDuration, land],
+                [T + ph.fallDuration + (c.duration - land), c.duration]
+              ]
+              ev.end = T + ph.fallDuration + (c.duration - land)
+              travel = ph.slide
+              const toClip = piecewise(ev.anchors)
+              ev.root = (t) => {
+                const f = travel * backTravel(pickR.id, onset, land, clamp(toClip(t), onset, c.duration), pickR.mirror)
+                return { off: { x: away.x * f, z: away.z * f }, up: 0 }
+              }
+            }
+            if (travel > 0) {
+              const what = ph.result === 'knockdown' ? 'slide' : 'stagger'
+              travel = propStop(notes, label, beat.attacker === 0 ? 'B' : 'A', what, base, away, travel, ph.result === 'knockdown' ? fallReachClip(def, pickR, onset) : 0, obstacles)
+            }
+            events.push(ev)
+            hitEvents.set(i, ev)
+            base = add(base, away, travel)
+            continue
+          }
           const id =
             ph.result === 'knockdown'
               ? o === 'ko'
@@ -795,53 +1597,94 @@ export function solveFight(
       for (let i = 0; i < events.length - 1; i++) events[i]!.end = Math.min(events[i]!.end, events[i + 1]!.start)
 
       /** Defender root, heading and joints at absolute time t (inside this beat). */
-      const defAt = (t: number): { pos: XZ; y: number; joints: Joints } => {
+      const defAt = (t: number): { pos: XZ; y: number; joints: Joints; clip?: ClipState } => {
         let ev: DefEvent | null = null
         for (const e of events) if (t >= e.start - 1e-9) ev = e
-        if (!ev) return { pos: { ...D }, y: groundY(def.floor, guard), joints: { ...guard } }
+        if (!ev) {
+          const r = restOf(def, t)
+          const first = events[0]
+          if (def.idle && first?.clip && t > first.start - BOT_LEAD) {
+            // Mocap bots (fork): the idle crossfades into the first clip over BOT_LEAD before it (5b's lead-in, with the guards opening by then).
+            const at = first.start - BOT_LEAD
+            const u = (t - at) / BOT_LEAD
+            let ja: Joints = {}
+            for (const o of opens) if (o.T - GUARD_LEAD < at) ja = withOffsets(ja, Object.fromEntries(Object.entries(o.joints).map(([k, v]) => [k, v * clamp((at - o.T + GUARD_LEAD) / (GUARD_LEAD - GUARD_FULL), 0, 1)])))
+            const b = eventPose(first, first.start, guard)
+            const joints = Object.fromEntries([...new Set([...Object.keys(ja), ...Object.keys(b.joints)])].map((k) => [k, (ja[k] ?? 0) + ((b.joints[k] ?? 0) - (ja[k] ?? 0)) * u]))
+            const to = add(first.base, b.off)
+            return { pos: { x: D.x + (to.x - D.x) * u, z: D.z + (to.z - D.z) * u }, y: def.floor.y, joints, clip: { ...b.clip!, w: u, from: { id: def.idle, t: at } } }
+          }
+          return { pos: { ...D }, y: groundY(def.floor, r.joints, 0, stateOf(r.clip)), joints: { ...r.joints }, clip: stateOf(r.clip) }
+        }
         const p = eventPose(ev, t, guard)
-        return { pos: add(ev.base, p.off), y: groundY(def.floor, p.joints), joints: p.joints }
+        return { pos: add(ev.base, p.off), y: groundY(def.floor, p.joints, 0, p.clip), joints: p.joints, clip: p.clip }
       }
 
       // 3. Attacker placement per impact, iterated so "toward the attacker" is self-consistent.
-      const place: { root: XZ; heading: number; pitch: Joints; lift: number; base: XZ; target: V3; error: number; rootY: number }[] = []
+      const place: { root: XZ; heading: number; pitch: Joints; lift: number; base: XZ; target: V3; error: number; rootY: number; travel?: XZ }[] = []
       for (let i = 0; i < impacts.length; i++) {
         const imp = impacts[i]!
         const kf = preset.keyframes[kIdx[i]!]!
+        const kClip = stateOf(kf.clip)
         const o = outcomes[i]!
         const T = times[i]!
         const dState = defAt(T)
         const dPos: V3 = { x: dState.pos.x, y: dState.y, z: dState.pos.z }
-        const aimJoints = o === 'slip' || o === 'duck' || o === 'miss' ? guard : dState.joints
-        const aimPos: V3 = o === 'slip' || o === 'duck' || o === 'miss' ? { x: D.x, y: groundY(def.floor, guard), z: D.z } : dPos
+        const avoided = o === 'slip' || o === 'duck' || o === 'miss'
+        const restD = restOf(def, T)
+        const aimJoints = avoided ? restD.joints : dState.joints
+        const aimClip = avoided ? stateOf(restD.clip) : dState.clip
+        const aimPos: V3 = avoided ? { x: D.x, y: groundY(def.floor, restD.joints, 0, aimClip), z: D.z } : dPos
         const kick = imp.effector.startsWith('foot') || imp.effector.startsWith('knee')
+        // Mocap bots (fork): a leg splay the strike carries (legSplay), found after a first placement.
+        let legFix: Joints = {}
+        // Mocap bots (fork): the angle the attacker comes in at, swung about the target (orbit, below).
+        let orbit = 0
+        // Mocap bots (fork): how far a bare blocking arm reaches across toward the blow (GUARD_ACROSS, below).
+        let across = 0
         // One placement; `wide` scales the limbs' pitch ranges, `lean` leans the torso too (fork: the reach retry below).
         const placeAt = (wide: number, lean = false) => {
+          // Mocap bots (fork): the clip key with any leg splay (legSplay) the placement carries.
+          const kj = withOffsets(kf.joints, legFix)
+          const A1 = orbit ? turnAbout(A0, aimPos, orbit) : A0
           // Floor contact (fork): the root height rests the pitched pose's lowest point on the floor.
-          let rootY = groundY(atk.floor, kf.joints)
-          let R: XZ = add(aimPos, unit(sub(A0, aimPos)), 0.8)
-          let result = { root: R, heading: 0, pitch: {} as Joints, lift: 0, base: R, target: aimPos, error: Infinity, rootY }
+          let rootY = groundY(atk.floor, kj, 0, kClip)
+          let R: XZ = add(aimPos, unit(sub(A1, aimPos)), 0.8)
+          let result = { root: R, heading: 0, pitch: {} as Joints, lift: 0, base: R, target: aimPos, error: Infinity, rootY, travel: kf.travel }
           let armFix: Joints = {}
           let leanDir: number | undefined
+          let leanR: number | undefined
+          // Mocap bots (fork): skin to skin: how far the aim point moves out toward the attacker so the striking skin just touches.
+          let skinOut = 0
+          let guardSideUsed: 'handL' | 'handR' = 'handR'
+          let lastPitch: Joints | undefined
+          // Mocap bots (fork): the last pass's block aim, guard arm and upright pitch, warm-starting this pass's solves.
+          let lastAim: Joints | undefined
+          let lastArm: Joints = {}
+          let lastUpright: Joints | undefined
           for (let it = 0; it < 8; it++) {
             const toward = unit(sub(R, aimPos))
-            let T3 = fightTarget(def.dims, def.scale, aimJoints, aimPos, hd, toward, beat.target, imp.effector, def.torso)
+            let T3 = fightTarget(def.dims, def.scale, aimJoints, aimPos, hd, toward, beat.target, imp.effector, def.torso, aimClip)
             if (o === 'block' || o === 'parry') {
               // The blow lands on the guard hand on its side, and that arm reaches
               // to the height the blow comes in at (elbow, then abduction).
-              const aimPitch = solvePitch(atk, kf.joints, imp.effector, rootY, T3.y, wide)
-              const aimed = withOffsets(kf.joints, aimPitch)
-              const e0 = contactLocal(atk, aimed, imp.effector)
+              const aimPitch = solvePitch(atk, kj, imp.effector, rootY, T3.y, wide, kClip, lastAim)
+              lastAim = aimPitch
+              const aimed = withOffsets(kj, aimPitch)
+              const e0 = contactLocal(atk, aimed, imp.effector, 'strike', false, kClip)
               const side = guardSide(def, guardHand(e0.x))
+              guardSideUsed = side
               const h = rootY + e0.y * atk.scale
               const s = strikeEffector(def, side).endsWith('L') ? 'L' : 'R'
               // A shield doesn't reach: the blow meets its face where it is (reaching would turn the face away).
-              const reach = weaponOf(def, side)?.spec.kind === 'shield' ? 0 : 1
-              const first = solveChannel(def, aimJoints, side, aimPos.y, h, `elbow${s}`, BLOCK_ELBOW * reach, 'guard')
+              // Fork (fight-polish): the shell (a bare head block, defenseClip) holds both forearms up in front of the face: the blow meets them where they are.
+              const shell = beat.target === 'head' && def.held.length === 0 && blockEvents.get(i)?.clip?.id === 'blockBody'
+              const reach = weaponOf(def, side)?.spec.kind === 'shield' || shell ? 0 : 1
+              const first = solveChannel(def, aimJoints, side, aimPos.y, h, `elbow${s}`, BLOCK_ELBOW * reach, 'guard', aimClip, lastArm[`elbow${s}`])
               armFix = { [`elbow${s}`]: first.delta }
               let guardErr = first.err
               if (first.err > 1e-3) {
-                const second = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}Z`, ABDUCT_PITCH * reach, 'guard')
+                const second = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}Z`, ABDUCT_PITCH * reach, 'guard', aimClip, lastArm[`shoulder${s}Z`])
                 if (second.err < first.err) {
                   armFix = { ...armFix, [`shoulder${s}Z`]: second.delta }
                   guardErr = second.err
@@ -849,31 +1692,43 @@ export function solveFight(
               }
               if (guardErr > 1e-3 && weaponOf(def, side)) {
                 // A blade or shield held high (a parry) also swings the shoulder to meet the blow's height.
-                const third = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}X`, ARM_PITCH * reach, 'guard')
+                const third = solveChannel(def, withOffsets(aimJoints, armFix), side, aimPos.y, h, `shoulder${s}X`, ARM_PITCH * reach, 'guard', aimClip, lastArm[`shoulder${s}X`])
                 if (third.err < guardErr) armFix = { ...armFix, [`shoulder${s}X`]: third.delta }
               }
-              const hand = effectorWorld(def, withOffsets(aimJoints, armFix), aimPos, aimPos.y, hd, side, 'guard')
-              T3 = { x: hand.x + toward.x * 0.05 * def.scale, y: hand.y, z: hand.z + toward.z * 0.05 * def.scale }
+              lastArm = armFix
+              // Mocap bots (fork): the guard reaching across toward a blow that sweeps past it.
+              if (across > 0) armFix = withOffsets(armFix, { [`shoulder${s}Z`]: -across })
+              const hand = effectorWorld(def, withOffsets(aimJoints, armFix), aimPos, aimPos.y, hd, side, 'guard', aimClip)
+              if (def.dims.mocap && !weaponOf(def, side)) {
+                // Mocap bots (fork): the blow meets the guard hand's own front.
+                const g = guardReach(def, withOffsets(aimJoints, armFix), aimClip, side, toward, hd)
+                T3 = { x: hand.x + toward.x * g, y: hand.y, z: hand.z + toward.z * g }
+              }
+              else T3 = { x: hand.x + toward.x * 0.05 * def.scale, y: hand.y, z: hand.z + toward.z * 0.05 * def.scale }
             }
+            if (skinOut !== 0) T3 = { x: T3.x + toward.x * skinOut, y: T3.y, z: T3.z + toward.z * skinOut }
             // A two-hand grip pitches both arms alike, so the off hand stays on the grip.
             // A lean (fork): the attacker placed in a pose as below, and how far its torso and head stay out of the defender.
             const spacing = (j: Joints): number => {
-              const e = contactLocal(atk, j, imp.effector)
-              const u = unit(sub(A0, T3), unit(sub(A0, aimPos)))
+              const e = contactLocal(atk, j, imp.effector, 'strike', false, kClip)
+              const u = unit(sub(A1, T3), unit(sub(A1, aimPos)))
               const root = add(T3, u, Math.hypot(e.x, e.z) * atk.scale)
               const at: V3 = { x: root.x, y: rootY, z: root.z }
               const heading = Math.atan2(u.x, u.z) - Math.atan2(-e.x, -e.z)
               const toward = unit(sub(aimPos, root))
-              const head = toWorld(poseEffectors(atk.dims, j).head, at, heading, atk.scale)
-              const points = [0.3, 0.6, 0.9].map((y) => torsoSurface(atk.torso, atk.dims, atk.scale, j, at, heading, toward, y))
+              const head = toWorld(poseEffectors(atk.dims, j, kClip).head, at, heading, atk.scale)
+              const points = [0.3, 0.6, 0.9].map((y) => torsoSurface(atk.torso, atk.dims, atk.scale, j, at, heading, toward, y, kClip))
               points.push({ x: head.x + toward.x * atk.dims.headR * atk.scale, y: head.y, z: head.z + toward.z * atk.dims.headR * atk.scale })
-              return Math.min(...points.map((q) => bodyClearance(def.torso, def.dims, def.build, def.scale, aimJoints, aimPos, hd, q)))
+              return Math.min(...points.map((q) => bodyClearance(def.torso, def.dims, def.build, def.scale, aimJoints, aimPos, hd, q, aimClip)))
             }
-            const fit = lean ? solveLean(atk, kf.joints, imp.effector, rootY, T3.y, wide, spacing, leanDir) : null
+            const fit = lean ? solveLean(atk, kj, imp.effector, rootY, T3.y, wide, spacing, leanDir, kClip, leanR, lastUpright) : null
             leanDir = fit?.dir
-            const pitch = gripPitch(beat.move, fit ? fit.offsets : solvePitch(atk, kf.joints, imp.effector, rootY, T3.y, wide))
-            const joints = withOffsets(kf.joints, pitch)
-            const e = contactLocal(atk, joints, imp.effector)
+            leanR = fit?.r
+            lastUpright = fit?.upright
+            const pitch = gripPitch(beat.move, fit ? fit.offsets : solvePitch(atk, kj, imp.effector, rootY, T3.y, wide, kClip, lastPitch))
+            lastPitch = fit ? undefined : pitch
+            const joints = withOffsets(kj, pitch)
+            const e = contactLocal(atk, joints, imp.effector, 'strike', false, kClip)
             // A kick still short of the target lifts the kicker, only as much as needed.
             const short = T3.y - (rootY + e.y * atk.scale)
             const lift = kick && short > 1e-3 ? Math.min(MAX_KICK_LIFT, short) : 0
@@ -881,39 +1736,203 @@ export function solveFight(
             const ez = e.z * atk.scale
             const r = Math.hypot(ex, ez)
             const phi = Math.atan2(-ex, -ez)
-            const uA = unit(sub(A0, T3), unit(sub(A0, aimPos)))
+            const uA = unit(sub(A1, T3), unit(sub(A1, aimPos)))
             R = add(T3, uA, r)
             if (!clinch && flat(sub(R, dState.pos)) < MIN_SEPARATION) R = add(dState.pos, unit(sub(R, dState.pos), uA), MIN_SEPARATION)
             const heading = Math.atan2(uA.x, uA.z) - phi
-            const E = effectorWorld(atk, joints, R, rootY + lift, heading, imp.effector)
+            const E = effectorWorld(atk, joints, R, rootY + lift, heading, imp.effector, 'strike', kClip)
             const fwd = fwdOf(heading)
             const base = add(R, fwd, -(kf.move?.forward ?? 0) * atk.k)
-            result = { root: R, heading, pitch, lift, base, target: T3, error: dist3(E, T3), rootY }
+            result = { root: R, heading, pitch: withOffsets(legFix, pitch), lift, base, target: T3, error: dist3(E, T3), rootY, travel: kf.travel }
+            // Mocap bots (fork): the striking skin against the target's, and the aim point moved out (or in) by the depth.
+            const touching = o === 'hit' || o === 'ko' || o === 'block' || o === 'parry'
+            const depth = touching
+              ? blowDepth(atk, joints, kClip, imp.effector, { x: R.x, y: rootY + lift, z: R.z }, heading, def, withOffsets(aimJoints, armFix), aimClip, aimPos, hd, skinOf(def, aimJoints, aimClip, beat.target, o, guardSideUsed, toward, hd), o === 'block' || o === 'parry')
+              : null
+            if (depth !== null) skinOut += depth
             // Floor contact (fork): re-solve until the pitched pose's root height holds.
-            const y = groundY(atk.floor, joints)
-            if (it >= 3 && Math.abs(y - rootY) < 1e-5) break
+            const y = groundY(atk.floor, joints, 0, kClip)
+            if (it >= 3 && Math.abs(y - rootY) < 1e-5 && (depth === null || Math.abs(depth) < 2e-4)) break
             rootY = y
           }
           return { result, armFix }
         }
-        let { result, armFix } = placeAt(1)
-        // Reach (fork): a blow that still misses, or a body or legs kick that has to lift the kicker, tries
-        // again with the limb pitched wider, which brings the attacker in closer (spacing rules still hold).
-        // Head kicks keep their lift.
-        if ((o === 'hit' || o === 'ko') && (result.error > CONTACT_TOLERANCE || (kick && beat.target !== 'head' && result.lift > 0))) {
-          const wider = placeAt(WIDE_REACH)
-          const better = wider.result.error <= CONTACT_TOLERANCE ? result.error > CONTACT_TOLERANCE || wider.result.lift < result.lift - 1e-3 : wider.result.error < result.error - 1e-3
-          if (better) {
-            result = wider.result
-            armFix = wider.armFix
+        const decide = (): { result: ReturnType<typeof placeAt>['result']; armFix: Joints } => {
+          let { result, armFix } = placeAt(1)
+          // Reach (fork): a blow that still misses, or a body or legs kick that has to lift the kicker, tries
+          // again with the limb pitched wider, which brings the attacker in closer (spacing rules still hold).
+          // Head kicks keep their lift.
+          if ((o === 'hit' || o === 'ko') && (result.error > CONTACT_TOLERANCE || (kick && beat.target !== 'head' && result.lift > 0))) {
+            const wider = placeAt(WIDE_REACH)
+            const better = wider.result.error <= CONTACT_TOLERANCE ? result.error > CONTACT_TOLERANCE || wider.result.lift < result.lift - 1e-3 : wider.result.error < result.error - 1e-3
+            if (better) {
+              result = wider.result
+              armFix = wider.armFix
+            }
+          }
+          // An arm blow still off the surface (an elbow up to a taller head) leans the torso into it, ≤ 20°.
+          if ((o === 'hit' || o === 'ko') && !kick && result.error > LEAN_TOLERANCE) {
+            const leaned = placeAt(WIDE_REACH, true)
+            if (leaned.result.error < result.error - 1e-3) {
+              result = leaned.result
+              armFix = leaned.armFix
+            }
+          }
+          return { result, armFix }
+        }
+        let { result, armFix } = decide()
+        // Mocap bots (fork): a landed blow gets through the guard: a hand or forearm in its way swings just clear.
+        /** The impact and (a bot) every frame of the `lead` before it, for placement `r`: the guard in its way (guardOpening), the bodies (orbit). */
+        const approach = (r: ReturnType<typeof placeAt>['result'], lead: number): GuardSample[] => {
+          // The impact, and (a bot) every frame of the approach between its keys: their overlay as laid, their root along the clip's travel or the move's step.
+          const samples: GuardSample[] = [{ t: T, aj: withOffsets(kf.joints, r.pitch), ac: kClip, root: { x: r.root.x, y: r.rootY + r.lift, z: r.root.z }, heading: r.heading, st: defAt(T) }]
+          const keys = preset.keyframes
+          // A key's overlay as 5a lays it: a clip's ramped in to the impact, a keyframe move's on the impact key and the one before.
+          const overlay = (j: number): number => (strike ? clamp(1 + (keys[j]!.t - kf.t) / RAMP_IN, 0, 1) : j === kIdx[i]! || j === kIdx[i]! - 1 ? 1 : 0)
+          for (let k = 1; atk.idle && k <= Math.floor(lead * fps + 1e-9); k++) {
+            const tau = kf.t - k / fps
+            let b = kIdx[i]!
+            while (b > 0 && keys[b - 1]!.t >= tau) b--
+            if (b === 0) break
+            const ka = keys[b - 1]!
+            const kb = keys[b]!
+            const u = kb.t > ka.t ? (tau - ka.t) / (kb.t - ka.t) : 1
+            const posed = (kj: FightKey, w: number): Joints => withOffsets(kj.joints, Object.fromEntries(Object.entries(r.pitch).map(([q, v]) => [q, v * w])))
+            const ja = posed(ka, overlay(b - 1))
+            const jb = posed(kb, overlay(b))
+            const aj = Object.fromEntries([...new Set([...Object.keys(ja), ...Object.keys(jb)])].map((q) => [q, (ja[q] ?? 0) + ((jb[q] ?? 0) - (ja[q] ?? 0)) * u]))
+            const clip: MarkClip | undefined = ka.clip && kb.clip && ka.clip.id === kb.clip.id ? { ...kb.clip, at: ka.clip.at + (kb.clip.at - ka.clip.at) * u } : u < 0.5 ? ka.clip : kb.clip
+            // The root along the clip's travel, or the keyframe move's forward step.
+            let off: XZ
+            if (ka.travel && kb.travel && kf.travel) {
+              const w = toWorld({ x: ka.travel.x + (kb.travel.x - ka.travel.x) * u - kf.travel.x, y: 0, z: ka.travel.z + (kb.travel.z - ka.travel.z) * u - kf.travel.z }, { x: 0, y: 0, z: 0 }, r.heading, 1)
+              off = { x: w.x, z: w.z }
+            }
+            else {
+              const fa = ka.move?.forward ?? 0
+              off = add({ x: 0, z: 0 }, fwdOf(r.heading), (fa + ((kb.move?.forward ?? 0) - fa) * u - (kf.move?.forward ?? 0)) * atk.k)
+            }
+            const ac = stateOf(clip)
+            samples.push({ t: T + tau - kf.t, aj, ac, root: { x: r.root.x + off.x, y: ac ? r.rootY : groundY(atk.floor, aj), z: r.root.z + off.z }, heading: r.heading, st: defAt(T + tau - kf.t) })
+          }
+          return samples
+        }
+        const hitEv = hitEvents.get(i)
+        // The guard it opens (found again after an orbit): read live by the reaction, the clip playing before it and 5b's lead-in.
+        const gate = { T, joints: {} as Joints }
+        const scaled = (w: number): Joints | null => (w > 0 && Object.keys(gate.joints).length > 0 ? Object.fromEntries(Object.entries(gate.joints).map(([k, v]) => [k, v * w])) : null)
+        const openGuard = (): void => {
+          gate.joints = {}
+          // (A blow to the legs lands on one: they stay.)
+          const open = guardOpening(atk, imp.effector, approach(result, GUARD_LEAD), def, hd, beat.target !== 'legs')
+          if (!open) return
+          gate.joints = open
+          ;({ result, armFix } = decide())
+        }
+        if (hitEv) {
+          opens.push(gate)
+          // Back up by the reaction's end at the latest.
+          const span = Math.min(GUARD_REOPEN, Math.max(1e-3, hitEv.end - T))
+          hitEv.extra = (t) => scaled(clamp(1 - (t - T) / span, 0, 1))
+          // A defense or reaction still playing when the blow comes (a combo's next blow) opens on the way: from GUARD_LEAD before it, all the way by GUARD_FULL before.
+          for (const e of events) {
+            if (e === hitEv || e.start >= T - 1e-9 || e.end < T - GUARD_LEAD) continue
+            const before = e.extra
+            e.extra = (t) => {
+              const x = before(t)
+              const o = t >= T ? null : scaled(clamp((t - T + GUARD_LEAD) / (GUARD_LEAD - GUARD_FULL), 0, 1))
+              if (!o) return x
+              const out: Joints = { ...(x ?? {}) }
+              for (const [k, v] of Object.entries(o)) out[k] = (out[k] ?? 0) + v
+              return out
+            }
+            e.times = [...e.times, T - GUARD_LEAD, T - GUARD_FULL]
+          }
+          openGuard()
+        }
+        if (atk.idle && atk.dims.mocap?.rig.skin) {
+          // Mocap bots (fork): a leg in the defender's legs at the impact splays out, and the strike is placed again with it.
+          const st = defAt(T)
+          const splay = legSplay(atk, imp.effector, withOffsets(kf.joints, result.pitch), kClip, { x: result.root.x, y: result.rootY + result.lift, z: result.root.z }, result.heading, def, st.joints, st.clip, { x: st.pos.x, y: st.y, z: st.pos.z }, hd)
+          if (Object.keys(splay).length > 0) {
+            legFix = splay
+            ;({ result, armFix } = decide())
           }
         }
-        // An arm blow still off the surface (an elbow up to a taller head) leans the torso into it, ≤ 20°.
-        if ((o === 'hit' || o === 'ko') && !kick && result.error > LEAN_TOLERANCE) {
-          const leaned = placeAt(WIDE_REACH, true)
-          if (leaned.result.error < result.error - 1e-3) {
-            result = leaned.result
-            armFix = leaned.armFix
+        if (atk.idle && atk.dims.mocap?.rig.skin && def.dims.mocap?.rig.skin && (o === 'hit' || o === 'ko' || o === 'block' || o === 'parry')) {
+          // Mocap bots (fork, crd2): a blow whose approach still sinks one body into the other (its legs splayed as 5a lays them) comes in swung about the target.
+          // A blocking arm reaches in by the impact (as its ramp below lays it), from the block's start.
+          const bev = blockEvents.get(i)
+          const depth = (r: ReturnType<typeof placeAt>['result'], fix: Joints = {}): number =>
+            Math.max(
+              0,
+              ...approach(r, ORBIT_LEAD).map((s) => {
+                const dpos = { x: s.st.pos.x, y: s.st.y, z: s.st.pos.z }
+                const f = bev ? clamp((s.t - bev.start) / Math.max(1e-6, T - bev.start), 0, 1) : 0
+                const dj = f > 0 ? withOffsets(s.st.joints, Object.fromEntries(Object.entries(fix).map(([k, v]) => [k, v * f]))) : s.st.joints
+                const aj = withOffsets(s.aj, legSplay(atk, imp.effector, s.aj, s.ac, s.root, s.heading, def, dj, s.st.clip, dpos, hd))
+                return bodyOverlap(atk, { joints: aj, clip: s.ac, position: s.root, heading: s.heading }, def, { joints: dj, clip: s.st.clip, position: dpos, heading: hd })
+              })
+            )
+          // The skin contact the report will read (a placement's error is its aim point's).
+          const contact = (r: ReturnType<typeof placeAt>['result'], fix: Joints): number => {
+            const st = defAt(T)
+            const a = { joints: withOffsets(kf.joints, r.pitch), clip: kClip, position: { x: r.root.x, y: r.rootY + r.lift, z: r.root.z }, heading: r.heading } as EntityState
+            const d = { joints: withOffsets(st.joints, fix), clip: st.clip, position: { x: st.pos.x, y: st.y, z: st.pos.z }, heading: hd } as EntityState
+            return measuredError(atk, def, a, d, beat.target, imp.effector, o)
+          }
+          let worst = depth(result, armFix)
+          // One more placement as `orbit` / `across` now say, its legs splayed as 5a lays them.
+          const attempt = (): ReturnType<typeof decide> => {
+            legFix = {}
+            let tried = decide()
+            const st = defAt(T)
+            const splay = legSplay(atk, imp.effector, withOffsets(kf.joints, tried.result.pitch), kClip, { x: tried.result.root.x, y: tried.result.rootY + tried.result.lift, z: tried.result.root.z }, tried.result.heading, def, st.joints, st.clip, { x: st.pos.x, y: st.y, z: st.pos.z }, hd)
+            if (Object.keys(splay).length > 0) {
+              legFix = splay
+              tried = decide()
+            }
+            return tried
+          }
+          const lands = worst > ORBIT_TOL ? Math.max(contact(result, armFix), ORBIT_CONTACT) : 0
+          if (worst > ORBIT_TOL && bev && def.held.length === 0 && !weaponOf(atk, imp.effector)) {
+            // A bare guard the blow still sinks past (a spinning backfist sweeping across it) reaches across toward it first, kept if that helps.
+            const legs = legFix
+            across = GUARD_ACROSS
+            const tried = attempt()
+            const d = tried.result.error > Math.max(CONTACT_TOLERANCE, result.error) || contact(tried.result, tried.armFix) > lands ? Infinity : depth(tried.result, tried.armFix)
+            if (d < worst - ORBIT_GAIN) {
+              result = tried.result
+              armFix = tried.armFix
+              worst = d
+              notes.push(`${label}: ${beat.attacker === 0 ? 'B' : 'A'}'s guard reaches across to meet blow ${i + 1} so the bodies stay apart`)
+            }
+            else {
+              across = 0
+              legFix = legs
+            }
+          }
+          if (worst > ORBIT_TOL) {
+            let best = { orbit: 0, result, armFix, legFix, worst }
+            for (const [k, deg] of ORBIT_STEPS.entries()) {
+              // The finer angles only beside the best coarse one (between it and its neighbours).
+              if (k >= ORBIT_COARSE && Math.abs(deg - (best.orbit * 180) / Math.PI) >= 15) continue
+              orbit = (deg * Math.PI) / 180
+              const tried = attempt()
+              if (tried.result.error <= Math.max(CONTACT_TOLERANCE, result.error) && contact(tried.result, tried.armFix) <= lands) {
+                const d = depth(tried.result, tried.armFix)
+                if (d < best.worst - ORBIT_GAIN || (d < best.worst && d <= ORBIT_BAR && best.worst > ORBIT_BAR)) best = { orbit, result: tried.result, armFix: tried.armFix, legFix, worst: d }
+              }
+              // The finer angles only when the coarse ones leave it over the bar.
+              if (best.worst <= ORBIT_TOL || (k === ORBIT_COARSE - 1 && best.worst <= ORBIT_BAR)) break
+            }
+            orbit = best.orbit
+            legFix = best.legFix
+            result = best.result
+            armFix = best.armFix
+            // The guard in its way, for the way it comes in now.
+            if (orbit !== 0 && hitEv) openGuard()
+            if (orbit !== 0) notes.push(`${label}: blow ${i + 1} comes in ${Math.abs(Math.round((orbit * 180) / Math.PI))}° ${orbit > 0 ? 'left' : 'right'} of straight so the bodies stay apart`)
           }
         }
         const ev = blockEvents.get(i)
@@ -939,7 +1958,14 @@ export function solveFight(
       }
       const kfRoot = (j: number): XZ => {
         const p = place[owner(j)]!
-        const pos = add(p.base, fwdOf(p.heading), (preset.keyframes[j]!.move?.forward ?? 0) * atk.k)
+        const kf = preset.keyframes[j]!
+        // Mocap bots (fork): a clip key sits along the clip's own root travel from the impact's.
+        let pos: XZ
+        if (kf.travel && p.travel) {
+          const w = toWorld({ x: kf.travel.x - p.travel.x, y: 0, z: kf.travel.z - p.travel.z }, { x: p.root.x, y: 0, z: p.root.z }, p.heading, 1)
+          pos = { x: w.x, z: w.z }
+        }
+        else pos = add(p.base, fwdOf(p.heading), (kf.move?.forward ?? 0) * atk.k)
         // Outside the clinch, never closer than MIN_SEPARATION.
         if (!clinch) {
           const dPos = defAt(startT + warp(preset.keyframes[j]!.t)).pos
@@ -960,7 +1986,7 @@ export function solveFight(
         return lift
       }
       const stepDist = flat(sub(kfRoot(0), A0))
-      return { startT, times, warp, events, avoidIdx, defAt, place, owner, kfRoot, kfLift, stepDist, notes }
+      return { startT, times, warp, events, avoidIdx, defAt, place, owner, kfRoot, kfLift, stepDist, notes, opens }
     }
 
     // 4. Step-in at ≤ 2.5 m/s: push the beat later rather than teleport.
@@ -991,18 +2017,46 @@ export function solveFight(
       let joints: Joints = { ...kf.joints }
       for (let q = 0; q < kIdx.length; q++) {
         const kq = kIdx[q]!
-        if (j === kq || (j === kq - 1 && !kIdx.includes(j))) joints = withOffsets(joints, p.place[q]!.pitch)
+        if (strike) {
+          // A bot's overlay ramps in over RAMP_IN to the impact and out over RAMP_OUT after it, the clip running under it.
+          const d = kf.t - impacts[q]!.t
+          const w = d < 0 ? 1 + d / RAMP_IN : 1 - d / RAMP_OUT
+          if (w > 1e-9) joints = withOffsets(joints, Object.fromEntries(Object.entries(p.place[q]!.pitch).map(([key, v]) => [key, v * Math.min(1, w)])))
+        }
+        else if (j === kq || (j === kq - 1 && !kIdx.includes(j))) joints = withOffsets(joints, p.place[q]!.pitch)
       }
       const t = p.startT + p.warp(kf.t)
       const pos = p.kfRoot(j)
+      if (atk.idle) {
+        // Mocap bots (fork): a knee's shin and foot stay out of the defender's legs (kneeTuck) on its clip's keys.
+        const e = impacts[i]!.effector
+        const dst = p.defAt(t)
+        const tuck = strike ? kneeTuck(atk, e, joints, stateOf(kf.clip), { x: pos.x, y: groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), z: pos.z }, pl.heading, def, dst.joints, dst.clip, { x: dst.pos.x, y: dst.y, z: dst.pos.z }, hd) : 0
+        if (tuck > 0) joints = withOffsets(joints, { [e]: tuck })
+        // ... and (clips and keyframes) its other leg out of the defender's legs (legSplay; an impact's is placed with it).
+        if (!kIdx.includes(j)) joints = withOffsets(joints, legSplay(atk, e, joints, stateOf(kf.clip), { x: pos.x, y: groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), z: pos.z }, pl.heading, def, dst.joints, dst.clip, { x: dst.pos.x, y: dst.y, z: dst.pos.z }, hd))
+      }
       let gait: GaitId = 'stand'
       if (j === 0) {
         const lastMark = atk.marks[atk.marks.length - 1]!
         const d = flat(sub(pos, { x: lastMark.position.x, z: lastMark.position.z }))
         // Fork: a step-in (≤ MAX_STEP_SPEED) walks; a jog's flight lifted both feet off the floor.
         gait = d < 0.05 ? 'stand' : 'walk'
+        // Mocap bots (fork): the idle plays on until the step-in (or a short settle) before the beat.
+        if (atk.idle && lastMark.clip?.id === atk.idle) {
+          const lead = gait === 'walk' ? clamp(d / BOT_STEP, BOT_LEAD, t - lastMark.time) : BOT_LEAD
+          const at = t - lead
+          if (at > lastMark.time + 1e-3) addMark(atk, at, { x: lastMark.position.x, z: lastMark.position.z }, lastMark.position.y, 'stand', {}, lastMark.arriveHeading, { id: atk.idle, at }, true)
+          else if (!lastMark.posedMove) {
+            // Just after a walk into the idle: the idle is posed half a frame on, so the move crossfades from it (on the floor line).
+            const hold = lastMark.time + Math.min(0.5 / fps, (t - lastMark.time) / 2)
+            addMark(atk, hold, { x: lastMark.position.x, z: lastMark.position.z }, lastMark.position.y, 'stand', {}, lastMark.arriveHeading, { id: atk.idle, at: hold }, true)
+          }
+          // A keyframe move crossfades from the idle into its first pose where the bot stands, then steps in (the floor holds through both).
+          if (gait === 'walk' && !kf.clip && t - at > 2 / fps) addMark(atk, at + Math.min(BOT_XFADE, (t - at) / 2), { x: lastMark.position.x, z: lastMark.position.z }, groundY(atk.floor, joints, p.kfLift(j)), 'stand', joints, lastMark.arriveHeading, undefined, true)
+        }
       }
-      addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j)), gait, joints, pl.heading)
+      addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), gait, joints, pl.heading, kf.clip, !!atk.idle && gait !== 'walk')
     }
     const atkEnd = p.startT + preset.duration
     atk.spot = p.kfRoot(kfs.length - 1)
@@ -1013,18 +2067,18 @@ export function solveFight(
     const effectorAt = (i: number): V3 => {
       const kf = kfs[kIdx[i]!]!
       const joints = withOffsets(kf.joints, p.place[i]!.pitch)
-      return effectorWorld(atk, joints, p.place[i]!.root, p.place[i]!.rootY + p.place[i]!.lift, p.place[i]!.heading, impacts[i]!.effector)
+      return effectorWorld(atk, joints, p.place[i]!.root, p.place[i]!.rootY + p.place[i]!.lift, p.place[i]!.heading, impacts[i]!.effector, 'strike', stateOf(kf.clip))
     }
     const headClear = (i: number, extra: XZ): number => {
       const st = p.defAt(p.times[i]!)
-      const head = toWorld(poseEffectors(def.dims, st.joints).head, { x: st.pos.x + extra.x, y: st.y, z: st.pos.z + extra.z }, hd, def.scale)
+      const head = toWorld(poseEffectors(def.dims, st.joints, st.clip).head, { x: st.pos.x + extra.x, y: st.y, z: st.pos.z + extra.z }, hd, def.scale)
       return dist3(effectorAt(i), head) - def.dims.headR * def.scale
     }
     // Body / legs blows (fork, contact.ts): an avoided blow clears the whole body (2 cm over the
     // minimum for the body model), so the defender steps back from it, or aside.
     const bodyClear = (i: number, extra: XZ): number => {
       const st = p.defAt(p.times[i]!)
-      return bodyClearance(def.torso, def.dims, def.build, def.scale, st.joints, { x: st.pos.x + extra.x, y: st.y, z: st.pos.z + extra.z }, hd, effectorAt(i))
+      return bodyClearance(def.torso, def.dims, def.build, def.scale, st.joints, { x: st.pos.x + extra.x, y: st.y, z: st.pos.z + extra.z }, hd, effectorAt(i), st.clip)
     }
     const high = beat.target === 'head'
     const clearOf = high ? headClear : bodyClear
@@ -1067,21 +2121,72 @@ export function solveFight(
       }
       clearance[i] = clearOf(i, { x: 0, z: 0 })
     }
-    for (const ev of p.events) {
+    p.events.forEach((ev, e) => {
       truncate(def, ev.start)
+      // Mocap bots (fork): the idle plays on until a moment before the beat's first clip.
+      const before = def.marks[def.marks.length - 1]!
+      if (def.idle && e === 0 && before.clip?.id === def.idle && ev.start - BOT_LEAD > before.time + 1e-3) {
+        const at = ev.start - BOT_LEAD
+        // Mocap bots (fork): a guard in a coming blow's way opens from GUARD_LEAD before it, all the way by GUARD_FULL before.
+        let joints: Joints = {}
+        for (const o of p.opens) {
+          const from = o.T - GUARD_LEAD
+          if (from >= at || Object.keys(o.joints).length === 0) continue
+          if (from > before.time + 1e-3) addMark(def, from, { x: before.position.x, z: before.position.z }, before.position.y, 'stand', {}, before.arriveHeading, { id: def.idle, at: from }, true)
+          const f = clamp((at - from) / (GUARD_LEAD - GUARD_FULL), 0, 1)
+          joints = withOffsets(joints, Object.fromEntries(Object.entries(o.joints).map(([k, v]) => [k, v * f])))
+        }
+        addMark(def, at, { x: before.position.x, z: before.position.z }, before.position.y, 'stand', joints, before.arriveHeading, { id: def.idle, at }, true)
+      }
+      else if (def.idle && e === 0 && before.clip?.id === def.idle && !before.posedMove && ev.start > before.time + 1e-3) {
+        // Just after a walk into the idle: the idle is posed half a frame on, so the clip crossfades from it (on the floor line).
+        const at = before.time + Math.min(0.5 / fps, (ev.start - before.time) / 2)
+        addMark(def, at, { x: before.position.x, z: before.position.z }, before.position.y, 'stand', {}, before.arriveHeading, { id: def.idle, at }, true)
+      }
       const ts = new Set<number>([ev.start])
       if (ev.motion) {
         // Keyframe times in absolute time: the inverse of the event's time map.
         const toAbs = piecewise(ev.anchors.map(([a, l]): [number, number] => [l, a]))
         for (const kf of ev.motion.keyframes) ts.add(kf.t === 0 ? ev.start : toAbs(kf.t))
       }
+      if (ev.clip) {
+        // A clip run: its time map's anchors and a mark every DEF_STEP.
+        for (const [a] of ev.anchors) ts.add(a)
+        for (let k = 1; ev.start + k * DEF_STEP < ev.end; k++) ts.add(ev.start + k * DEF_STEP)
+      }
       for (const t of ev.times) ts.add(t)
       for (const t of p.times) if (t >= ev.start) ts.add(t)
-      const sorted = [...ts].filter((t) => t >= ev.start - 1e-9 && t <= ev.end + 1e-9).sort((a, b) => a - b)
+      // A bot's clip crossfades into the next one over BOT_XFADE.
+      const next = p.events[e + 1]
+      const end = def.idle && next && ev.end >= next.start - 1e-9 ? Math.max(ev.start, next.start - BOT_XFADE) : ev.end
+      if (end < ev.end - 1e-9) ts.add(end)
+      const sorted = [...ts].filter((t) => t >= ev.start - 1e-9 && t <= end + 1e-9).sort((a, b) => a - b)
       for (const t of sorted) {
         const pose = eventPose(ev, t, guard)
-        addMark(def, t, add(ev.base, pose.off), groundY(def.floor, pose.joints), 'stand', pose.joints, hd)
+        addMark(def, t, add(ev.base, pose.off), groundY(def.floor, pose.joints, 0, pose.clip), 'stand', pose.joints, hd, markOf(pose.clip), !!def.idle)
       }
+      // Mocap bots (fork): between two clips the idle plays on (each crossfades in and out over BOT_XFADE).
+      if (def.idle && next && next.start - end > 2 * BOT_XFADE + 1e-3) {
+        const after = def.marks[def.marks.length - 1]!
+        for (const at of [end + BOT_XFADE, next.start - BOT_XFADE]) addMark(def, at, { x: after.position.x, z: after.position.z }, def.floor.y, 'stand', {}, hd, { id: def.idle, at }, true)
+      }
+    })
+    // Mocap bots (fork): after each blow the bodies are kept apart (separate): before the next blow the push eases out again.
+    if (!shotBeat && atk.dims.mocap?.rig.skin && def.dims.mocap?.rig.skin) {
+      const who = beat.attacker === 0 ? 'B' : 'A'
+      let jolts = 0
+      p.times.forEach((T, i) => {
+        const away = unit(sub(p.defAt(T).pos, p.place[i]!.root))
+        const next = p.times[i + 1]
+        if (next !== undefined) {
+          if (next - T > 2 * SEP_BACK) jolts += separate(F, atk, def, T, next - 2 * SEP_BACK, away, fps, next - SEP_BACK).push
+          return
+        }
+        const last = def.marks[def.marks.length - 1]!
+        const s = separate(F, atk, def, T, Math.min(T + SEP_WINDOW, Math.max(atkEnd, last.time)), away, fps)
+        if (s.push > 0) beatWarnings.push(`${label}: ${who} goes ${(s.push * 100).toFixed(0)} cm further back after the last blow${s.both ? `, and ${who === 'A' ? 'B' : 'A'} stops ${(s.push * 100).toFixed(0)} cm short,` : ''} so the bodies stay apart`)
+      })
+      if (jolts > 0) beatWarnings.push(`${label}: ${who} rocks back ${(jolts * 100).toFixed(0)} cm between blows so the bodies stay apart`)
     }
     const lastDef = def.marks[def.marks.length - 1]!
     def.spot = { x: lastDef.position.x, z: lastDef.position.z }
@@ -1091,12 +2196,27 @@ export function solveFight(
     // A knockdown on the last beat stays down, like a KO (fork: it used to walk from the floor back to guard).
     if (koed || (downed && n === fight.beats.length - 1)) def.down = true
     else if (downed) {
-      const getUp = BY_ID.get(REACTIONS.getUp)!
-      const t0 = defEnd + 0.2
-      for (const kf of getUp.keyframes) {
-        addMark(def, t0 + kf.t, def.spot, groundY(def.floor, kf.joints), 'stand', kf.joints, hd)
+      const up = def.idle ? getUpClip() : null
+      if (up) {
+        // Mocap bots (fork): the get-up clip from where the fall left the body, on its own root travel.
+        const ev = clipEvent(def, { id: up, mirror: false }, defEnd + BOT_GETUP, 0, 0, mocapClip(up)!.duration, def.spot, hd)
+        for (let k = 0; ; k++) {
+          const t = Math.min(ev.end, ev.start + k * DEF_STEP)
+          const pose = eventPose(ev, t, guard)
+          addMark(def, t, add(ev.base, pose.off), groundY(def.floor, pose.joints, 0, pose.clip), 'stand', pose.joints, hd, markOf(pose.clip), true)
+          if (t >= ev.end) break
+        }
+        def.spot = add(ev.base, ev.root(ev.end).off)
+        defEnd = ev.end
       }
-      defEnd = t0 + getUp.duration
+      else {
+        const getUp = BY_ID.get(REACTIONS.getUp)!
+        const t0 = defEnd + 0.2
+        for (const kf of getUp.keyframes) {
+          addMark(def, t0 + kf.t, def.spot, groundY(def.floor, kf.joints), 'stand', kf.joints, hd)
+        }
+        defEnd = t0 + getUp.duration
+      }
     }
 
     // 7. Rest: back to guard distance, facing each other (after a shot, both hold their ground).
@@ -1105,13 +2225,32 @@ export function solveFight(
     if (!def.down && !shotBeat) {
       const M = { x: (atk.spot.x + def.spot.x) / 2, z: (atk.spot.z + def.spot.z) / 2 }
       const dir = unit(sub(def.spot, atk.spot), fwdOf(atk.heading))
-      const aRest = add(M, dir, -GUARD_DISTANCE / 2)
-      const dRest = add(M, dir, GUARD_DISTANCE / 2)
+      let aRest = add(M, dir, -GUARD_DISTANCE / 2)
+      let dRest = add(M, dir, GUARD_DISTANCE / 2)
+      // Mocap bots (fork): one done well before the other (a get-up) crossfades into its idle and holds it where it stands; the other comes to guard distance of it.
+      const waits = (f: Fighter, end: number): boolean => !!f.idle && recoveryEnd - end > 2 * BOT_XFADE + 1e-3
+      const hold = (f: Fighter, end: number): void => {
+        const last = f.marks[f.marks.length - 1]!
+        const at = Math.max(last.time, end) + BOT_XFADE
+        addMark(f, at, f.spot, groundY(f.floor, {}, 0, stateOf({ id: f.idle!, at })), 'stand', {}, last.arriveHeading, { id: f.idle!, at }, true)
+      }
+      if (waits(atk, atkEnd)) {
+        hold(atk, atkEnd)
+        aRest = { ...atk.spot }
+        dRest = add(atk.spot, dir, GUARD_DISTANCE)
+      }
+      else if (waits(def, defEnd)) {
+        hold(def, defEnd)
+        dRest = { ...def.spot }
+        aRest = add(def.spot, dir, -GUARD_DISTANCE)
+      }
       const moveA = flat(sub(aRest, atk.spot))
       const moveD = flat(sub(dRest, def.spot))
       restT = recoveryEnd + clamp(Math.max(moveA, moveD) / 1.5, 0.25, 1.5)
-      addMark(atk, restT, aRest, groundY(atk.floor, guard), moveA > 0.05 ? 'walk' : 'stand', guard, facing(aRest, dRest))
-      addMark(def, restT, dRest, groundY(def.floor, guard), moveD > 0.05 ? 'walk' : 'stand', guard, facing(dRest, aRest))
+      const ra = restOf(atk, restT)
+      const rd = restOf(def, restT)
+      addMark(atk, restT, aRest, groundY(atk.floor, ra.joints, 0, stateOf(ra.clip)), moveA > 0.05 ? 'walk' : 'stand', ra.joints, facing(aRest, dRest), ra.clip, !!atk.idle && moveA <= 0.05)
+      addMark(def, restT, dRest, groundY(def.floor, rd.joints, 0, stateOf(rd.clip)), moveD > 0.05 ? 'walk' : 'stand', rd.joints, facing(dRest, aRest), rd.clip, !!def.idle && moveD <= 0.05)
       atk.spot = aRest
       def.spot = dRest
       atk.heading = facing(aRest, dRest)
@@ -1119,7 +2258,13 @@ export function solveFight(
     }
     else {
       restT = recoveryEnd + 0.25
-      addMark(atk, restT, atk.spot, groundY(atk.floor, guard), 'stand', guard, facing(atk.spot, def.spot))
+      const ra = restOf(atk, restT)
+      addMark(atk, restT, atk.spot, groundY(atk.floor, ra.joints, 0, stateOf(ra.clip)), 'stand', ra.joints, facing(atk.spot, def.spot), ra.clip, !!atk.idle)
+      // Mocap bots (fork): a standing defender settles back into its idle too.
+      if (def.idle && !def.down) {
+        const rd = restOf(def, Math.max(restT, defEnd + BOT_LEAD))
+        addMark(def, rd.clip!.at, def.spot, groundY(def.floor, rd.joints, 0, stateOf(rd.clip)), 'stand', rd.joints, facing(def.spot, atk.spot), rd.clip, true)
+      }
     }
     // Floor contact (fork): grounded marks where this beat's in-between poses would float or sink.
     F.forEach((f, q) => {
@@ -1149,7 +2294,8 @@ export function solveFight(
       liftM: p.place.map((pl) => pl.lift),
       physics,
       warnings: beatWarnings,
-      plays: preset.id
+      plays: preset.id,
+      ...(atk.idle ? { effectors: impacts.map((imp) => imp.effector) } : {})
     })
     impacts.forEach((imp, i) =>
       hits.push({ beat: beats.length - 1, i, time: p.times[i]!, attacker: beat.attacker, zone: beat.target, effector: imp.effector, outcome: outcomes[i]!, shotRange: atk.shotRange })
@@ -1159,49 +2305,13 @@ export function solveFight(
   // Measure every landed blow through the real evaluator.
   const tracks: [FightMarkSpec[], FightMarkSpec[]] = [F[0].marks, F[1].marks]
   const endT = Math.max(...tracks.map((t) => t[t.length - 1]?.time ?? 0))
-  const scene = {
-    id: 'fight',
-    name: 'fight',
-    number: 1,
-    environment: { lighting: 'day', sunAzimuth: 0, sunElevation: 1, fog: 0 },
-    entities: [
-      ...F.map((f) => ({
-        id: f.input.entityId,
-        assetId: f.input.assetId,
-        name: f.input.entityId,
-        params: f.input.params,
-        transform: { position: { ...f.input.start }, rotationY: 0, scale: f.scale }
-      })),
-      // Held weapons, so the evaluator gives the fighters their grip poses.
-      ...F.flatMap((f) =>
-        f.held.map((h) => ({
-          id: `${f.input.entityId}-${h.hand}-weapon`,
-          assetId: h.spec.assetId,
-          name: h.spec.assetId,
-          heldBy: { entityId: f.input.entityId, hand: h.hand },
-          transform: { position: { ...f.input.start }, rotationY: 0, scale: h.scale }
-        }))
-      )
-    ],
-    blocking: [
-      {
-        id: 'take',
-        name: 'fight',
-        tracks: F.map((f) => ({ entityId: f.input.entityId, marks: f.marks.map((m, q) => ({ ...m, id: `${f.input.entityId}-${q}` })) }))
-      }
-    ],
-    shots: []
-  } as unknown as Scene
-  const shotDoc = {
-    id: 'shot',
-    name: 'fight',
-    duration: Math.max(shot.duration, endT),
-    fps,
-    aspect: '16:9',
-    blockingTakeId: 'take',
-    camera: { sensorId: 'super35', rig: 'sticks', rigIntensity: 0, seed: 1, marks: [] }
-  } as unknown as Shot
-  const ev = new ShotEvaluator(scene, shotDoc)
+  // Mocap bots (fork): a fighter still standing holds its idle to the shot's end (after the fight's end, so endT is the fight's).
+  for (const f of F) {
+    const last = f.marks[f.marks.length - 1]
+    if (!f.idle || f.down || !last || last.clip?.id !== f.idle || shot.duration <= last.time + 0.05) continue
+    addMark(f, shot.duration, { x: last.position.x, z: last.position.z }, last.position.y, 'stand', {}, last.arriveHeading, { id: f.idle, at: shot.duration }, true)
+  }
+  const ev = fightEvaluator(F, Math.max(shot.duration, endT), fps)
   for (const h of hits) {
     if (h.outcome !== 'hit' && h.outcome !== 'ko' && h.outcome !== 'block' && h.outcome !== 'parry') continue
     const st = ev.evaluate(h.time)
@@ -1260,7 +2370,7 @@ function samplePaths(ev: ShotEvaluator, F: [Fighter, Fighter], endT: number, fps
     F.forEach((f, q) => {
       const e = st.entities.find((x) => x.entityId === f.input.entityId)
       if (!e) return
-      const fx = poseEffectors(f.dims, e.joints)
+      const fx = poseEffectors(f.dims, e.joints, e.clip)
       const body = [fx.head, fx.chest, fx.pelvis, fx.footL, fx.footR].map((p) => {
         const w = toWorld(p, e.position, e.heading, f.scale)
         return { x: w.x, z: w.z }
@@ -1269,6 +2379,227 @@ function samplePaths(ev: ShotEvaluator, F: [Fighter, Fighter], endT: number, fps
     })
   }
   return out
+}
+
+/** The evaluator over the fighters' marks so far, their held weapons in hand (for the grip poses). */
+function fightEvaluator(F: [Fighter, Fighter], duration: number, fps: number): ShotEvaluator {
+  const scene = {
+    id: 'fight',
+    name: 'fight',
+    number: 1,
+    environment: { lighting: 'day', sunAzimuth: 0, sunElevation: 1, fog: 0 },
+    entities: [
+      ...F.map((f) => ({
+        id: f.input.entityId,
+        assetId: f.input.assetId,
+        name: f.input.entityId,
+        params: f.input.params,
+        transform: { position: { ...f.input.start }, rotationY: 0, scale: f.scale }
+      })),
+      // Held weapons, so the evaluator gives the fighters their grip poses.
+      ...F.flatMap((f) =>
+        f.held.map((h) => ({
+          id: `${f.input.entityId}-${h.hand}-weapon`,
+          assetId: h.spec.assetId,
+          name: h.spec.assetId,
+          heldBy: { entityId: f.input.entityId, hand: h.hand },
+          transform: { position: { ...f.input.start }, rotationY: 0, scale: h.scale }
+        }))
+      )
+    ],
+    blocking: [
+      {
+        id: 'take',
+        name: 'fight',
+        tracks: F.map((f) => ({ entityId: f.input.entityId, marks: f.marks.map((m, q) => ({ ...m, id: `${f.input.entityId}-${q}` })) }))
+      }
+    ],
+    shots: []
+  } as unknown as Scene
+  const shotDoc = {
+    id: 'shot',
+    name: 'fight',
+    duration,
+    fps,
+    aspect: '16:9',
+    blockingTakeId: 'take',
+    camera: { sensorId: 'super35', rig: 'sticks', rigIntensity: 0, seed: 1, marks: [] }
+  } as unknown as Shot
+  return new ShotEvaluator(scene, shotDoc)
+}
+
+/**
+ * Mocap bots (fork, mocap/surface.ts): how deep two bots' skins sit in
+ * each other (m; 0 apart): where a bone's box (by its support points) meets
+ * one of the other body's (within BONE_PAD), each body's skin vertices
+ * there against the other's skin on the bones that meet (and their
+ * neighbours).
+ */
+/** Where a body is and how it stands: an evaluated state, or a planned pose. */
+type Placed = Pick<EntityState, 'joints' | 'clip' | 'position' | 'heading'>
+
+function bodyOverlap(a: Fighter, sa: Placed, b: Fighter, sb: Placed): number {
+  const side = (f: Fighter, s: Placed): { pose: ReturnType<typeof fighterPose>; box: Map<number, { lo: V3; hi: V3 }> } => {
+    const pose = fighterPose(f.dims.mocap!, s.joints, s.clip)
+    // Each bone's box, by its support points (its outermost skin).
+    const box = new Map<number, { lo: V3; hi: V3 }>()
+    for (const x of supportPoints(f.dims.mocap!, pose)) {
+      const p = toWorld(x.p, s.position, s.heading, f.scale)
+      const c = box.get(x.bone)
+      if (!c) box.set(x.bone, { lo: { ...p }, hi: { ...p } })
+      else {
+        c.lo = { x: Math.min(c.lo.x, p.x), y: Math.min(c.lo.y, p.y), z: Math.min(c.lo.z, p.z) }
+        c.hi = { x: Math.max(c.hi.x, p.x), y: Math.max(c.hi.y, p.y), z: Math.max(c.hi.z, p.z) }
+      }
+    }
+    return { pose, box }
+  }
+  const A = side(a, sa)
+  const B = side(b, sb)
+  // The bones whose boxes meet one of the other body's, and where they meet.
+  const meet: { lo: V3; hi: V3 }[] = []
+  const bonesA = new Set<number>()
+  const bonesB = new Set<number>()
+  for (const [ia, x] of A.box)
+    for (const [ib, y] of B.box) {
+      const lo = { x: Math.max(x.lo.x, y.lo.x) - BONE_PAD, y: Math.max(x.lo.y, y.lo.y) - BONE_PAD, z: Math.max(x.lo.z, y.lo.z) - BONE_PAD }
+      const hi = { x: Math.min(x.hi.x, y.hi.x) + BONE_PAD, y: Math.min(x.hi.y, y.hi.y) + BONE_PAD, z: Math.min(x.hi.z, y.hi.z) + BONE_PAD }
+      if (lo.x > hi.x || lo.y > hi.y || lo.z > hi.z) continue
+      meet.push({ lo, hi })
+      bonesA.add(ia)
+      bonesB.add(ib)
+    }
+  if (meet.length === 0) return 0
+  const within = (q: V3): boolean => meet.some(({ lo, hi }) => q.x >= lo.x && q.x <= hi.x && q.y >= lo.y && q.y <= hi.y && q.z >= lo.z && q.z <= hi.z)
+  // Each body's skin on those bones: its vertices where they meet sink into the other's.
+  const skin = (f: Fighter, s: Placed, P: typeof A, bones: Set<number>): { p: V3[]; tri: number[] } | null => {
+    const own = boneSkin(f.dims.mocap!, P.pose, bones)
+    return own && own.tri.length > 0 ? { p: own.p.map((x) => toWorld(x, s.position, s.heading, f.scale)), tri: own.tri } : null
+  }
+  // With their neighbours (parent and children), so the cut skin's open edges lie away from where they meet.
+  const grow = (f: Fighter, bones: Set<number>): Set<number> => {
+    const parent = f.dims.mocap!.rig.parent
+    const out = new Set(bones)
+    parent.forEach((p, i) => {
+      if (bones.has(i) && p >= 0) out.add(p)
+      if (p >= 0 && bones.has(p)) out.add(i)
+    })
+    return out
+  }
+  const SA = skin(a, sa, A, grow(a, bonesA))
+  const SB = skin(b, sb, B, grow(b, bonesB))
+  if (!SA || !SB) return 0
+  const into = (P: { p: V3[] }, Q: { p: V3[]; tri: number[] }): number => {
+    const pts = P.p.filter(within)
+    return pts.length > 0 ? meshDepth(pts, skinMesh(Q.p, Q.tri)) : 0
+  }
+  return Math.max(0, into(SA, SB), into(SB, SA))
+}
+
+/**
+ * Mocap bots (fork): after a blow at T the bodies are kept apart (a fall
+ * into the attacker, a follow-through into the defender): the skins sampled
+ * to `end` (every frame for SEP_CLOSE, then every SEP_STEP), and where they
+ * sit more than SEP_TOL in each other, the defender's marks after T are
+ * pushed back along `away`, ramped in by the first frame that overlapped,
+ * by the least push (to within SEP_RES, at most SEP_MAX) that clears those
+ * frames, plus SEP_MARGIN; when the defender alone can't get clear, the
+ * attacker's own marks after T are held back as far. When nothing clears
+ * them, the least push that does as well as SEP_MAX, if that helps by
+ * SEP_GAIN. Before another blow (`back`,
+ * finite) the push holds to the last frame that overlapped and eases out by
+ * `back`, so that blow lands where it was placed. Returns the push (m) and
+ * whether the attacker was held back too.
+ */
+function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, end: number, away: XZ, fps: number, back = Infinity): { push: number; both: boolean } {
+  const ev = fightEvaluator(F, Math.max(end, Number.isFinite(back) ? back : 0) + 1, fps)
+  const over: { t: number; sa: EntityState; sd: EntityState; d: number }[] = []
+  for (let t = T + 1 / fps; t <= end + 1e-9; t += t < T + SEP_CLOSE ? 1 / fps : SEP_STEP) {
+    const st = ev.evaluate(t)
+    const sa = st.entities.find((e) => e.entityId === atk.input.entityId)!
+    const sd = st.entities.find((e) => e.entityId === def.input.entityId)!
+    const d = bodyOverlap(atk, sa, def, sd)
+    if (d > SEP_TOL) over.push({ t, sa, sd, d })
+  }
+  if (over.length === 0) return { push: 0, both: false }
+  const first = over[0]!
+  const last = over[over.length - 1]!
+  const share = (t: number): number =>
+    t <= T ? 0 : t <= last.t + 1e-9 || !Number.isFinite(back) ? clamp((t - T) / Math.max(1e-3, first.t - T), 0, 1) : clamp((back - t) / Math.max(1e-3, back - last.t), 0, 1)
+  // Marks at the frames the ramp turns on (unless one is there, or it crossfades there).
+  const markAt = (f: Fighter, t: number, st: EntityState): void => {
+    const k = f.marks.findIndex((m) => m.time > t - 1e-6)
+    if (!st.clip || (st.clip.w ?? 1) < 1 || k <= 0 || Math.abs(f.marks[k]!.time - t) <= 1e-3) return
+    f.marks.splice(k, 0, { ...f.marks[k - 1]!, time: t, position: { ...st.position }, joints: { ...(st.joints ?? {}) }, clip: markOf(st.clip)!, arriveHeading: st.heading })
+  }
+  const marksAt = (f: Fighter, at: (o: (typeof over)[number]) => EntityState): void => {
+    if (Number.isFinite(back)) markAt(f, last.t, at(last))
+    markAt(f, first.t, at(first))
+  }
+  marksAt(def, (o) => o.sd)
+  // The share a fighter's marks give a moment (the evaluator runs straight between them).
+  const realized = (f: Fighter, t: number): number => {
+    const k = f.marks.findIndex((m) => m.time > t + 1e-9)
+    if (k <= 0) return share(t)
+    const a = f.marks[k - 1]!
+    const b = f.marks[k]!
+    const u = b.time > a.time ? (t - a.time) / (b.time - a.time) : 1
+    return share(a.time) + (share(b.time) - share(a.time)) * u
+  }
+  const moved = (s: EntityState, d: XZ, p: number): EntityState => ({ ...s, position: { x: s.position.x + d.x * p, y: s.position.y, z: s.position.z + d.z * p } })
+  const toward = { x: -away.x, z: -away.z }
+  // How deep the bodies still sit in each other on one of those frames, the defender pushed by p (and with `both`, the attacker held back by p).
+  const depthAt = ({ t, sa, sd }: (typeof over)[number], p: number, both: boolean): number =>
+    bodyOverlap(atk, both ? moved(sa, toward, p * realized(atk, t)) : sa, def, moved(sd, away, p * realized(def, t)))
+  const deepest = (p: number, both: boolean): number => Math.max(...over.map((o) => depthAt(o, p, both)))
+  // Unpushed, as the frames were found.
+  const start = Math.max(...over.map((o) => o.d))
+  let both = false
+  let most = deepest(SEP_MAX, false)
+  if (most > SEP_TOL) {
+    // The attacker carrying on into the defender (a kick stepping through, a tackle): its own travel after the blow is held back too.
+    const held = deepest(SEP_MAX, true)
+    if (held < most - SEP_RES) {
+      both = true
+      marksAt(atk, (o) => o.sa)
+      most = deepest(SEP_MAX, true)
+    }
+  }
+  if (most > SEP_TOL && start - most < SEP_GAIN) return { push: 0, both: false }
+  const goal = most <= SEP_TOL ? SEP_TOL : most + SEP_RES
+  let lo = 0
+  let hi = SEP_MAX
+  // Each push is tried on the deepest frames first and given up at the first one still over the goal (the last to fail goes first).
+  const order = [...over].sort((a, b) => b.d - a.d)
+  const fits = (p: number): boolean => {
+    for (let k = 0; k < order.length; k++) {
+      if (depthAt(order[k]!, p, both) <= goal) continue
+      order.unshift(...order.splice(k, 1))
+      return false
+    }
+    return true
+  }
+  while (hi - lo > SEP_RES) {
+    const mid = (lo + hi) / 2
+    if (fits(mid)) hi = mid
+    else lo = mid
+  }
+  const push = hi + SEP_MARGIN
+  // Each later mark moved by its share.
+  const shift = (f: Fighter, dir: XZ): void => {
+    for (const m of f.marks) {
+      if (m.time <= T + 1e-9 || m.time >= back - 1e-9) continue
+      const w = share(m.time)
+      m.position = { x: m.position.x + dir.x * push * w, y: m.position.y, z: m.position.z + dir.z * push * w }
+    }
+  }
+  shift(def, away)
+  if (both) {
+    shift(atk, toward)
+    const end = atk.marks[atk.marks.length - 1]!
+    atk.spot = { x: end.position.x, z: end.position.z }
+  }
+  return { push, both }
 }
 
 /** Contact error of one blow from evaluated states (block/parry: on the guard hand or its weapon). */
@@ -1281,15 +2612,28 @@ function measuredError(
   effector: Effector,
   outcome: FightOutcome
 ): number {
-  const strike = contactLocal(atk, a.joints, effector, 'strike', true)
+  const strike = contactLocal(atk, a.joints, effector, 'strike', true, a.clip)
   const E = toWorld(strike, a.position, a.heading, atk.scale)
   const toward = sub(a.position, d.position)
-  let T = fightTarget(def.dims, def.scale, d.joints, d.position, d.heading, toward, zone, effector, def.torso)
+  // Mocap bots (fork): skin to skin, how far the striking skin is from just touching the target's.
+  if (atk.dims.mocap && def.dims.mocap && !weaponOf(atk, effector)) {
+    const at = (guard: 'handL' | 'handR'): number | null =>
+      blowDepth(atk, a.joints ?? {}, a.clip, effector, a.position, a.heading, def, d.joints ?? {}, d.clip, d.position, d.heading, skinOf(def, d.joints ?? {}, d.clip, zone, outcome, guard, unit(toward), d.heading), outcome === 'block' || outcome === 'parry')
+    let depth = at(guardSide(def, guardHand(strike.x)))
+    // Fork (fight-polish): bare hands block on whichever forearm the blow meets (the shell holds both up).
+    if (depth !== null && (outcome === 'block' || outcome === 'parry') && def.held.length === 0) depth = Math.max(at('handL')!, at('handR')!)
+    if (depth !== null) return Math.abs(depth)
+  }
+  let T = fightTarget(def.dims, def.scale, d.joints, d.position, d.heading, toward, zone, effector, def.torso, d.clip)
   if (outcome === 'block' || outcome === 'parry') {
     const side = guardSide(def, guardHand(strike.x))
-    const hand = toWorld(contactLocal(def, d.joints, side, 'guard', true), d.position, d.heading, def.scale)
+    const hand = toWorld(contactLocal(def, d.joints, side, 'guard', true, d.clip), d.position, d.heading, def.scale)
     const t = unit(toward)
-    T = { x: hand.x + t.x * 0.05 * def.scale, y: hand.y, z: hand.z + t.z * 0.05 * def.scale }
+    if (def.dims.mocap && !weaponOf(def, side)) {
+      const g = guardReach(def, d.joints, d.clip, side, t, d.heading)
+      T = { x: hand.x + t.x * g, y: hand.y, z: hand.z + t.z * g }
+    }
+    else T = { x: hand.x + t.x * 0.05 * def.scale, y: hand.y, z: hand.z + t.z * 0.05 * def.scale }
   }
   return dist3(E, T)
 }

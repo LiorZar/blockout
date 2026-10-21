@@ -39,7 +39,8 @@ describe('floor proxy (lowest surface point of a posed body)', () => {
       }
       expect(Math.abs(worst), `${id} worst ${where}`).toBeLessThan(0.005)
     }
-  })
+    // Six bodies posed on every library keyframe: 15 s under a loaded gate (mocap-fights ruling).
+  }, 15_000)
 
   it('follows height and build params', () => {
     for (const id of ['person.man', 'person.mannequinFemale']) {

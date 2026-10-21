@@ -52,7 +52,8 @@ export function fileUnit(root: THREE.Object3D): number {
 
 /**
  * The character's bind pose and skinned vertices (each with its heaviest
- * bone), deduplicated to the millimetre, in entity space.
+ * bone and, phase 3, its four skin influences), deduplicated to the
+ * millimetre, in entity space; phase 3: the meshes' triangles over them.
  */
 export function extractMocap(root: THREE.Object3D, unit = fileUnit(root)): MocapSource {
   root.updateMatrixWorld(true)
@@ -78,6 +79,9 @@ export function extractMocap(root: THREE.Object3D, unit = fileUnit(root)): Mocap
   })
   const p: number[] = []
   const boneOf: number[] = []
+  const infBone: number[] = []
+  const infWeight: number[] = []
+  const tri: number[] = []
   const seen = new Set<string>()
   const v = new THREE.Vector3()
   root.traverse((o) => {
@@ -89,6 +93,9 @@ export function extractMocap(root: THREE.Object3D, unit = fileUnit(root)): Mocap
     const skinWeight = g.getAttribute('skinWeight')
     if (!position || !skinIndex || !skinWeight) return
     const toEntity = new THREE.Matrix4().multiplyMatrices(C, mesh.bindMatrix)
+    // Phase 3: each of this mesh's vertices as a kept vertex (−1: skipped), for its triangles.
+    const kept = new Int32Array(position.count).fill(-1)
+    const at = new Map<string, number>()
     for (let i = 0; i < position.count; i++) {
       let best = 0
       let weight = -1
@@ -103,11 +110,32 @@ export function extractMocap(root: THREE.Object3D, unit = fileUnit(root)): Mocap
       if (b === undefined) continue
       v.fromBufferAttribute(position, i).applyMatrix4(toEntity)
       const key = `${Math.round(v.x * 1000)},${Math.round(v.y * 1000)},${Math.round(v.z * 1000)},${b}`
-      if (seen.has(key)) continue
+      if (seen.has(key)) {
+        kept[i] = at.get(key) ?? -1
+        continue
+      }
       seen.add(key)
+      at.set(key, boneOf.length)
+      kept[i] = boneOf.length
       p.push(v.x, v.y, v.z)
       boneOf.push(b)
+      // Phase 3: the four skin influences, so the engine skins the vertex as three does.
+      for (let k = 0; k < 4; k++) {
+        const w = k < skinIndex.itemSize ? skinWeight.getComponent(i, k) : 0
+        const j = w > 0 ? index.get(mixamoName(mesh.skeleton.bones[skinIndex.getComponent(i, k)]?.name ?? '')) : undefined
+        infBone.push(j ?? -1)
+        infWeight.push(j === undefined ? 0 : w)
+      }
+    }
+    // The mesh's triangles over the kept vertices (the winding turned with the file's handedness: none, a rotation).
+    const faces = g.getIndex()
+    const count = faces ? faces.count : position.count
+    for (let k = 0; k + 2 < count; k += 3) {
+      const a = kept[faces ? faces.getX(k) : k]!
+      const b = kept[faces ? faces.getX(k + 1) : k + 1]!
+      const c = kept[faces ? faces.getX(k + 2) : k + 2]!
+      if (a >= 0 && b >= 0 && c >= 0 && a !== b && b !== c && a !== c) tri.push(a, b, c)
     }
   })
-  return { bones: out, verts: { p, bone: boneOf } }
+  return { bones: out, verts: { p, bone: boneOf, inf: { bone: infBone, weight: infWeight, tri } } }
 }

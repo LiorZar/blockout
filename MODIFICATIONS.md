@@ -798,6 +798,162 @@ Changes in this fork (2026):
   `choreographMotion`, `store.ts`): when `apply_motion` mirrors a weapon
   motion onto the other hand, a bot's clip run is laid mirrored, its root
   travel too. Tests: `tests/unit/mocap-library-clips.test.ts`.
+- A bot's contact points on its own bones (mocap-fights;
+  `src/engine/mocap/rig.ts`, `fk.ts`, `weapons.ts`,
+  `src/renderer/mocap/body.ts`, `viewport/hold.ts`): a clip bends the wrist
+  and ankle, which left the forearm-rigid palm and shin-rigid toe 1–12 cm off
+  the rendered ones on the real kicks. Bot poses get wrist and ankle frames:
+  the palm and the toe (the ToeBase joint) ride them, a held weapon sits in
+  the palm turned as the hand (the bot's `gripL` / `gripR` markers in the
+  renderer), and the hand and foot capsules ride them. On keyframe poses
+  those bones are rigid with the forearm and shin, so nothing moves there.
+  `mocap-clips-real.test.ts` now checks the floor moves' hands and feet by
+  their surfaces (a hand on its edge holds the palm 7 cm up, a flat foot
+  the ToeBase joint 3 cm). Tests: `tests/unit/mocap-fights.test.ts`,
+  `mocap-fights-render.test.ts`.
+- Fight moves on bots (mocap-fights; `src/engine/fight/clip-moves.ts`): a
+  fork table maps each Fight Director move to one library clip per impact
+  (a combo chains clips), by target and by the weapon in hand; a move with
+  no clip keeps its keyframes. Each impact is the striking effector's (or
+  the held weapon's strike point's) peak extension toward the front in the
+  clip's FK; reactions are picked by target and striking side, defenses by
+  height and what's in hand, each with the frame that meets the blow, and a
+  fall's landing frame. Tests: `tests/unit/mocap-fights.test.ts`.
+- The Fight Director on mocap bots (mocap-fights; `src/engine/fight/solve.ts`,
+  `ground.ts`, `contact.ts`, `src/engine/mocap/surface.ts`, `clip.ts`
+  `botPose`, `src/renderer/store.ts` `writeFightTracks`): a loaded bot fights
+  on clips. A strike is a clip run per impact (combos chained, crossfaded),
+  each impact frame on the beat's frame; the reach solve runs on the clip
+  pose and sits on the impact mark as an overlay ramped in over 0.2 s and
+  out over 0.25 s. Blocks and dodges play their clips with the guard frame
+  on the impact; landed blows the hit clips by target and the side they land
+  on; staggers, knockdowns and KOs the hit and fall clips on the physics'
+  knockback root, timing and prop stops; a knocked-down bot gets up with
+  the get-up clip; between beats a bot holds the fight idle on shot time. A
+  bot strikes skin to skin (`mocap/surface.ts`): the renderer now registers
+  each bot vertex's four skin influences, normal and triangles (`extract.ts`,
+  never stored), so the engine skins the striking part (a fighter's hand as the
+  fist the renderer shows) and the target's skin near the blow exactly as
+  three does, and the aim point moves along the strike until the striking
+  skin just touches the target's (the closest point on its triangles,
+  signed by the face; the support hull without them). A hand or forearm the blow would
+  meet on the way swings just clear and back; a striking knee tucks its
+  heel (extra knee bend) just enough that its shin and foot stay out of the
+  defender's legs. Bot fight marks carry `clip` and `posedMove` (the
+  evaluator keeps a clip's root travel and floor line) and the report each
+  impact's effector; a bot's contact error is its skin gap. The target skin
+  is measured on a cached mesh (each point's nearest vertices on a grid,
+  then their triangles; a coarse pass, then the skin around its closest
+  points), a bot's pitch solve refines its root by regula falsi, and
+  `poseLowY` (mocap/clip.ts) skips the bones that can't reach below the
+  lowest point found (the same minimum). Every other body solves exactly as
+  before (pinned by hash). Tests:
+  `tests/unit/mocap-fights-solve.test.ts`, `mocap-fights-render.test.ts`
+  (engine skin = three's to 0.1 mm), `mocap-fights-legacy.test.ts`.
+- Bot fights with weapons and moves without clips (mocap-fights): a blade
+  or blunt weapon plays the great sword / sword and shield / heavy swing
+  clips, a knife the stab, a gun its aim, and a move with no clip its
+  keyframes crossfaded from the idle; the weapon rides the hand bone.
+  Tests: `tests/unit/mocap-fights-weapons.test.ts`.
+- A bot fight's solve takes seconds (mocap-fights; `src/renderer/store.ts`,
+  `control/handler.ts`, `panels/FightDirector.tsx`): `solveInScene` keeps
+  the last solutions by everything a solve reads (fight, fighters, shot
+  timing, props, loaded bots and clips) and hands out copies, so
+  `get_fight` and the Fight Director's live report don't solve again; a
+  stage or re-solve with a bot toasts "Staging fight…" / "Re-solving
+  fight…" and waits a frame for it to paint first. The fight-ground
+  mannequin sweep and the floor-proxy keyframe test get 15 s timeouts (they
+  ran past 5 s under a loaded gate). Tests:
+  `tests/unit/mocap-fights-store.test.ts`, `tests/e2e/mocap-bots.spec.ts`.
+- Routines and sequences on bots play the Fight Director's strike and
+  defense clips (mocap-fights; `src/engine/mocap/library-clips.ts`
+  `clipPlays`): a strike one clip run per impact, each impact frame on the
+  keyframe move's impact time, a block, parry, dodge or duck its guard
+  frame on the keyframe defense's ready time, so a routine's exchanges keep
+  their timing; a knockdown or KO the fall clip for the way the keyframe
+  fall goes (knocked down, KO back, KO onto the front), its floor-contact
+  frame on the keyframe fall's landing; a get-up the one for that fall,
+  standing at the keyframe get-up's end; the guard bounce the fight idle on
+  shot time; any other fight move with a clip, its clip. Only moves with no
+  clip keep their keyframes. A routine's push-back mark at a reaction's end
+  moves the clip run's end there, and a fallen bot held by a plain mark
+  stays on the fall's last frame. A two-performer fight sequence casts the
+  chosen bodies (it ignored them).
+  A Choreographer fight that stages a loaded bot through the Fight Director
+  (the placement click, Apply to selected, MCP `spawn_choreography` /
+  `choreograph_entities`) toasts and waits a frame first (`store.ts`
+  `slowRoutine`; `spawnChoreography`'s `now` for a caller that already
+  did); procedural routines stay synchronous. Tests:
+  `tests/unit/mocap-fights-routines.test.ts`, `mocap-fights-store.test.ts`.
+- Bot fighters stay out of each other (mocap-fights; `src/engine/fight/solve.ts`,
+  `src/engine/mocap/surface.ts`): on the real library the bodies sank up to
+  7–8 cm into each other around the blows. A blow's guard check runs on
+  every frame of its last 0.25 s (clip and keyframe strikes) against the
+  defender's whole arm, the arm opens from 0.25 s before (also on a
+  defense still playing from the blow before), and a leg the striking limb
+  comes through swings out (hip abduction ≤ 10°, not on a blow to the
+  legs); the attacker's other leg splays out of the defender's legs (≤ 10°,
+  on each strike key; at the impact the strike is placed with it). After
+  every blow the defender is pushed back by the least that clears the
+  frames that overlap (≤ 15 cm, the attacker's own travel held back too
+  when the defender alone can't get clear); between two blows the push eases
+  out 0.1 s before the next, which lands where it was placed. A blow whose
+  approach still sinks one body into the other comes in swung about the
+  target (15° / 30° either way, finer when needed), kept only if it lands
+  as well as straight on; the report names each beat that needed it. A
+  blocked or parried blow stops where its arm first meets the guard (not
+  only its fist), and the angle search counts the blocking arm's reach; a
+  bare guard a blocked blow still sinks past (a spinning backfist sweeping
+  across it into the head beside the guard) first reaches across toward it
+  (shoulder adduction 0.45 rad), kept only if that helps, and the report
+  says so. The finer angles are tried only beside the best coarse one, and
+  only while the coarse ones leave it over the bar (a coarse try that
+  couldn't land skipped that check). The
+  depth of two bodies in each other is measured as rendered (fists), bone
+  box by bone box. Floor contact: a bot done well before the other (the
+  attacker while the defender gets up) holds its idle where it stands and
+  the other comes to guard distance of it (it used to drift and sink up to
+  10 cm over the wait); a keyframe move crossfades from the idle into its
+  first pose before its step-in; an idle reached by a walk is posed half a
+  frame on so the move after it crossfades on the floor line. Speed: the
+  pitch and lean solves start from the last pass's answer (a block's aim
+  and guard arm, a lean's upright pitch too), a bot's contact points are
+  cached by pose, the push-back search drops a push at its first frame
+  still too deep (the deepest first) and the guard check at its first
+  failing frame, the skin's sign test visits only each shell of its grid
+  and a bone set's triangles are cached. A bot fight's "Staging fight…" notice waits two frames before the
+  solve (the first can come before the toast is drawn), and its 50 ms
+  fallback is only for a window that draws no frames: under a full CPU a
+  frame took longer and the solve ran before the toast painted. Tests: `tests/unit/mocap-fights-real.test.ts` (the real library:
+  contact, bodies at the impacts, feet, determinism; skipped without it),
+  `mocap-fights-store.test.ts` (a library loaded after a solve solves
+  again), `tests/e2e/mocap-bots.spec.ts` (a bot fight exports byte-identically twice).
+- Flush-proof export renders (fix-topdown; `src/renderer/viewport/stable-render.ts`,
+  `SceneManager.renderFrameAt` / `renderTopDown`): with antialiasing, a draw
+  that blends over an earlier draw's antialiased edge came out one level
+  different when GL was flushed between the two draws (ANGLE / D3D11), and
+  Chrome flushes mid-frame at points that depend on timing. Two `export_shot`
+  top-downs of one scene could differ in the pixel where the shadow catcher
+  lies over a grid line. Every export render now flushes after each draw
+  (`renderStable` wraps `renderBufferDirect` for that render), so the
+  browser's own flushes change nothing. Pixels move by at most one level,
+  only where a later draw blends over an antialiased edge. Evidence:
+  `docs/plans/2026-10-21-fix-topdown.md`. Tests:
+  `tests/e2e/export-flush.spec.ts`.
+- Bot blocks read as blocks (fight-polish; `src/engine/fight/clip-moves.ts`
+  `defenseClip`, `src/engine/fight/solve.ts`; plan
+  `docs/plans/2026-10-21-fight-polish.md`): the library's head block meets
+  the blow ducked half a metre aside with both hands above and behind the
+  head, so a blocked fist landed beside the face. Bare hands now take a head
+  blow on the shell, `blockBody`'s guard frame (both forearms up in front of
+  the face), its outer hand on the side the blow comes in (mirrored), and
+  the blow meets the forearms where the clip holds them (no reach that pulled
+  the guard hand back to the face); a blocked blow's contact is read on
+  whichever forearm it meets. A blade, club or shaft in hand keeps
+  `blockHead`. Tests: `tests/unit/mocap-fights-real.test.ts` (a bare-hand
+  block's striking limb ≥ 5 cm off the head and torso; it failed at 1.3–3.6
+  cm before), the shell picks in `mocap-fights.test.ts`,
+  `mocap-fights-solve.test.ts`, `mocap-fights-routines.test.ts`.
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

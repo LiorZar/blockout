@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -40,6 +40,7 @@ import { heldWeaponMatrix, steadyArm } from './hold'
 import { canHoldWeapons, weaponSpec } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
 import { StageEnvironment, toneMapSky } from './environment'
+import { renderStable } from './stable-render'
 import { seatSpots, seatUnder } from '@engine/mocap/library-clips'
 import { isMocapAsset } from '@engine/mocap/registry'
 import { loadMocapLibrary, onMocapLoaded } from '../mocap/library'
@@ -2600,8 +2601,9 @@ export class SceneManager {
     // Render twice: the first render after another GL context has touched
     // shared three.js state can differ by one warm-up frame; the second is
     // always converged. Byte-determinism is worth one extra rasterization.
-    exportRenderer.render(this.scene, cam)
-    exportRenderer.render(this.scene, cam)
+    // Fork (fix-topdown): a flush after every draw, so the browser's own mid-frame flushes can't move a pixel.
+    renderStable(exportRenderer, this.scene, cam)
+    renderStable(exportRenderer, this.scene, cam)
 
     this.scene.overrideMaterial = null
     this.scene.background = bgWas
@@ -2663,7 +2665,7 @@ export class SceneManager {
     const gizmoWas = gizmo.visible
     gizmo.visible = false
     exportRenderer.setSize(width, height, false)
-    exportRenderer.render(this.scene, cam)
+    renderStable(exportRenderer, this.scene, cam) // fork (fix-topdown)
     restoreSelection()
     gizmo.visible = gizmoWas
     this.tintedMaterials.forEach((t, i) => {
