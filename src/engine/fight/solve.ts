@@ -39,13 +39,15 @@ import { mirrorJoints, type ChoreoMarkSpec } from '../choreography'
 import { smoothstep } from '../easing'
 import { ShotEvaluator } from '../evaluate'
 import { botPose, clipRoot, clipScale, mocapClip } from '../mocap/clip'
-import { effectorsOf, poseFramesOf } from '../mocap/fk'
+import { effectorsOf, poseFramesOf, type MocapPose } from '../mocap/fk'
 import { playsClips } from '../mocap/library-clips'
+import { BONE_INDEX, MOCAP_BONES, type MocapBone } from '../mocap/rig'
 import { boneSkin, fighterPose, meshDepth, partAhead, skinDepth, skinMesh, skinPoints, supportPoints, targetSkin, type SkinMesh } from '../mocap/surface'
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, toWorld, type Effector, type PersonDims } from '../skeleton'
 import type { ClipState, EntityState, FightBeat, FightDoc, FightOutcome, GaitId, MarkClip, Scene, Shot, V3 } from '../types'
-import { SUPPORT_SLACK, heldPointLocal, holdJoints, supportReach, weaponContact, weaponSpec, type HeldWeapon } from '../weapons'
+import { SUPPORT_SLACK, handFrame, heldPointLocal, holdJoints, supportReach, weaponContact, weaponRotation, weaponSpec, type HeldWeapon } from '../weapons'
+import { heldWeaponSamples, weaponSamples, type WeaponSamples } from '../weapon-shape'
 import { DEFENSES, REACTIONS, SHIELD_BLOCK, SHOT_MOVES, fightMotion, gripPitch, gunAimMove, shotHand, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
 import { impact, snapAmplitude, snapCurve, weaponHeft, type ImpactResult } from './physics'
 import { BODY_RADIUS, clearRun, pathCrossings, type FightObstacle, type PathSample } from './obstacles'
@@ -192,6 +194,15 @@ const SEP_MARGIN = 0.005
 const SEP_RES = 0.005
 const SEP_MAX = 0.15
 const SEP_GAIN = 0.01
+/** Bots resting apart with a weapon held out (restGap) keep it this clear of the other (m). */
+const REST_CLEAR = 0.05
+/** At most this many more tries at a rest whose walk sweeps a weapon through the other (restDepth). */
+const REST_TRIES = 3
+/** The rest walk is looked at from this long before it ends (the idle crossfades in at its end; s). */
+const REST_LOOK = 0.5
+/** A held weapon in the other body after a blow swings out of it (swingWeapons) in steps of SWING_STEP, at most SWING_MAX (rad). */
+const SWING_STEP = 0.1
+const SWING_MAX = 1.2
 /** Two bones' boxes (their support points) meet within BONE_PAD of each other (m): their skins are compared there. */
 const BONE_PAD = 0.015
 /** An elbow to the head lands on the jaw: the head's surface this far below its middle (rad, fork). */
@@ -237,6 +248,41 @@ const GUARD_FULL = 0.08
 /** A defender's hand or forearm within GUARD_CLEAR of a landed blow's skin is in its way; it swings back over GUARD_REOPEN. */
 const GUARD_CLEAR = 0.01
 const GUARD_REOPEN = 0.4
+/**
+ * An armed bot's guard (fork, fight-polish; armedGuard): its weapon's guard
+ * point GUARD_OUT in front of the struck zone (plus the attacking weapon's
+ * reach past its strike point), each arm channel within ±GUARD_SWING (rad);
+ * a unit of the blade's lean along the line of attack (a shield's turn
+ * away from it) weighs as GUARD_TURN (m) of its point's miss.
+ */
+const GUARD_OUT = 0.3
+/** An armed guard's free arm keeps this clear of the attacking weapon at the impact (freeArmSwing; m). */
+const GUARD_FREE = 0.05
+const GUARD_SWING = 2.6
+const GUARD_TURN = 0.1
+/**
+ * The armed guard keeps its weapon GUARD_SELF off its own body (but the arm
+ * holding it), at the guard and on its way in (GUARD_RAMP); a cm in weighs GUARD_SELF_W cm
+ * of miss. A weapon its idle already holds in may stay as deep.
+ */
+const GUARD_SELF = 0.015
+const GUARD_SELF_W = 3
+/** The armed guard's own-body check samples a weapon's capsules at about this many points. */
+const GUARD_POINTS = 64
+/** The armed guard's fit kept out of its own body runs at most this many steps. */
+const GUARD_SELF_ITERS = 8
+/** The ramp in, where the armed guard's weapon is kept out of its own body (fractions of the overlay). */
+const GUARD_RAMP = [0.25, 0.5, 0.75]
+/** The armed guard's fit stops once a step gains less than this (m², the squared miss). */
+const GUARD_GAIN = 1e-8
+/**
+ * A blow's placement asks for its armed guard again and again as the
+ * attacker settles (the defender's aim pose fixed): a guard point within
+ * GUARD_REUSE (m) of one already solved, the line of attack within
+ * GUARD_REUSE_DOT of its, reuses that guard.
+ */
+const GUARD_REUSE = 0.005
+const GUARD_REUSE_DOT = 0.9995
 
 type XZ = { x: number; z: number }
 type Joints = Record<string, number>
@@ -681,64 +727,181 @@ interface GuardSample {
  * comes within GUARD_CLEAR of, is in its way; it swings (shoulder X, down or up,
  * whichever is less) by the least that leaves it GUARD_CLEAR clear, at most
  * 1.2 rad; a leg in its way (`legs`) swings out (hip abduction, at most LEG_SPLAY).
+ * A weapon in a swinging hand keeps out of its holder, over the approach and
+ * `after` the impact (the defender then, and the share of the swing it keeps).
  * Null when nothing is in the way.
  */
-function guardOpening(atk: Fighter, e: Effector, samples: GuardSample[], def: Fighter, hd: number, legs = true): Joints | null {
+function guardOpening(atk: Fighter, e: Effector, samples: GuardSample[], def: Fighter, hd: number, legs = true, after: { st: GuardSample['st']; w: number }[] = []): Joints | null {
   if (!def.dims.mocap) return null
   // Per sample, the striking limb as a mesh, once (it stays put while the guard swings); each swing's guard skin against it.
   const at = samples.map((s) => {
     const own = atk.dims.mocap && LIMB[e] && !weaponOf(atk, e) ? targetSkin(atk.dims.mocap, s.aj, s.ac, LIMB[e]!) : null
-    return { ...s, pos: { x: s.st.pos.x, y: s.st.y, z: s.st.pos.z }, limb: own ? skinMesh(own.p.map((q) => toWorld(q, s.root, s.heading, atk.scale)), own.tri) : null }
+    const held = weaponOf(atk, e)
+    return {
+      ...s,
+      pos: { x: s.st.pos.x, y: s.st.y, z: s.st.pos.z },
+      limb: own ? skinMesh(own.p.map((q) => toWorld(q, s.root, s.heading, atk.scale)), own.tri) : null,
+      // Fork (fight-polish): a weapon strike's weapon, as capsules.
+      weapon: held && def.dims.mocap!.rig.skin ? weaponsWorld(atk, { joints: s.aj, clip: s.ac, position: s.root, heading: s.heading }, false, held) : null
+    }
   })
+  // Each sample's weapon's box, padded by its radius and the bones' pad.
+  const boxes = at.map((s) => {
+    if (!s.weapon) return null
+    const pts = s.weapon.flatMap((w) => w.p)
+    const pad = Math.max(...s.weapon.map((w) => w.r)) + BONE_PAD + GUARD_CLEAR
+    return {
+      lo: { x: Math.min(...pts.map((q) => q.x)) - pad, y: Math.min(...pts.map((q) => q.y)) - pad, z: Math.min(...pts.map((q) => q.z)) - pad },
+      hi: { x: Math.max(...pts.map((q) => q.x)) + pad, y: Math.max(...pts.map((q) => q.y)) + pad, z: Math.max(...pts.map((q) => q.z)) + pad }
+    }
+  })
+  /** How deep a sample's striking weapon sits in one of the defender's parts (`arm${side}`, `leg${side}`) posed in `j` (-Infinity when its bones' boxes stay clear of the weapon's). */
+  const weaponIn = (s: (typeof at)[number], j: Joints, part: string): number => {
+    const m = def.dims.mocap!
+    const pose = botPose(m, j, s.st.clip)
+    const side = part.endsWith('L') ? 'Left' : 'Right'
+    const bones = new Set((part.startsWith('arm') ? ['Arm', 'ForeArm', 'Hand'] : ['UpLeg', 'Leg']).map((x) => BONE_INDEX[`${side}${x}` as keyof typeof BONE_INDEX]))
+    // Each of the part's bones' boxes (its support points) against the weapon's.
+    const box = boxes[at.indexOf(s)]!
+    const own = new Map<number, { lo: V3; hi: V3 }>()
+    for (const x of supportPoints(m, pose)) {
+      if (!bones.has(x.bone)) continue
+      const q = toWorld(x.p, s.pos, hd, def.scale)
+      const c = own.get(x.bone)
+      if (!c) own.set(x.bone, { lo: { ...q }, hi: { ...q } })
+      else {
+        c.lo = { x: Math.min(c.lo.x, q.x), y: Math.min(c.lo.y, q.y), z: Math.min(c.lo.z, q.z) }
+        c.hi = { x: Math.max(c.hi.x, q.x), y: Math.max(c.hi.y, q.y), z: Math.max(c.hi.z, q.z) }
+      }
+    }
+    const parts = [...own.values()]
+    if (!parts.some((c) => c.lo.x <= box.hi.x && c.hi.x >= box.lo.x && c.lo.y <= box.hi.y && c.hi.y >= box.lo.y && c.lo.z <= box.hi.z && c.hi.z >= box.lo.z)) return -Infinity
+    // (Nor when none of its axis points comes that close to one of them.)
+    const near = (q: V3, pad: number): boolean => parts.some((c) => q.x >= c.lo.x - pad && q.x <= c.hi.x + pad && q.y >= c.lo.y - pad && q.y <= c.hi.y + pad && q.z >= c.lo.z - pad && q.z <= c.hi.z + pad)
+    if (!s.weapon!.some((w) => w.p.some((q) => near(q, w.r + BONE_PAD + GUARD_CLEAR)))) return -Infinity
+    const skin = boneSkin(m, pose, bones)
+    if (!skin || skin.tri.length === 0) return -Infinity
+    const mesh = skinMesh(skin.p.map((q) => toWorld(q, s.pos, hd, def.scale)), skin.tri)
+    return Math.max(...s.weapon!.map((w) => meshDepth(w.p, mesh) + w.r))
+  }
+  /** Fork (fight-polish): how deep the weapon in the defender's `side` hand, posed in `j`, sits in a sample's striking limb. */
+  const heldIn = (s: (typeof at)[number], j: Joints, side: 'L' | 'R'): number => {
+    const h = def.held.find((x) => x.hand === side)
+    if (!h || !s.limb || !def.dims.mocap!.rig.skin) return -Infinity
+    const hj = s.st.clip ? j : holdJoints(def.dims, j, def.held)
+    return Math.max(...heldWeaponSamples(def.dims, hj, side, h.spec, h.scale, s.st.clip, { position: s.pos, heading: hd, scale: def.scale }).map((w) => meshDepth(w.p, s.limb!) + w.r))
+  }
+  // Fork (fight-polish): a weapon in a hand the guard swings stays out of its own holder: over the approach and while the opening
+  // eases off after the impact (`after`, each with its share of the swing), no deeper than unswung. Per state and side, the body but
+  // that arm (a swing moves only the arm) and the weapon's depth in it unswung.
+  type DefState = GuardSample['st']
+  // (A weapon none of whose axis points comes within its radius, GUARD_SELF and BONE_PAD of that body's bone boxes is clear of it: its skin is posed only when one does.)
+  const selves = new Map<string, { boxes: { lo: V3; hi: V3 }[]; mesh?: SkinMesh | null; rest?: number }>()
+  const ownIn = (key: string, st: DefState, swing: Joints, side: 'L' | 'R'): { depth: number; rest: number } => {
+    const h = def.held.find((x) => x.hand === side)
+    if (!h || !def.dims.mocap!.rig.skin) return { depth: -Infinity, rest: -Infinity }
+    const m = def.dims.mocap!
+    const pos = { x: st.pos.x, y: st.y, z: st.pos.z }
+    const skip = holdingBones(h)
+    let self = selves.get(key + side)
+    if (!self) {
+      const B = boneBoxes(def, { joints: st.joints, clip: st.clip, position: pos, heading: hd })
+      self = { boxes: [...B.box].filter(([i]) => !skip.has(i)).map(([, x]) => x) }
+      selves.set(key + side, self)
+    }
+    const at = self
+    const depth = (j: Joints): number => {
+      const hj = st.clip ? j : holdJoints(def.dims, j, def.held)
+      const pcs = heldWeaponSamples(def.dims, hj, side, h.spec, h.scale, st.clip, { position: pos, heading: hd, scale: def.scale })
+      const near = (q: V3, pad: number): boolean => at.boxes.some((x) => q.x >= x.lo.x - pad && q.x <= x.hi.x + pad && q.y >= x.lo.y - pad && q.y <= x.hi.y + pad && q.z >= x.lo.z - pad && q.z <= x.hi.z + pad)
+      if (!pcs.some((w) => w.p.some((q) => near(q, w.r + GUARD_SELF + BONE_PAD)))) return -Infinity
+      if (at.mesh === undefined) {
+        const own = boneSkin(m, fighterPose(m, st.joints, st.clip), new Set(MOCAP_BONES.map((b) => BONE_INDEX[b]).filter((b) => !skip.has(b))))
+        at.mesh = own && own.tri.length > 0 ? skinMesh(own.p.map((q) => toWorld(q, pos, hd, def.scale)), own.tri) : null
+      }
+      const mesh = at.mesh
+      return mesh ? Math.max(...pcs.map((w) => meshDepth(w.p, mesh) + w.r)) : -Infinity
+    }
+    at.rest ??= depth(st.joints)
+    return { depth: depth(withOffsets(st.joints, swing)), rest: at.rest }
+  }
+  const keepsOut = (key: string, st: DefState, swing: Joints, side: 'L' | 'R'): boolean => {
+    const { depth, rest } = ownIn(key, st, swing, side)
+    return depth <= Math.max(-GUARD_SELF, rest)
+  }
+  // (Those frames the last to fail first.)
+  const afterOrder = after.map((_, k) => k)
+  const afterOk = (swing: Joints, side: 'L' | 'R'): boolean => {
+    for (let n = 0; n < afterOrder.length; n++) {
+      const k = afterOrder[n]!
+      const a = after[k]!
+      if (keepsOut(`a${k}`, a.st, Object.fromEntries(Object.entries(swing).map(([q, v]) => [q, v * a.w])), side)) continue
+      afterOrder.unshift(...afterOrder.splice(n, 1))
+      return false
+    }
+    return true
+  }
   const clearAt = (s: (typeof at)[number], swing: Joints, side: 'L' | 'R'): boolean => {
     const j = withOffsets(s.st.joints, swing)
-    if (s.limb) return meshDepth(skinPoints(def.dims.mocap!, j, s.st.clip, `arm${side}`).map((q) => toWorld(q, s.pos, hd, def.scale)), s.limb) < -GUARD_CLEAR
+    if (s.weapon) return weaponIn(s, j, `arm${side}`) < -GUARD_CLEAR
+    // (A weapon in that hand swings out with the arm, and no deeper into its own holder than it was.)
+    if (s.limb)
+      return (
+        heldIn(s, j, side) < -GUARD_CLEAR &&
+        meshDepth(skinPoints(def.dims.mocap!, j, s.st.clip, `arm${side}`).map((q) => toWorld(q, s.pos, hd, def.scale)), s.limb) < -GUARD_CLEAR &&
+        (Object.keys(swing).length === 0 || !def.held.some((x) => x.hand === side) || keepsOut(`s${at.indexOf(s)}`, s.st, swing, side))
+      )
     const d = blowDepth(atk, s.aj, s.ac, e, s.root, s.heading, def, j, s.st.clip, s.pos, hd, `guard${side}`)
     return d === null || d < -GUARD_CLEAR
   }
   // Every sample (or only one), the last to fail checked first.
   const order = [...at]
   const clear = (swing: Joints, side: 'L' | 'R', only?: number): boolean => {
-    if (only !== undefined) return clearAt(at[only]!, swing, side)
+    const after = (): boolean => Object.keys(swing).length === 0 || !at.some((s) => s.limb) || !def.held.some((x) => x.hand === side) || afterOk(swing, side)
+    if (only !== undefined) return clearAt(at[only]!, swing, side) && after()
     for (let k = 0; k < order.length; k++) {
       if (clearAt(order[k]!, swing, side)) continue
       order.unshift(...order.splice(k, 1))
       return false
     }
-    return true
+    return after()
   }
   const out: Joints = {}
   for (const side of ['L', 'R'] as const) {
     if (clear({}, side)) continue
-    const key = `shoulder${side}X`
-    // The way it swings: the least swing that clears the impact (down on a tie); then as far that way as clears the approach too.
-    let way = 1
-    let from = 1
-    for (let k = 1; k <= 12; k++) {
-      const d = [k * 0.1, -k * 0.1].find((a) => clear({ [key]: a }, side, 0))
-      if (d !== undefined) {
-        way = Math.sign(d)
-        from = k
-        break
+    // The way it swings: the least swing that clears the impact (down on a tie); then as far that way as clears the approach too (1.2 that way when none does).
+    const search = (key: string): { swing: number; found: boolean } => {
+      let way = 1
+      let from = 1
+      for (let k = 1; k <= 12; k++) {
+        const d = [k * 0.1, -k * 0.1].find((a) => clear({ [key]: a }, side, 0))
+        if (d !== undefined) {
+          way = Math.sign(d)
+          from = k
+          break
+        }
       }
+      for (let k = from; k <= 12; k++) if (clear({ [key]: way * k * 0.1 }, side)) return { swing: way * k * 0.1, found: true }
+      return { swing: 1.2 * way, found: false }
     }
-    let swing = 1.2 * way
-    for (let k = from; k <= 12; k++) {
-      if (clear({ [key]: way * k * 0.1 }, side)) {
-        swing = way * k * 0.1
-        break
-      }
+    const pitch = search(`shoulder${side}X`)
+    // Fork (fight-polish): an arm holding a weapon that no pitch clears (its weapon kept out of its holder) swings out sideways if that clears, else stays.
+    if (!pitch.found && at.some((s) => s.limb) && def.held.some((x) => x.hand === side)) {
+      const out2 = search(`shoulder${side}Z`)
+      if (out2.found) out[`shoulder${side}Z`] = out2.swing
+      continue
     }
-    out[key] = swing
+    out[`shoulder${side}X`] = pitch.swing
   }
   // A leg the striking limb comes through (a kick's shin past the lead thigh) swings out of its way: the least hip abduction that clears it, at most LEG_SPLAY.
   for (const side of ['L', 'R'] as const) {
-    if (!legs || !at.some((s) => s.limb)) break
+    if (!legs || !at.some((s) => s.limb || s.weapon)) break
     const key = `hip${side}Z`
     const legClear = (a: number): boolean => {
       for (let k = 0; k < order.length; k++) {
         const s = order[k]!
-        if (!s.limb || meshDepth(skinPoints(def.dims.mocap!, withOffsets(s.st.joints, { ...out, [key]: a }), s.st.clip, `leg${side}`).map((q) => toWorld(q, s.pos, hd, def.scale)), s.limb) < -GUARD_CLEAR) continue
+        const j = withOffsets(s.st.joints, { ...out, [key]: a })
+        if (s.weapon ? weaponIn(s, j, `leg${side}`) < -GUARD_CLEAR : !s.limb || meshDepth(skinPoints(def.dims.mocap!, j, s.st.clip, `leg${side}`).map((q) => toWorld(q, s.pos, hd, def.scale)), s.limb) < -GUARD_CLEAR) continue
         order.unshift(...order.splice(k, 1))
         return false
       }
@@ -779,6 +942,69 @@ function guardSide(f: Fighter, side: 'handL' | 'handR'): 'handL' | 'handR' {
   }
   const other = side === 'handL' ? 'handR' : 'handL'
   return !guards(side) && guards(other) ? other : side
+}
+
+/** A bot's body by part (the sweeps' groups): an armed guard keeps its weapon out of each part its idle holds it clear of (armedGuard). */
+const BODY_PARTS: MocapBone[][] = [
+  ['Head', 'Neck'],
+  ['Hips', 'Spine', 'Spine1', 'Spine2', 'LeftShoulder', 'RightShoulder'],
+  ['LeftArm', 'LeftForeArm', 'LeftHand'],
+  ['RightArm', 'RightForeArm', 'RightHand'],
+  ['LeftUpLeg', 'LeftLeg', 'LeftFoot', 'LeftToeBase'],
+  ['RightUpLeg', 'RightLeg', 'RightFoot', 'RightToeBase']
+]
+
+/**
+ * Mocap bots (fork, fight-polish): an armed guard's free arm (not on a
+ * two-handed grip, holding nothing) in the attacking weapon's way at the
+ * impact (`a`, the attacker as placed; the defender `st` with the guard's
+ * `fix`) swings out of it, GUARD_FREE clear (and GUARD_CLEAR of its own
+ * guard weapon): its pitch, else its abduction, by the least (0.1 rad steps,
+ * at most 1.2) that clears. Null when it is clear already or nothing clears.
+ */
+function freeArmSwing(atk: Fighter, aw: HeldWeapon, a: Placed, def: Fighter, guard: 'handL' | 'handR', st: { pos: XZ; y: number; joints: Joints; clip?: ClipState }, fix: Joints, hd: number): Joints | null {
+  const side = guard === 'handL' ? 'R' : 'L'
+  if (weaponOf(def, guard)?.spec.twoHanded || def.held.some((h) => h.hand === side)) return null
+  const pcs = weaponsWorld(atk, a, false, aw)
+  const pos = { x: st.pos.x, y: st.y, z: st.pos.z }
+  const base = withOffsets(st.joints, fix)
+  // Its own guard weapon, as the guard holds it.
+  const own = weaponsWorld(def, { joints: base, clip: st.clip, position: pos, heading: hd }, false, weaponOf(def, guard)!)
+  // The nearest skin of that arm to a weapon (its axis less its radius), uncapped (an axis point no nearer the arm's box than that is skipped).
+  const gapTo = (arm: V3[], ws: WeaponSamples[]): number => {
+    const lo = { x: Infinity, y: Infinity, z: Infinity }
+    const hi = { x: -Infinity, y: -Infinity, z: -Infinity }
+    for (const v of arm) {
+      lo.x = Math.min(lo.x, v.x)
+      lo.y = Math.min(lo.y, v.y)
+      lo.z = Math.min(lo.z, v.z)
+      hi.x = Math.max(hi.x, v.x)
+      hi.y = Math.max(hi.y, v.y)
+      hi.z = Math.max(hi.z, v.z)
+    }
+    let g = Infinity
+    for (const w of ws)
+      for (const u of w.p) {
+        if (Math.hypot(Math.max(0, lo.x - u.x, u.x - hi.x), Math.max(0, lo.y - u.y, u.y - hi.y), Math.max(0, lo.z - u.z, u.z - hi.z)) - w.r >= g) continue
+        for (const v of arm) g = Math.min(g, Math.hypot(u.x - v.x, u.y - v.y, u.z - v.z) - w.r)
+      }
+    return g
+  }
+  const armAt = (swing: Joints): V3[] => skinPoints(def.dims.mocap!, withOffsets(base, swing), st.clip, `arm${side}`).map((q) => toWorld(q, pos, hd, def.scale))
+  if (gapTo(armAt({}), pcs) >= GUARD_FREE) return null
+  // (And clear of its own guard weapon.)
+  const clears = (swing: Joints): boolean => {
+    const arm = armAt(swing)
+    return gapTo(arm, pcs) >= GUARD_FREE && gapTo(arm, own) >= GUARD_CLEAR
+  }
+  for (const key of [`shoulder${side}X`, `shoulder${side}Z`]) for (let k = 1; k <= 12; k++) for (const v of [k * 0.1, -k * 0.1]) if (clears({ [key]: v })) return { [key]: v }
+  return null
+}
+
+/** Fork (fight-polish): the hand a fighter guards with a weapon in (a shield first, else a blade, club or shaft), or null. */
+function armedSide(f: Fighter): 'handL' | 'handR' | null {
+  const w = f.held.find((h) => h.spec.kind === 'shield') ?? f.held.find((h) => h.spec.kind === 'blade' || h.spec.kind === 'blunt' || h.spec.kind === 'polearm')
+  return w ? (w.hand === 'L' ? 'handL' : 'handR') : null
 }
 
 /** Shields (fork): the hand a fighter's shield is in — it blocks and parries with it — or null. */
@@ -1191,7 +1417,15 @@ function clipStrike(f: Fighter, beat: FightBeat, move: string, gun: HeldWeapon |
     const melee = f.held.find((h) => h.spec.kind === 'blade' || h.spec.kind === 'blunt' || h.spec.kind === 'polearm')
     blows = moveClips(move, beat.target, melee, !!melee && f.held.some((h) => h.hand !== melee.hand))
     // A weapon's own move on the weapon hand; a fist move onto the weapon hand when only the other is armed.
-    mirror = !!blows && (WEAPON_MOVES.has(move) ? melee?.hand === 'L' : blows.every((b) => !weaponOf(f, b.effector) && !!weaponOf(f, MIRROR_EFFECTOR[b.effector])))
+    // Fork (fight-polish): a fist move off the shield arm when the other hand can take all of it (a hook with the shield swept its face through the head).
+    const shieldAt = (e: Effector): boolean => weaponOf(f, e)?.spec.kind === 'shield'
+    mirror =
+      !!blows &&
+      (WEAPON_MOVES.has(move)
+        ? melee?.hand === 'L'
+        : blows.some((b) => shieldAt(b.effector))
+          ? blows.every((b) => !shieldAt(MIRROR_EFFECTOR[b.effector]))
+          : blows.every((b) => !weaponOf(f, b.effector) && !!weaponOf(f, MIRROR_EFFECTOR[b.effector])))
   }
   if (!blows) return null
   type Seg = { clip: string; a: number; b: number; hits: { tau: number; effector: Effector; i: number }[] }
@@ -1415,8 +1649,10 @@ export function solveFight(
           // Slip away from the striking side.
           const mirror = shield ? shield === 'R' : o === 'slip' && impacts[i]!.effector.endsWith('R')
           // Mocap bots (fork): the block or dodge clip, its guard frame on the impact.
-          const pick = def.idle ? defenseClip(o, zoneHigh, sides[i]!, shield ? { shieldHand: shield } : def.held.length > 0 ? { weapon: true } : undefined) : null
-          const ev = pick ? clipEvent(def, pick, T, defenseReadyTime(pick.id), DEF_LEAD, DEF_TAIL, base, hd) : constantEvent(start, start + m.duration, m, base, mirror)
+          // Fork (fight-polish): a bot with a blade, club, shaft or shield blocks and parries on its idle, its guard arm raised (armedGuard, below).
+          const armed = !!def.idle && def.dims.mocap?.rig.skin !== undefined && (o === 'block' || o === 'parry') && armedSide(def) !== null
+          const pick = armed ? { id: def.idle!, mirror: false } : def.idle ? defenseClip(o, zoneHigh, sides[i]!, shield ? { shieldHand: shield } : def.held.length > 0 ? { weapon: true } : undefined) : null
+          const ev = armed ? idleEvent(def, T - DEF_LEAD, T + DEF_TAIL, base) : pick ? clipEvent(def, pick, T, defenseReadyTime(pick.id), DEF_LEAD, DEF_TAIL, base, hd) : constantEvent(start, start + m.duration, m, base, mirror)
           const own = pick ? ev.root(ev.end).off : null
           const ph = physics[i]!
           if ((o === 'block' || o === 'parry') && (ph.result === 'stagger' || ph.result === 'knockdown')) {
@@ -1696,6 +1932,17 @@ export function solveFight(
                 if (third.err < guardErr) armFix = { ...armFix, [`shoulder${s}X`]: third.delta }
               }
               lastArm = armFix
+              const guardWeapon = def.idle && def.dims.mocap?.rig.skin ? armedSide(def) : null
+              if (guardWeapon !== null && guardWeapon === strikeEffector(def, side)) {
+                // Fork (fight-polish): an armed bot's weapon meets the blow in front of the zone it covers, its guard point at the blow's height,
+                // out by GUARD_OUT and the attacking weapon's reach past its strike point; the blade across the line of attack, a shield facing it.
+                const aw = weaponOf(atk, imp.effector)
+                const past = aw ? dist3(weaponContact(aw.spec, 'strike'), aw.spec.tip) * aw.scale * atk.scale : 0
+                const zone = fightTarget(def.dims, def.scale, aimJoints, aimPos, hd, toward, beat.target, imp.effector, def.torso, aimClip)
+                const out = GUARD_OUT * def.scale + past
+                armFix = armedGuard(def, aimJoints, aimClip, guardWeapon, aimPos, hd, { x: zone.x + toward.x * out, y: h, z: zone.z + toward.z * out }, toward, lastArm)
+                lastArm = armFix
+              }
               // Mocap bots (fork): the guard reaching across toward a blow that sweeps past it.
               if (across > 0) armFix = withOffsets(armFix, { [`shoulder${s}Z`]: -across })
               const hand = effectorWorld(def, withOffsets(aimJoints, armFix), aimPos, aimPos.y, hd, side, 'guard', aimClip)
@@ -1824,7 +2071,11 @@ export function solveFight(
         const openGuard = (): void => {
           gate.joints = {}
           // (A blow to the legs lands on one: they stay.)
-          const open = guardOpening(atk, imp.effector, approach(result, GUARD_LEAD), def, hd, beat.target !== 'legs')
+          // (Fork, fight-polish: and the frames it eases off over, as hitEv.extra below lays them.)
+          // (Only a defender holding a weapon looks at them.)
+          const span = hitEv && def.held.length > 0 ? Math.min(GUARD_REOPEN, Math.max(1e-3, hitEv.end - T)) : 0
+          const after = Array.from({ length: Math.floor(span * fps + 1e-9) }, (_, k) => ({ st: defAt(T + (k + 1) / fps), w: clamp(1 - (k + 1) / fps / span, 0, 1) }))
+          const open = guardOpening(atk, imp.effector, approach(result, GUARD_LEAD), def, hd, beat.target !== 'legs', after)
           if (!open) return
           gate.joints = open
           ;({ result, armFix } = decide())
@@ -1871,7 +2122,7 @@ export function solveFight(
                 const f = bev ? clamp((s.t - bev.start) / Math.max(1e-6, T - bev.start), 0, 1) : 0
                 const dj = f > 0 ? withOffsets(s.st.joints, Object.fromEntries(Object.entries(fix).map(([k, v]) => [k, v * f]))) : s.st.joints
                 const aj = withOffsets(s.aj, legSplay(atk, imp.effector, s.aj, s.ac, s.root, s.heading, def, dj, s.st.clip, dpos, hd))
-                return bodyOverlap(atk, { joints: aj, clip: s.ac, position: s.root, heading: s.heading }, def, { joints: dj, clip: s.st.clip, position: dpos, heading: hd })
+                return bodyOverlap(atk, { joints: aj, clip: s.ac, position: s.root, heading: s.heading }, def, { joints: dj, clip: s.st.clip, position: dpos, heading: hd }, false, s.t >= T - 1e-9 && (o === 'hit' || o === 'ko') ? atk : undefined)
               })
             )
           // The skin contact the report will read (a placement's error is its aim point's).
@@ -1934,6 +2185,14 @@ export function solveFight(
             if (orbit !== 0 && hitEv) openGuard()
             if (orbit !== 0) notes.push(`${label}: blow ${i + 1} comes in ${Math.abs(Math.round((orbit * 180) / Math.PI))}° ${orbit > 0 ? 'left' : 'right'} of straight so the bodies stay apart`)
           }
+        }
+        // Fork (fight-polish): an armed guard's free arm swings out of the attacking weapon's way at the impact.
+        const guardWeapon = def.idle && def.dims.mocap?.rig.skin && (o === 'block' || o === 'parry') ? armedSide(def) : null
+        const aw = weaponOf(atk, imp.effector)
+        if (guardWeapon && aw && blockEvents.get(i)) {
+          const a = { joints: withOffsets(kf.joints, result.pitch), clip: kClip, position: { x: result.root.x, y: result.rootY + result.lift, z: result.root.z }, heading: result.heading }
+          const free = freeArmSwing(atk, aw, a, def, guardWeapon, defAt(T), armFix, hd)
+          if (free) armFix = { ...armFix, ...free }
         }
         const ev = blockEvents.get(i)
         if (ev && Object.keys(armFix).length > 0) {
@@ -2179,11 +2438,18 @@ export function solveFight(
         const away = unit(sub(p.defAt(T).pos, p.place[i]!.root))
         const next = p.times[i + 1]
         if (next !== undefined) {
-          if (next - T > 2 * SEP_BACK) jolts += separate(F, atk, def, T, next - 2 * SEP_BACK, away, fps, next - SEP_BACK).push
+          if (next - T > 2 * SEP_BACK) {
+            // Fork (fight-polish): a held weapon in the other body swings out first (a push only slides a shaft along itself).
+            const sw = F.some((f) => f.held.length > 0) ? swingWeapons(F, T, next - 2 * SEP_BACK, fps, next - SEP_BACK) : null
+            beatWarnings.push(...(sw?.notes ?? []).map((n) => `${label}: ${n} after blow ${i + 1}`))
+            jolts += separate(F, atk, def, T, next - 2 * SEP_BACK, away, fps, next - SEP_BACK, sw?.states).push
+          }
           return
         }
         const last = def.marks[def.marks.length - 1]!
-        const s = separate(F, atk, def, T, Math.min(T + SEP_WINDOW, Math.max(atkEnd, last.time)), away, fps)
+        const sw = F.some((f) => f.held.length > 0) ? swingWeapons(F, T, Math.min(T + SEP_WINDOW, Math.max(atkEnd, last.time)), fps) : null
+        beatWarnings.push(...(sw?.notes ?? []).map((n) => `${label}: ${n} after blow ${i + 1}`))
+        const s = separate(F, atk, def, T, Math.min(T + SEP_WINDOW, Math.max(atkEnd, last.time)), away, fps, Infinity, sw?.states)
         if (s.push > 0) beatWarnings.push(`${label}: ${who} goes ${(s.push * 100).toFixed(0)} cm further back after the last blow${s.both ? `, and ${who === 'A' ? 'B' : 'A'} stops ${(s.push * 100).toFixed(0)} cm short,` : ''} so the bodies stay apart`)
       })
       if (jolts > 0) beatWarnings.push(`${label}: ${who} rocks back ${(jolts * 100).toFixed(0)} cm between blows so the bodies stay apart`)
@@ -2225,8 +2491,6 @@ export function solveFight(
     if (!def.down && !shotBeat) {
       const M = { x: (atk.spot.x + def.spot.x) / 2, z: (atk.spot.z + def.spot.z) / 2 }
       const dir = unit(sub(def.spot, atk.spot), fwdOf(atk.heading))
-      let aRest = add(M, dir, -GUARD_DISTANCE / 2)
-      let dRest = add(M, dir, GUARD_DISTANCE / 2)
       // Mocap bots (fork): one done well before the other (a get-up) crossfades into its idle and holds it where it stands; the other comes to guard distance of it.
       const waits = (f: Fighter, end: number): boolean => !!f.idle && recoveryEnd - end > 2 * BOT_XFADE + 1e-3
       const hold = (f: Fighter, end: number): void => {
@@ -2234,23 +2498,42 @@ export function solveFight(
         const at = Math.max(last.time, end) + BOT_XFADE
         addMark(f, at, f.spot, groundY(f.floor, {}, 0, stateOf({ id: f.idle!, at })), 'stand', {}, last.arriveHeading, { id: f.idle!, at }, true)
       }
-      if (waits(atk, atkEnd)) {
-        hold(atk, atkEnd)
-        aRest = { ...atk.spot }
-        dRest = add(atk.spot, dir, GUARD_DISTANCE)
+      const lay = (gap: number): { aRest: XZ; dRest: XZ } => {
+        let aRest = add(M, dir, -gap / 2)
+        let dRest = add(M, dir, gap / 2)
+        if (waits(atk, atkEnd)) {
+          hold(atk, atkEnd)
+          aRest = { ...atk.spot }
+          dRest = add(atk.spot, dir, gap)
+        }
+        else if (waits(def, defEnd)) {
+          hold(def, defEnd)
+          dRest = { ...def.spot }
+          aRest = add(def.spot, dir, -gap)
+        }
+        const moveA = flat(sub(aRest, atk.spot))
+        const moveD = flat(sub(dRest, def.spot))
+        restT = recoveryEnd + clamp(Math.max(moveA, moveD) / 1.5, 0.25, 1.5)
+        const ra = restOf(atk, restT)
+        const rd = restOf(def, restT)
+        addMark(atk, restT, aRest, groundY(atk.floor, ra.joints, 0, stateOf(ra.clip)), moveA > 0.05 ? 'walk' : 'stand', ra.joints, facing(aRest, dRest), ra.clip, !!atk.idle && moveA <= 0.05)
+        addMark(def, restT, dRest, groundY(def.floor, rd.joints, 0, stateOf(rd.clip)), moveD > 0.05 ? 'walk' : 'stand', rd.joints, facing(dRest, aRest), rd.clip, !!def.idle && moveD <= 0.05)
+        return { aRest, dRest }
       }
-      else if (waits(def, defEnd)) {
-        hold(def, defEnd)
-        dRest = { ...def.spot }
-        aRest = add(def.spot, dir, -GUARD_DISTANCE)
+      // Fork (fight-polish): bots with a weapon held out rest far enough apart (restGap); walking there, the weapon must not sweep through the other
+      // (a spear lowered for the walk swings up into the idle): laid, looked at, and laid again further apart by as much as it goes in.
+      const armed = F.every((f) => f.dims.mocap?.rig.skin) && F.some((f) => f.idle && f.held.length > 0)
+      let gap = armed ? restGap(atk, def, recoveryEnd) : GUARD_DISTANCE
+      const keep = [atk.marks.slice(), def.marks.slice()]
+      let { aRest, dRest } = lay(gap)
+      for (let k = 0; armed && k < REST_TRIES; k++) {
+        const deep = restDepth(F, Math.max(recoveryEnd, restT - REST_LOOK), restT + 2 * BOT_XFADE, fps)
+        if (deep <= SEP_TOL) break
+        atk.marks.splice(0, atk.marks.length, ...keep[0]!)
+        def.marks.splice(0, def.marks.length, ...keep[1]!)
+        gap += deep + REST_CLEAR
+        ;({ aRest, dRest } = lay(gap))
       }
-      const moveA = flat(sub(aRest, atk.spot))
-      const moveD = flat(sub(dRest, def.spot))
-      restT = recoveryEnd + clamp(Math.max(moveA, moveD) / 1.5, 0.25, 1.5)
-      const ra = restOf(atk, restT)
-      const rd = restOf(def, restT)
-      addMark(atk, restT, aRest, groundY(atk.floor, ra.joints, 0, stateOf(ra.clip)), moveA > 0.05 ? 'walk' : 'stand', ra.joints, facing(aRest, dRest), ra.clip, !!atk.idle && moveA <= 0.05)
-      addMark(def, restT, dRest, groundY(def.floor, rd.joints, 0, stateOf(rd.clip)), moveD > 0.05 ? 'walk' : 'stand', rd.joints, facing(dRest, aRest), rd.clip, !!def.idle && moveD <= 0.05)
       atk.spot = aRest
       def.spot = dRest
       atk.heading = facing(aRest, dRest)
@@ -2438,24 +2721,18 @@ function fightEvaluator(F: [Fighter, Fighter], duration: number, fps: number): S
 /** Where a body is and how it stands: an evaluated state, or a planned pose. */
 type Placed = Pick<EntityState, 'joints' | 'clip' | 'position' | 'heading'>
 
-function bodyOverlap(a: Fighter, sa: Placed, b: Fighter, sb: Placed): number {
-  const side = (f: Fighter, s: Placed): { pose: ReturnType<typeof fighterPose>; box: Map<number, { lo: V3; hi: V3 }> } => {
-    const pose = fighterPose(f.dims.mocap!, s.joints, s.clip)
-    // Each bone's box, by its support points (its outermost skin).
-    const box = new Map<number, { lo: V3; hi: V3 }>()
-    for (const x of supportPoints(f.dims.mocap!, pose)) {
-      const p = toWorld(x.p, s.position, s.heading, f.scale)
-      const c = box.get(x.bone)
-      if (!c) box.set(x.bone, { lo: { ...p }, hi: { ...p } })
-      else {
-        c.lo = { x: Math.min(c.lo.x, p.x), y: Math.min(c.lo.y, p.y), z: Math.min(c.lo.z, p.z) }
-        c.hi = { x: Math.max(c.hi.x, p.x), y: Math.max(c.hi.y, p.y), z: Math.max(c.hi.z, p.z) }
-      }
-    }
-    return { pose, box }
-  }
-  const A = side(a, sa)
-  const B = side(b, sb)
+function bodyOverlap(a: Fighter, sa: Placed, b: Fighter, sb: Placed, evaluated = false, exempt?: Fighter): number {
+  // Each bone's box, by its support points (its outermost skin).
+  const A = boneBoxes(a, sa, evaluated)
+  const B = boneBoxes(b, sb, evaluated)
+  // Fork (fight-polish): each fighter's weapons in the other's skin too (but `exempt`'s: a hit's own impact frame).
+  const wa = a.held.length > 0 && a !== exempt ? weaponInto(weaponsWorld(a, sa, evaluated), b, sb, B, evaluated) : 0
+  const wb = b.held.length > 0 && b !== exempt ? weaponInto(weaponsWorld(b, sb, evaluated), a, sa, A, evaluated) : 0
+  return Math.max(wa, wb, skinsOverlap(a, sa, A, b, sb, B))
+}
+
+/** How deep two bots' skins sit in each other (bodyOverlap), from their bone boxes. */
+function skinsOverlap(a: Fighter, sa: Placed, A: ReturnType<typeof boneBoxes>, b: Fighter, sb: Placed, B: ReturnType<typeof boneBoxes>): number {
   // The bones whose boxes meet one of the other body's, and where they meet.
   const meet: { lo: V3; hi: V3 }[] = []
   const bonesA = new Set<number>()
@@ -2477,23 +2754,516 @@ function bodyOverlap(a: Fighter, sa: Placed, b: Fighter, sb: Placed): number {
     return own && own.tri.length > 0 ? { p: own.p.map((x) => toWorld(x, s.position, s.heading, f.scale)), tri: own.tri } : null
   }
   // With their neighbours (parent and children), so the cut skin's open edges lie away from where they meet.
-  const grow = (f: Fighter, bones: Set<number>): Set<number> => {
-    const parent = f.dims.mocap!.rig.parent
-    const out = new Set(bones)
-    parent.forEach((p, i) => {
-      if (bones.has(i) && p >= 0) out.add(p)
-      if (p >= 0 && bones.has(p)) out.add(i)
-    })
-    return out
-  }
-  const SA = skin(a, sa, A, grow(a, bonesA))
-  const SB = skin(b, sb, B, grow(b, bonesB))
+  const SA = skin(a, sa, A, grownBones(a, bonesA))
+  const SB = skin(b, sb, B, grownBones(b, bonesB))
   if (!SA || !SB) return 0
   const into = (P: { p: V3[] }, Q: { p: V3[]; tri: number[] }): number => {
     const pts = P.p.filter(within)
     return pts.length > 0 ? meshDepth(pts, skinMesh(Q.p, Q.tri)) : 0
   }
   return Math.max(0, into(SA, SB), into(SB, SA))
+}
+
+/**
+ * Mocap bots (fork, fight-polish; weapon-shape.ts): a fighter's held weapons
+ * (or `only` one) as capsules, world axis points and radius, posed as
+ * contactLocal poses them. An evaluated state's own pose (not a `swung` one
+ * tried on it) poses each weapon once (separate pushes it about).
+ */
+function weaponsWorld(f: Fighter, s: Placed, evaluated: boolean, only?: HeldWeapon, swung = false): WeaponSamples[] {
+  const j = evaluated || s.clip ? s.joints : holdJoints(f.dims, s.joints, f.held)
+  const which = f.held.filter((h) => !only || h === only)
+  const at = evaluated && !swung ? localOf(f, s) : null
+  if (!at) return which.flatMap((h) => heldWeaponSamples(f.dims, j, h.hand, h.spec, h.scale, s.clip, { position: s.position, heading: s.heading, scale: f.scale }))
+  const held = (at.held ??= new Map())
+  const local = which.flatMap((h): WeaponSamples[] => {
+    let x = held.get(h)
+    if (!x) held.set(h, (x = heldWeaponSamples(f.dims, j, h.hand, h.spec, h.scale, s.clip)))
+    return x
+  })
+  return local.map((w) => ({ p: w.p.map((q) => toWorld(q, s.position, s.heading, f.scale)), r: w.r * f.scale }))
+}
+
+/**
+ * An evaluated state's entity-local work, by its joints object (fresh from
+ * the evaluator and never changed): separate tries pushes that move only its
+ * root, so the pose, its support points and its weapons are posed once.
+ */
+interface Local {
+  f: Fighter
+  clip: ClipState | undefined
+  pose: MocapPose
+  support: { p: V3; bone: number }[]
+  held?: Map<HeldWeapon, WeaponSamples[]>
+  skins?: Map<string, SkinMesh | null>
+  /** Its bone boxes where it was last placed. */
+  boxes?: { at: V3; heading: number; box: Map<number, { lo: V3; hi: V3 }> }
+}
+const LOCAL = new WeakMap<object, Local>()
+function localOf(f: Fighter, s: Placed): Local {
+  const known = s.joints ? LOCAL.get(s.joints) : undefined
+  if (known && known.f === f && known.clip === s.clip) return known
+  const pose = fighterPose(f.dims.mocap!, s.joints, s.clip)
+  const out = { f, clip: s.clip, pose, support: supportPoints(f.dims.mocap!, pose) }
+  if (s.joints) LOCAL.set(s.joints, out)
+  return out
+}
+
+/** Each bone's box by its support points (world), for a placed bot (an evaluated one's posed once: localOf). */
+function boneBoxes(f: Fighter, s: Placed, evaluated = false): { pose: MocapPose; box: Map<number, { lo: V3; hi: V3 }> } {
+  const at = evaluated ? localOf(f, s) : null
+  if (at?.boxes && at.boxes.heading === s.heading && at.boxes.at.x === s.position.x && at.boxes.at.y === s.position.y && at.boxes.at.z === s.position.z) return { pose: at.pose, box: at.boxes.box }
+  const pose = at ? at.pose : fighterPose(f.dims.mocap!, s.joints, s.clip)
+  const box = new Map<number, { lo: V3; hi: V3 }>()
+  for (const x of at ? at.support : supportPoints(f.dims.mocap!, pose)) {
+    const p = toWorld(x.p, s.position, s.heading, f.scale)
+    const c = box.get(x.bone)
+    if (!c) box.set(x.bone, { lo: { ...p }, hi: { ...p } })
+    else {
+      c.lo.x = Math.min(c.lo.x, p.x)
+      c.lo.y = Math.min(c.lo.y, p.y)
+      c.lo.z = Math.min(c.lo.z, p.z)
+      c.hi.x = Math.max(c.hi.x, p.x)
+      c.hi.y = Math.max(c.hi.y, p.y)
+      c.hi.z = Math.max(c.hi.z, p.z)
+    }
+  }
+  if (at) at.boxes = { at: { ...s.position }, heading: s.heading, box }
+  return { pose, box }
+}
+
+/** A bone set with its neighbours (parent and children), so a cut skin's open edges lie away from where it is met. */
+function grownBones(f: Fighter, bones: Set<number>): Set<number> {
+  const out = new Set(bones)
+  f.dims.mocap!.rig.parent.forEach((p, i) => {
+    if (bones.has(i) && p >= 0) out.add(p)
+    if (p >= 0 && bones.has(p)) out.add(i)
+  })
+  return out
+}
+
+/**
+ * How deep weapon capsules sit in a bot's skin (m; 0 when apart): its skin on
+ * the bones whose boxes meet a capsule's (with their neighbours); an evaluated
+ * state's whole skin, once in its own frame (localOf). Bones in `skip` (a
+ * holder's arm, for its own weapon) are left out.
+ */
+function weaponInto(pcs: WeaponSamples[], b: Fighter, sb: Placed, B = boneBoxes(b, sb), evaluated = false, skip?: Set<number>): number {
+  if (pcs.length === 0) return 0
+  const bones = new Set<number>()
+  for (const w of pcs) {
+    const lo = { x: Infinity, y: Infinity, z: Infinity }
+    const hi = { x: -Infinity, y: -Infinity, z: -Infinity }
+    for (const q of w.p) {
+      lo.x = Math.min(lo.x, q.x)
+      lo.y = Math.min(lo.y, q.y)
+      lo.z = Math.min(lo.z, q.z)
+      hi.x = Math.max(hi.x, q.x)
+      hi.y = Math.max(hi.y, q.y)
+      hi.z = Math.max(hi.z, q.z)
+    }
+    const pad = w.r + BONE_PAD
+    for (const [i, x] of B.box) if (!skip?.has(i) && x.lo.x <= hi.x + pad && x.hi.x >= lo.x - pad && x.lo.y <= hi.y + pad && x.hi.y >= lo.y - pad && x.lo.z <= hi.z + pad && x.hi.z >= lo.z - pad) bones.add(i)
+  }
+  if (bones.size === 0) return 0
+  // An axis point within its radius of the skin lies within that (and BONE_PAD) of one of those boxes: none there, none in (and no skin to build).
+  const hit = new Set([...bones].filter((i) => {
+    const x = B.box.get(i)!
+    return pcs.some((w) => w.p.some((q) => q.x >= x.lo.x - w.r - BONE_PAD && q.x <= x.hi.x + w.r + BONE_PAD && q.y >= x.lo.y - w.r - BONE_PAD && q.y <= x.hi.y + w.r + BONE_PAD && q.z >= x.lo.z - w.r - BONE_PAD && q.z <= x.hi.z + w.r + BONE_PAD))
+  }))
+  if (hit.size === 0) return 0
+  if (evaluated) {
+    // Its skin on those bones and their neighbours (but `skip`) in the state's own frame, once per such set (separate's pushes and
+    // swingWeapons' swings ask again and again); the capsules brought into it (toWorld's inverse).
+    const at = localOf(b, sb)
+    const near = grownBones(b, hit)
+    for (const i of skip ?? []) near.delete(i)
+    const key = [...near].sort((x, y) => x - y).join(',')
+    let mesh = (at.skins ??= new Map()).get(key)
+    if (mesh === undefined) {
+      const own = near.size > 0 ? boneSkin(b.dims.mocap!, at.pose, near) : null
+      mesh = own && own.tri.length > 0 ? skinMesh(own.p, own.tri) : null
+      at.skins.set(key, mesh)
+    }
+    if (!mesh) return 0
+    const c = Math.cos(sb.heading)
+    const sn = Math.sin(sb.heading)
+    const local = (q: V3): V3 => {
+      const x = q.x - sb.position.x
+      const z = q.z - sb.position.z
+      return { x: (x * c - z * sn) / b.scale, y: (q.y - sb.position.y) / b.scale, z: (x * sn + z * c) / b.scale }
+    }
+    const m = mesh
+    return Math.max(0, ...pcs.map((w) => meshDepth(w.p.map(local), m) * b.scale + w.r))
+  }
+  const grown = grownBones(b, bones)
+  for (const i of skip ?? []) grown.delete(i)
+  const own = boneSkin(b.dims.mocap!, B.pose, grown)
+  if (!own || own.tri.length === 0) return 0
+  const mesh = skinMesh(own.p.map((x) => toWorld(x, sb.position, sb.heading, b.scale)), own.tri)
+  return Math.max(0, ...pcs.map((w) => meshDepth(w.p, mesh) + w.r))
+}
+
+/**
+ * Mocap bots (fork, fight-polish): an armed guard. The guard arm's overlay
+ * (shoulder pitch and abduction, elbow) that puts its weapon's guard point
+ * (contactLocal 'guard': mid-blade, the shield's face) at `C` (world), the
+ * blade or shaft across the line of attack (`toward`, the unit way to the
+ * attacker), a shield's face toward it: least squares (Levenberg–Marquardt)
+ * from `warm`, each channel within ±GUARD_SWING.
+ */
+function armedGuard(def: Fighter, joints: Joints, clip: ClipState | undefined, side: 'handL' | 'handR', pos: V3, heading: number, C: V3, toward: XZ, warm: Joints = {}): Joints {
+  // The guards solved for this aim pose (by its joints object), and its body by part.
+  let memos = GUARDS.get(joints)
+  if (!memos) GUARDS.set(joints, (memos = []))
+  let memo = memos.find((x) => x.def === def && x.clip === clip && x.side === side && x.pos.x === pos.x && x.pos.y === pos.y && x.pos.z === pos.z && x.heading === heading)
+  if (!memo) memos.push((memo = { def, clip, side, pos, heading, solved: [] }))
+  const known = memo.solved.find((x) => Math.hypot(x.C.x - C.x, x.C.y - C.y, x.C.z - C.z) <= GUARD_REUSE && x.toward.x * toward.x + x.toward.z * toward.z >= GUARD_REUSE_DOT)
+  if (known) return known.out
+  const w = weaponOf(def, side)!
+  const s = side === 'handL' ? 'L' : 'R'
+  const keys = [`shoulder${s}X`, `shoulder${s}Z`, `elbow${s}`]
+  const shield = w.spec.kind === 'shield'
+  const from = shield ? w.spec.tip : w.spec.grip
+  const to = shield ? { x: w.spec.tip.x + w.spec.aim.x, y: w.spec.tip.y + w.spec.aim.y, z: w.spec.tip.z + w.spec.aim.z } : w.spec.tip
+  const c = Math.cos(heading)
+  const sn = Math.sin(heading)
+  // The way to the attacker in the defender's own frame (toWorld's inverse turn).
+  const tl = { x: toward.x * c - toward.z * sn, z: toward.x * sn + toward.z * c }
+  // Its own body but the guard arm (and a two-handed grip's other forearm and hand), as the overlay leaves it, by part (built when first needed).
+  const m = def.dims.mocap!
+  let pose: MocapPose | undefined
+  const skip = holdingBones(w)
+  // A part of it: its bones' boxes (support points, world), and its skin as a mesh (built when a weapon comes near those).
+  let support: { p: V3; bone: number }[] | undefined
+  const partOf = (bones: number[]): GuardPart => {
+    support ??= supportPoints(m, (pose ??= fighterPose(m, joints, clip))).map((x) => ({ p: toWorld(x.p, pos, heading, def.scale), bone: x.bone }))
+    const set = new Set(bones)
+    const box = new Map<number, { lo: V3; hi: V3 }>()
+    for (const { p, bone } of support) {
+      if (!set.has(bone)) continue
+      const c = box.get(bone)
+      if (!c) box.set(bone, { lo: { ...p }, hi: { ...p } })
+      else {
+        c.lo = { x: Math.min(c.lo.x, p.x), y: Math.min(c.lo.y, p.y), z: Math.min(c.lo.z, p.z) }
+        c.hi = { x: Math.max(c.hi.x, p.x), y: Math.max(c.hi.y, p.y), z: Math.max(c.hi.z, p.z) }
+      }
+    }
+    return { bones, boxes: [...box.values()] }
+  }
+  const meshOf = (part: GuardPart): SkinMesh | null => {
+    if (part.mesh !== undefined) return part.mesh
+    const own = part.bones.length > 0 ? boneSkin(m, (pose ??= fighterPose(m, joints, clip)), new Set(part.bones)) : null
+    return (part.mesh = own && own.tri.length > 0 ? skinMesh(own.p.map((q) => toWorld(q, pos, heading, def.scale)), own.tri) : null)
+  }
+  // The weapon's model points held in a pose (heldPointLocal's, one hand frame for all of them; a bot off its clip holds it as contactLocal does).
+  const all = weaponSamples(w.spec.assetId)
+  const stride = Math.max(2, Math.ceil(all.reduce((n, x) => n + x.p.length, 0) / GUARD_POINTS))
+  const pieces = all.map((x) => ({ p: x.p.filter((_, k) => k % stride === 0 || k === x.p.length - 1), r: x.r * w.scale * def.scale }))
+  const holding = (j: Joints): ((q: V3) => V3) => {
+    const f = handFrame(def.dims, clip ? j : holdJoints(def.dims, j, def.held), w.hand, clip)
+    const r = weaponRotation(w.spec, w.hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder, torso: f.torso })
+    const g = w.spec.grip
+    return (q) => {
+      const x = (q.x - g.x) * w.scale
+      const y = (q.y - g.y) * w.scale
+      const z = (q.z - g.z) * w.scale
+      return { x: f.p.x + r[0]! * x + r[1]! * y + r[2]! * z, y: f.p.y + r[3]! * x + r[4]! * y + r[5]! * z, z: f.p.z + r[6]! * x + r[7]! * y + r[8]! * z }
+    }
+  }
+  /** How far the weapon (every other axis point of each capsule, or sparser: GUARD_POINTS) sits in a mesh past GUARD_SELF clear. */
+  const placed = (j: Joints, at = holding(j)): WeaponSamples[] => pieces.map((x) => ({ p: x.p.map((q) => toWorld(at(q), pos, heading, def.scale)), r: x.r }))
+  // (None of its points within its radius, GUARD_SELF and BONE_PAD of the part's boxes: clear of it, its skin unposed.)
+  const depthIn = (part: GuardPart, pcs: WeaponSamples[]): number => {
+    const pad = GUARD_SELF + BONE_PAD
+    if (!pcs.some((x) => x.p.some((q) => part.boxes.some((c) => q.x >= c.lo.x - x.r - pad && q.x <= c.hi.x + x.r + pad && q.y >= c.lo.y - x.r - pad && q.y <= c.hi.y + x.r + pad && q.z >= c.lo.z - x.r - pad && q.z <= c.hi.z + x.r + pad)))) return -Infinity
+    const mesh = meshOf(part)
+    if (!mesh) return -Infinity
+    let deep = -Infinity
+    for (const x of pcs) deep = Math.max(deep, meshDepth(x.p, mesh) + x.r + GUARD_SELF)
+    return deep
+  }
+  // Only what the guard adds: the parts its idle already holds the weapon in (a clip-and-hold mismatch) may keep it that deep; the rest stay clear.
+  const at = memo
+  const split = (): NonNullable<GuardMemo['parts']> => {
+    if (at.parts) return at.parts
+    const groups = BODY_PARTS.map((g) => g.map((b) => BONE_INDEX[b]).filter((b) => !skip.has(b)))
+    const rest = placed(joints)
+    const idle = groups.map((g) => depthIn(partOf(g), rest))
+    const held = groups.filter((_, k) => idle[k]! > 0)
+    at.parts = { strict: partOf(groups.filter((_, k) => idle[k]! <= 0).flat()), held: partOf(held.flat()), allow: Math.max(0, ...idle) }
+    return at.parts
+  }
+  const inside = (j: Joints, at = holding(j)): number => {
+    const { strict, held, allow } = split()
+    const pcs = placed(j, at)
+    return Math.max(0, depthIn(strict, pcs), depthIn(held, pcs) - allow)
+  }
+  const posed = (p: number[], f = 1): Joints => withOffsets(joints, { [keys[0]!]: p[0]! * f, [keys[1]!]: p[1]! * f, [keys[2]!]: p[2]! * f })
+  const res = (p: number[], self: boolean): number[] => {
+    const j = posed(p)
+    const at = holding(j)
+    const g = toWorld(at(weaponContact(w.spec, 'guard')), pos, heading, def.scale)
+    const a = at(from)
+    const b = at(to)
+    const l = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) || 1
+    const along = ((b.x - a.x) * tl.x + (b.z - a.z) * tl.z) / l
+    const r = [g.x - C.x, g.y - C.y, g.z - C.z, GUARD_TURN * (shield ? 1 - along : along)]
+    // Out of its own body at the guard and on the ramp in (the overlay blends in linearly).
+    return self ? [...r, GUARD_SELF_W * inside(j, at), ...GUARD_RAMP.map((f) => GUARD_SELF_W * inside(posed(p, f)))] : r
+  }
+  const cost = (r: number[]): number => r.reduce((q, v) => q + v * v, 0)
+  const fit = (p0: number[], self: boolean): number[] => {
+    let p = p0
+    let r = res(p, self)
+    let e = cost(r)
+    let lambda = 1e-2
+    for (let it = 0; it < (self ? GUARD_SELF_ITERS : 14) && e > 1e-8; it++) {
+      const J = p.map((_, k) => {
+        const q = p.slice()
+        q[k] = q[k]! + 1e-3
+        return res(q, self).map((v, i) => (v - r[i]!) / 1e-3)
+      })
+      // (JᵀJ + λ diag) δ = −Jᵀ r, 3 × 3.
+      const A = [0, 1, 2].map((a) => [0, 1, 2].map((b) => J[a]!.reduce((q, v, i) => q + v * J[b]![i]!, 0)))
+      const g = [0, 1, 2].map((a) => -J[a]!.reduce((q, v, i) => q + v * r[i]!, 0))
+      let improved = false
+      let gain = 0
+      for (let tries = 0; tries < 6 && !improved; tries++) {
+        const M = A.map((row, a) => row.map((v, b) => (a === b ? v * (1 + lambda) + 1e-9 : v)))
+        const d = solve3(M, g)
+        const q = p.map((v, k) => clamp(v + d[k]!, -GUARD_SWING, GUARD_SWING))
+        const rq = res(q, self)
+        const eq = cost(rq)
+        if (eq < e) {
+          gain = e - eq
+          p = q
+          r = rq
+          e = eq
+          lambda = Math.max(1e-4, lambda / 3)
+          improved = true
+        }
+        else lambda *= 4
+      }
+      if (!improved || gain < GUARD_GAIN) break
+    }
+    return p
+  }
+  // The guard alone; again keeping clear of its own body when that one puts the weapon in it.
+  const start = keys.map((k) => clamp(warm[k] ?? 0, -GUARD_SWING, GUARD_SWING))
+  const out = (q: number[]): Joints => {
+    const j = { [keys[0]!]: q[0]!, [keys[1]!]: q[1]!, [keys[2]!]: q[2]! }
+    at.solved.push({ C, toward, out: j })
+    return j
+  }
+  const clean = (q: number[]): boolean => inside(posed(q)) <= 0 && GUARD_RAMP.every((f) => inside(posed(q, f)) <= 0)
+  const p = fit(start, false)
+  if (clean(p)) return out(p)
+  // Kept out of itself: from the start, else (or from there) the better.
+  const a = fit(start, true)
+  if (clean(a)) return out(a)
+  const b = fit(p, true)
+  return out(cost(res(b, true)) < cost(res(a, true)) ? b : a)
+}
+
+/** An armed guard's work for one aim pose (armedGuard): its holder's body by part, and the guards solved. */
+interface GuardMemo {
+  def: Fighter
+  clip: ClipState | undefined
+  side: 'handL' | 'handR'
+  pos: V3
+  heading: number
+  parts?: { strict: GuardPart; held: GuardPart; allow: number }
+  solved: { C: V3; toward: XZ; out: Joints }[]
+}
+/** A part of an armed guard's holder: its bones, their boxes, and its skin once built. */
+interface GuardPart {
+  bones: number[]
+  boxes: { lo: V3; hi: V3 }[]
+  mesh?: SkinMesh | null
+}
+const GUARDS = new WeakMap<object, GuardMemo[]>()
+
+/** A 3 × 3 system M x = b (Cramer). */
+function solve3(M: number[][], b: number[]): number[] {
+  const det = (m: number[][]): number => m[0]![0]! * (m[1]![1]! * m[2]![2]! - m[1]![2]! * m[2]![1]!) - m[0]![1]! * (m[1]![0]! * m[2]![2]! - m[1]![2]! * m[2]![0]!) + m[0]![2]! * (m[1]![0]! * m[2]![1]! - m[1]![1]! * m[2]![0]!)
+  const D = det(M)
+  if (Math.abs(D) < 1e-15) return [0, 0, 0]
+  return [0, 1, 2].map((k) => det(M.map((row, i) => row.map((v, j) => (j === k ? b[i]! : v)))) / D)
+}
+
+
+/**
+ * Mocap bots (fork, fight-polish): how far apart two fighters rest between
+ * beats. GUARD_DISTANCE, or, a bot holding a weapon (a spear held out in its
+ * idle), its weapon's reach ahead of it plus how far the other's body comes
+ * toward it (a lead leg), plus REST_CLEAR: both in their idles at `t`.
+ */
+function restGap(a: Fighter, b: Fighter, t: number): number {
+  const ahead = (f: Fighter, p: V3): number => -p.z * f.scale
+  const reach = (f: Fighter): number => {
+    if (!f.idle || f.held.length === 0 || !f.dims.mocap?.rig.skin) return -Infinity
+    const clip = { id: f.idle, t }
+    return Math.max(...f.held.flatMap((h) => heldWeaponSamples(f.dims, {}, h.hand, h.spec, h.scale, clip).flatMap((w) => w.p.map((q) => ahead(f, q) + w.r * f.scale))))
+  }
+  const front = (f: Fighter): number => (f.dims.mocap ? Math.max(...supportPoints(f.dims.mocap, fighterPose(f.dims.mocap, {}, f.idle ? { id: f.idle, t } : undefined)).map((x) => ahead(f, x.p))) : BODY_RADIUS)
+  const need = Math.max(reach(a) + front(b), reach(b) + front(a)) + REST_CLEAR
+  return Math.max(GUARD_DISTANCE, need)
+}
+
+/** Mocap bots (fork, fight-polish): how deep either fighter's held weapons go in the other from `from` to `to` (each frame), as laid so far. */
+function restDepth(F: [Fighter, Fighter], from: number, to: number, fps: number): number {
+  const ev = fightEvaluator(F, to + 1, fps)
+  let deep = 0
+  for (let t = from; t <= to + 1e-9; t += 1 / fps) {
+    const st = ev.evaluate(t)
+    const s = F.map((f) => st.entities.find((e) => e.entityId === f.input.entityId)!)
+    for (const [i, f] of F.entries()) {
+      if (f.held.length === 0) continue
+      const o = F[1 - i]!
+      deep = Math.max(deep, weaponInto(weaponsWorld(f, s[i]!, true), o, s[1 - i]!, boneBoxes(o, s[1 - i]!, true), true))
+    }
+  }
+  return deep
+}
+
+/**
+ * A ramp after a blow at T (separate, swingWeapons): 0 at T, all of it by
+ * `first`, held to `last`, gone again by `back` (held on when infinite).
+ */
+function rampShare(T: number, first: number, last: number, back: number): (t: number) => number {
+  return (t) => (t <= T ? 0 : t <= last + 1e-9 || !Number.isFinite(back) ? clamp((t - T) / Math.max(1e-3, first - T), 0, 1) : clamp((back - t) / Math.max(1e-3, back - last), 0, 1))
+}
+
+/** A mark at a frame a ramp turns on (unless one is there, or it crossfades there): the evaluated state, as it stands. */
+function markAtState(f: Fighter, t: number, st: EntityState): void {
+  const k = f.marks.findIndex((m) => m.time > t - 1e-6)
+  if (!st.clip || (st.clip.w ?? 1) < 1 || k <= 0 || Math.abs(f.marks[k]!.time - t) <= 1e-3) return
+  f.marks.splice(k, 0, { ...f.marks[k - 1]!, time: t, position: { ...st.position }, joints: { ...(st.joints ?? {}) }, clip: markOf(st.clip)!, arriveHeading: st.heading })
+}
+
+/** The share of a ramp a fighter's marks give a moment (the evaluator runs straight between them). */
+function realizedShare(f: Fighter, t: number, share: (t: number) => number): number {
+  const k = f.marks.findIndex((m) => m.time > t + 1e-9)
+  if (k <= 0) return share(t)
+  const a = f.marks[k - 1]!
+  const b = f.marks[k]!
+  const u = b.time > a.time ? (t - a.time) / (b.time - a.time) : 1
+  return share(a.time) + (share(b.time) - share(a.time)) * u
+}
+
+/**
+ * Mocap bots (fork, fight-polish): after a blow at T, a held weapon riding
+ * its holder's reaction or follow-through into the other body (a spear as
+ * its holder falls: a push along the line between them only slides it along
+ * itself) swings out of the way. Its arm's pitch, else its abduction, by the
+ * least (in SWING_STEP, at most SWING_MAX either way) that leaves it at most
+ * SEP_TOL in on every frame from T to `end`, and no deeper in its own holder
+ * than unswung; eased in by the first such frame and out again by `back`
+ * (rampShare). Notes on the swings made.
+ */
+function swingWeapons(F: [Fighter, Fighter], T: number, end: number, fps: number, back = Infinity): { notes: string[]; states?: SepFrame[] } {
+  const notes: string[] = []
+  // The frames separate looks at (evaluated afresh once a swing has changed the marks).
+  let states: SepFrame[] | undefined
+  const evaluate = (): SepFrame[] => {
+    const ev = fightEvaluator(F, Math.max(end, Number.isFinite(back) ? back : 0) + 1, fps)
+    return sepTimes(T, end, fps).map((t) => {
+      const st = ev.evaluate(t)
+      return { t, s: F.map((f) => st.entities.find((e) => e.entityId === f.input.entityId)!) }
+    })
+  }
+  for (const [i, f] of F.entries()) {
+    const o = F[1 - i]!
+    for (const h of f.held) {
+      states ??= evaluate()
+      const frames = states.map(({ t, s }) => ({ t, sf: s[i]!, so: s[1 - i]!, d: weaponInto(weaponsWorld(f, s[i]!, true, h), o, s[1 - i]!, boneBoxes(o, s[1 - i]!, true), true) }))
+      const over = frames.filter((x) => x.d > SEP_TOL)
+      if (over.length === 0) continue
+      const first = over[0]!
+      const last = over[over.length - 1]!
+      const share = rampShare(T, first.t, last.t, back)
+      if (Number.isFinite(back)) markAtState(f, last.t, last.sf)
+      markAtState(f, first.t, first.sf)
+      // Per frame (every one: the swing must not put it in elsewhere; those it is in first), its depth in its holder but the arm (the swing
+      // moves only the arm: the unswung body), and that unswung (made when first asked).
+      const order = [...[...over].sort((a, b) => b.d - a.d), ...frames.filter((x) => x.d <= SEP_TOL)]
+      const arm = holdingBones(h)
+      const own = order.map((x) => {
+        let rest: number | undefined
+        const depth = (pcs: WeaponSamples[]): number => weaponInto(pcs, f, x.sf, boneBoxes(f, x.sf, true), true, arm)
+        return { depth, rest: (): number => (rest ??= depth(weaponsWorld(f, x.sf, true, h))) }
+      })
+      // (Out of the other body on every frame, and no deeper in its own: whichever failed last is checked first, each on its frames in
+      // `order`, the last to fail first.)
+      let ownFirst = false
+      const firstO = order.map((_, k) => k)
+      const firstS = order.map((_, k) => k)
+      const every = (first: number[], ok: (k: number) => boolean): boolean => {
+        for (let n = 0; n < first.length; n++) {
+          if (ok(first[n]!)) continue
+          first.unshift(...first.splice(n, 1))
+          return false
+        }
+        return true
+      }
+      const clears = (key: string, a: number): boolean => {
+        // Each frame's swung weapon, once.
+        const ws: WeaponSamples[][] = []
+        const swung = (k: number): WeaponSamples[] => (ws[k] ??= weaponsWorld(f, { ...order[k]!.sf, joints: withOffsets(order[k]!.sf.joints ?? {}, { [key]: a * realizedShare(f, order[k]!.t, share) }) }, true, h, true))
+        const outOfOther = (): boolean => every(firstO, (k) => weaponInto(swung(k), o, order[k]!.so, boneBoxes(o, order[k]!.so, true), true) <= SEP_TOL)
+        const noDeeper = (): boolean => every(firstS, (k) => own[k]!.depth(swung(k)) <= own[k]!.rest())
+        if (ownFirst ? !noDeeper() : !outOfOther()) return false
+        if (ownFirst ? outOfOther() : noDeeper()) return true
+        ownFirst = !ownFirst
+        return false
+      }
+      let pick: { key: string; swing: number } | null = null
+      // Not even the largest swing clears the deepest frame: none will.
+      const deepest = order[0]!
+      const reaches = (key: string, a: number): boolean =>
+        weaponInto(weaponsWorld(f, { ...deepest.sf, joints: withOffsets(deepest.sf.joints ?? {}, { [key]: a * realizedShare(f, deepest.t, share) }) }, true, h, true), o, deepest.so, boneBoxes(o, deepest.so, true), true) <= SEP_TOL
+      const keys = [`shoulder${h.hand}X`, `shoulder${h.hand}Z`].filter((key) => reaches(key, SWING_MAX) || reaches(key, -SWING_MAX))
+      for (const key of keys) {
+        for (let k = 1; k * SWING_STEP <= SWING_MAX + 1e-9 && !pick; k++) {
+          const a = [k * SWING_STEP, -k * SWING_STEP].find((v) => clears(key, v))
+          if (a !== undefined) pick = { key, swing: a }
+        }
+        if (pick) break
+      }
+      if (!pick) continue
+      // Each mark from T to `back` takes its share.
+      for (const m of f.marks) {
+        if (m.time <= T + 1e-9 || m.time >= back - 1e-9) continue
+        const w = share(m.time)
+        if (w > 0) m.joints = { ...(m.joints ?? {}), [pick.key]: (m.joints?.[pick.key] ?? 0) + pick.swing * w }
+      }
+      states = undefined
+      notes.push(`${f === F[0] ? 'A' : 'B'}'s ${h.spec.assetId.replace(/^prop\./, '')} swings ${Math.round((Math.abs(pick.swing) * 180) / Math.PI)}° clear of ${f === F[0] ? 'B' : 'A'}`)
+    }
+  }
+  return { notes, states }
+}
+
+/** The moments separate looks at after a blow at T, to `end`. */
+function sepTimes(T: number, end: number, fps: number): number[] {
+  const out: number[] = []
+  for (let t = T + 1 / fps; t <= end + 1e-9; t += t < T + SEP_CLOSE ? 1 / fps : SEP_STEP) out.push(t)
+  return out
+}
+
+/** A frame separate looks at: its moment and both fighters' states (as F orders them). */
+interface SepFrame {
+  t: number
+  s: EntityState[]
+}
+
+/** Mocap bots (fork, fight-polish): the bones of the arm holding `h` (and a two-handed grip's other forearm and hand): a weapon may lie in them. */
+function holdingBones(h: HeldWeapon): Set<number> {
+  const arm = h.hand === 'L' ? 'Left' : 'Right'
+  const other = h.hand === 'L' ? 'Right' : 'Left'
+  const names = [`${arm}Arm`, `${arm}ForeArm`, `${arm}Hand`, ...(h.spec.twoHanded ? [`${other}ForeArm`, `${other}Hand`] : [])] as MocapBone[]
+  return new Set(names.map((b) => BONE_INDEX[b]))
 }
 
 /**
@@ -2511,46 +3281,34 @@ function bodyOverlap(a: Fighter, sa: Placed, b: Fighter, sb: Placed): number {
  * `back`, so that blow lands where it was placed. Returns the push (m) and
  * whether the attacker was held back too.
  */
-function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, end: number, away: XZ, fps: number, back = Infinity): { push: number; both: boolean } {
-  const ev = fightEvaluator(F, Math.max(end, Number.isFinite(back) ? back : 0) + 1, fps)
+function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, end: number, away: XZ, fps: number, back = Infinity, frames?: SepFrame[]): { push: number; both: boolean } {
+  // (Fork, fight-polish: or the frames swingWeapons evaluated, the marks unchanged since.)
+  const ev = frames ? null : fightEvaluator(F, Math.max(end, Number.isFinite(back) ? back : 0) + 1, fps)
   const over: { t: number; sa: EntityState; sd: EntityState; d: number }[] = []
-  for (let t = T + 1 / fps; t <= end + 1e-9; t += t < T + SEP_CLOSE ? 1 / fps : SEP_STEP) {
-    const st = ev.evaluate(t)
-    const sa = st.entities.find((e) => e.entityId === atk.input.entityId)!
-    const sd = st.entities.find((e) => e.entityId === def.input.entityId)!
-    const d = bodyOverlap(atk, sa, def, sd)
+  const ia = F.indexOf(atk)
+  const id = F.indexOf(def)
+  for (const [k, t] of (frames ? frames.map((x) => x.t) : sepTimes(T, end, fps)).entries()) {
+    const st = frames ? null : ev!.evaluate(t)
+    const sa = frames ? frames[k]!.s[ia]! : st!.entities.find((e) => e.entityId === atk.input.entityId)!
+    const sd = frames ? frames[k]!.s[id]! : st!.entities.find((e) => e.entityId === def.input.entityId)!
+    const d = bodyOverlap(atk, sa, def, sd, true)
     if (d > SEP_TOL) over.push({ t, sa, sd, d })
   }
   if (over.length === 0) return { push: 0, both: false }
   const first = over[0]!
   const last = over[over.length - 1]!
-  const share = (t: number): number =>
-    t <= T ? 0 : t <= last.t + 1e-9 || !Number.isFinite(back) ? clamp((t - T) / Math.max(1e-3, first.t - T), 0, 1) : clamp((back - t) / Math.max(1e-3, back - last.t), 0, 1)
-  // Marks at the frames the ramp turns on (unless one is there, or it crossfades there).
-  const markAt = (f: Fighter, t: number, st: EntityState): void => {
-    const k = f.marks.findIndex((m) => m.time > t - 1e-6)
-    if (!st.clip || (st.clip.w ?? 1) < 1 || k <= 0 || Math.abs(f.marks[k]!.time - t) <= 1e-3) return
-    f.marks.splice(k, 0, { ...f.marks[k - 1]!, time: t, position: { ...st.position }, joints: { ...(st.joints ?? {}) }, clip: markOf(st.clip)!, arriveHeading: st.heading })
-  }
+  const share = rampShare(T, first.t, last.t, back)
   const marksAt = (f: Fighter, at: (o: (typeof over)[number]) => EntityState): void => {
-    if (Number.isFinite(back)) markAt(f, last.t, at(last))
-    markAt(f, first.t, at(first))
+    if (Number.isFinite(back)) markAtState(f, last.t, at(last))
+    markAtState(f, first.t, at(first))
   }
   marksAt(def, (o) => o.sd)
-  // The share a fighter's marks give a moment (the evaluator runs straight between them).
-  const realized = (f: Fighter, t: number): number => {
-    const k = f.marks.findIndex((m) => m.time > t + 1e-9)
-    if (k <= 0) return share(t)
-    const a = f.marks[k - 1]!
-    const b = f.marks[k]!
-    const u = b.time > a.time ? (t - a.time) / (b.time - a.time) : 1
-    return share(a.time) + (share(b.time) - share(a.time)) * u
-  }
+  const realized = (f: Fighter, t: number): number => realizedShare(f, t, share)
   const moved = (s: EntityState, d: XZ, p: number): EntityState => ({ ...s, position: { x: s.position.x + d.x * p, y: s.position.y, z: s.position.z + d.z * p } })
   const toward = { x: -away.x, z: -away.z }
   // How deep the bodies still sit in each other on one of those frames, the defender pushed by p (and with `both`, the attacker held back by p).
   const depthAt = ({ t, sa, sd }: (typeof over)[number], p: number, both: boolean): number =>
-    bodyOverlap(atk, both ? moved(sa, toward, p * realized(atk, t)) : sa, def, moved(sd, away, p * realized(def, t)))
+    bodyOverlap(atk, both ? moved(sa, toward, p * realized(atk, t)) : sa, def, moved(sd, away, p * realized(def, t)), true)
   const deepest = (p: number, both: boolean): number => Math.max(...over.map((o) => depthAt(o, p, both)))
   // Unpushed, as the frames were found.
   const start = Math.max(...over.map((o) => o.d))

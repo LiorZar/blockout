@@ -14,6 +14,8 @@ import { BONE_INDEX, MOCAP_BONES } from '@engine/mocap/rig'
 import { boneSkin, fighterPose, meshDepth, skinMesh } from '@engine/mocap/surface'
 import { personDims, toWorld } from '@engine/skeleton'
 import type { ClipState, EntityState, FightDoc, Scene, Shot, V3 } from '@engine/types'
+import { heldWeaponSamples } from '@engine/weapon-shape'
+import { weaponSpec } from '@engine/weapons'
 import { mocapLibraryDir, parseMocapManifest } from '../../src/shared/mocap-library'
 
 const LIBRARY = mocapLibraryDir()
@@ -131,6 +133,40 @@ function overlap(sa: EntityState, aId: string, sb: EntityState, bId: string): nu
 
 const PAIRINGS = [BOTS, [...BOTS].reverse()]
 
+/** A held weapon's capsules (world axis points, radius) on an evaluated bot (fight-polish). */
+function weaponAt(s: EntityState, id: string, assetId: string): { p: V3[]; r: number }[] {
+  return heldWeaponSamples(personDims(id), s.joints, HAND[assetId] ?? 'R', weaponSpec(assetId)!, 1, s.clip).map((w) => ({ p: w.p.map((q) => toWorld(q, s.position, s.heading, 1)), r: w.r }))
+}
+
+/** A bot's skin on `bones` (fisted, as rendered): world points and a mesh. */
+function skinOf(s: EntityState, id: string, bones: Set<number>): { p: V3[]; mesh: ReturnType<typeof skinMesh> } {
+  const m = personDims(id).mocap!
+  const own = boneSkin(m, fighterPose(m, s.joints, s.clip), bones)!
+  const p = own.p.map((q) => toWorld(q, s.position, s.heading, 1))
+  return { p, mesh: skinMesh(p, own.tri) }
+}
+
+/** How far a weapon stays off a skin (m; negative: how deep it sits in it), uncapped. */
+function weaponGap(w: { p: V3[]; r: number }[], skin: { p: V3[]; mesh: ReturnType<typeof skinMesh> }): number {
+  const depth = Math.max(...w.map((c) => meshDepth(c.p, skin.mesh) + c.r))
+  if (depth > 0) return -depth
+  let gap = Infinity
+  for (const c of w) for (const u of c.p) for (const v of skin.p) gap = Math.min(gap, Math.hypot(u.x - v.x, u.y - v.y, u.z - v.z) - c.r)
+  return gap
+}
+
+/** All a bot's bones but the arm (or arms) holding a weapon. */
+function freeOf(assetId: string | null): Set<number> {
+  if (!assetId) return ALL_BONES
+  const spec = weaponSpec(assetId)!
+  const sides = spec.twoHanded ? ['Left', 'Right'] : [(HAND[assetId] ?? 'R') === 'L' ? 'Left' : 'Right']
+  const parts = spec.kind === 'shield' ? ['Arm', 'ForeArm', 'Hand'] : ['ForeArm', 'Hand']
+  const skip = new Set(sides.flatMap((sd) => parts.map((x) => BONE_INDEX[(sd + x) as keyof typeof BONE_INDEX])))
+  return new Set([...ALL_BONES].filter((b) => !skip.has(b)))
+}
+
+const MELEE = SCRIPTS.filter((s) => s.weapons && ['sword-bat', 'katana-spear', 'knife-staff', 'axe-shield'].includes(s.name))
+
 describe.skipIf(!HAS_LIBRARY)('the Fight Director on the real library (skipped without it)', () => {
   it('every connecting blow lands within 1.5 cm on its impact frame, on all scripts, Y Bot vs X Bot both ways', () => {
     const fails: string[] = []
@@ -223,12 +259,74 @@ describe.skipIf(!HAS_LIBRARY)('the Fight Director on the real library (skipped w
     expect(fails).toEqual([])
   }, 900_000)
 
+  it('a weapon block or parry meets the guard, the attacking weapon at least 5 cm off the rest of the defender (fight-polish)', () => {
+    const fails: string[] = []
+    let blocks = 0
+    for (const assets of PAIRINGS) {
+      for (const s of MELEE) {
+        const { sol, ev } = solve(s, assets)
+        for (const b of sol.report.beats) {
+          const who = s.script.split('\n')[b.index]!.trim().startsWith('B') ? 1 : 0
+          const outs = outcomesOf(s, b.index, b.impactTimes.length)
+          b.impactTimes.forEach((T, i) => {
+            if (outs[i] !== 'block' && outs[i] !== 'parry') return
+            blocks++
+            const st = ev.evaluate(T).entities
+            const a = st.find((e) => e.entityId === (who ? 'b' : 'a'))!
+            const d = st.find((e) => e.entityId === (who ? 'a' : 'b'))!
+            const gap = weaponGap(weaponAt(a, assets[who]!, s.weapons![who]!), skinOf(d, assets[1 - who]!, freeOf(s.weapons![1 - who]!)))
+            if (!(b.contactErrorM[i]! <= 0.015) || !(gap >= 0.05)) fails.push(`${assets[0]} ${s.name} b${b.index + 1}.${i + 1}: guard ${(b.contactErrorM[i]! * 100).toFixed(2)} cm, weapon clear ${(gap * 100).toFixed(1)} cm`)
+          })
+        }
+      }
+    }
+    expect(blocks).toBeGreaterThanOrEqual(12)
+    expect(fails).toEqual([])
+  }, 900_000)
+
+  it('no held weapon sits more than 3 cm in the other body within 0.1 s of each impact, but a hit on its own impact frame (fight-polish)', () => {
+    const fails: string[] = []
+    for (const assets of PAIRINGS) {
+      for (const s of MELEE) {
+        const { sol, ev } = solve(s, assets)
+        for (const b of sol.report.beats) {
+          const who = s.script.split('\n')[b.index]!.trim().startsWith('B') ? 1 : 0
+          const outs = outcomesOf(s, b.index, b.impactTimes.length)
+          b.impactTimes.forEach((T, i) => {
+            for (let k = -2; k <= 2; k++) {
+              const t = Math.round(T * FPS + k) / FPS
+              const st = ['a', 'b'].map((id) => ev.evaluate(t).entities.find((e) => e.entityId === id)!)
+              for (const q of [0, 1]) {
+                if (!s.weapons![q] || (k === 0 && q === who && (outs[i] === 'hit' || outs[i] === 'ko'))) continue
+                const depth = -weaponGap(weaponAt(st[q]!, assets[q]!, s.weapons![q]!), skinOf(st[1 - q]!, assets[1 - q]!, ALL_BONES))
+                if (depth > 0.03) fails.push(`${assets[0]} ${s.name} ${s.weapons![q]} t=${t.toFixed(3)}: ${(depth * 100).toFixed(2)} cm`)
+              }
+            }
+          })
+        }
+      }
+    }
+    expect(fails).toEqual([])
+  }, 900_000)
+
   it('solves the same bot fight to the same marks twice', () => {
     const s = SCRIPTS[1]!
     const parsed = parseFightScript(s.script, ['A', 'B'])
     if (!('beats' in parsed)) throw new Error(parsed.error)
     const fight = { id: 'f', name: 'f', fighterIds: ['a', 'b'], beats: parsed.beats, startT: 0.4, origin: { x: 0, z: 0, heading: 0 }, beatGap: 0.35, exaggeration: 1.5 } as unknown as FightDoc
     const input = (q: number): FighterInput => ({ entityId: q ? 'b' : 'a', assetId: BOTS[q]!, scale: 1, start: { x: q ? 0.55 : -0.55, y: 0, z: -4 } })
+    const a = solveFight(fight, [input(0), input(1)], { duration: 30, fps: FPS })
+    const b = solveFight(fight, [input(0), input(1)], { duration: 30, fps: FPS })
+    expect(JSON.stringify(b.tracks)).toBe(JSON.stringify(a.tracks))
+    expect(JSON.stringify(b.report)).toBe(JSON.stringify(a.report))
+  }, 300_000)
+
+  it('solves the same armed bot fight to the same marks twice (fight-polish)', () => {
+    const s = SCRIPTS.find((x) => x.name === 'axe-shield')!
+    const parsed = parseFightScript(s.script, ['A', 'B'])
+    if (!('beats' in parsed)) throw new Error(parsed.error)
+    const fight = { id: 'f', name: 'f', fighterIds: ['a', 'b'], beats: parsed.beats, startT: 0.4, origin: { x: 0, z: 0, heading: 0 }, beatGap: 0.35, exaggeration: 1.5 } as unknown as FightDoc
+    const input = (q: number): FighterInput => ({ entityId: q ? 'b' : 'a', assetId: BOTS[q]!, scale: 1, start: { x: q ? 0.55 : -0.55, y: 0, z: -4 }, weapons: [{ assetId: s.weapons![q]!, hand: HAND[s.weapons![q]!] ?? 'R', scale: 1 }] })
     const a = solveFight(fight, [input(0), input(1)], { duration: 30, fps: FPS })
     const b = solveFight(fight, [input(0), input(1)], { duration: 30, fps: FPS })
     expect(JSON.stringify(b.tracks)).toBe(JSON.stringify(a.tracks))

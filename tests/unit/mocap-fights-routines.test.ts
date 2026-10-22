@@ -4,11 +4,11 @@ import { buildRoutine, type ChoreoMarkSpec } from '@engine/choreography'
 import { clipImpactTime, defenseReadyTime, fallLandTime, moveClips } from '@engine/fight/clip-moves'
 import { DEFENSES, strikeImpacts } from '@engine/fight/moves'
 import { clearMocapClips, mocapClip, registerMocapClip } from '@engine/mocap/clip'
-import { clipPlays, tagPlay, type ClipRunMark, type MotionPlay } from '@engine/mocap/library-clips'
+import { clipPlays, runTravel, tagPlay, type ClipRunMark, type MotionPlay } from '@engine/mocap/library-clips'
 import { clearMocapBodies, registerMocapBody } from '@engine/mocap/registry'
 import { bodyLowY } from '@engine/floor'
 import { MOTION_PRESETS } from '@engine/motions'
-import { personDims, poseEffectors } from '@engine/skeleton'
+import { personDims, poseEffectors, toWorld } from '@engine/skeleton'
 import { fixtureSource } from './mocap-fixture'
 import { GUARD, registerFightClips } from './mocap-fight-fixture'
 import { sweep, syntheticClip } from './mocap-clip-fixture'
@@ -147,5 +147,25 @@ describe('routines and sequences on mocap bots', () => {
       expect(e.marks[e.marks.length - 1]!.time).toBeLessThanOrEqual(spec.durationS + 1e-9)
       for (let k = 1; k < e.marks.length; k++) expect(e.marks[k]!.time).toBeGreaterThanOrEqual(e.marks[k - 1]!.time)
     })
+  })
+
+  it('a strike that travels lands from where the keyframe move strikes, its step-in taken back with it (fight-polish)', () => {
+    // A jab that steps in 1 cm a frame (the library's travel into the target).
+    registerMocapClip('jabHead', syntheticClip(MALE, [...sweep(GUARD, { ...GUARD, shoulderLX: -1.5, elbowL: 0.05 }, 13), ...sweep({ ...GUARD, shoulderLX: -1.5, elbowL: 0.05 }, GUARD, 13).slice(1)], { inPlace: false, hips: (f) => ({ x: 0, y: 0, z: -0.01 * f }) }))
+    const { play, marks } = laid('jab-cross', 1)
+    const step: ChoreoMarkSpec = { time: 0.7, position: { ...play.pos }, gait: 'walk', easeIn: 0, easeOut: 0.3, hold: 0, arriveHeading: 0.3 }
+    const out = clipPlays([step, ...marks], { assetId: MALE })
+    const run = out.filter((m) => (m as ClipRunMark).clip?.id === 'jabHead') as ClipRunMark[]
+    const tau = clipImpactTime(moveClips('jab-cross', 'head')![0]!)
+    const lead = runTravel('jabHead', { assetId: MALE }, run[0]!.clip.at, tau)
+    expect(Math.hypot(lead.x, lead.z)).toBeGreaterThan(0.02)
+    // At the impact the root is where the keyframe move put it.
+    const at = toWorld(lead, run[0]!.position, run[0]!.arriveHeading, 1)
+    expect(at.x).toBeCloseTo(play.pos.x, 6)
+    expect(at.z).toBeCloseTo(play.pos.z, 6)
+    // The step-in before it ends where the run starts.
+    expect(out[0]!.time).toBe(0.7)
+    expect((out[0] as ChoreoMarkSpec).position.x).toBeCloseTo(run[0]!.position.x, 9)
+    expect((out[0] as ChoreoMarkSpec).position.z).toBeCloseTo(run[0]!.position.z, 9)
   })
 })

@@ -344,6 +344,8 @@ export interface MotionPlay {
   startT: number
   endT: number
   mirror?: boolean
+  /** Fork (fight-polish): a routine strike's target, this far ahead along its heading (m): a bot's keyframe lunge stops short of it. */
+  reach?: number
 }
 
 const PLAYS = new WeakMap<object, MotionPlay>()
@@ -425,7 +427,10 @@ function fightRun(play: MotionPlay, body: Body, heading: number, fell?: string, 
       const tau = clipImpactTime(b)
       const start = Math.max(i === 0 ? play.startT : (at[i - 1]! + at[i]!) / 2, at[i]! - tau)
       const end = i === blows.length - 1 ? play.endT : (at[i]! + at[i + 1]!) / 2
-      const from = out.length > 0 ? { ...out[out.length - 1]!.position } : play.pos
+      // Fork (fight-polish): the first blow's run starts back by the clip's own travel to its impact, so the blow lands from where the
+      // keyframe move strikes (at fighting range), not that much further in.
+      const lead = out.length > 0 ? null : toWorld(runTravel(b.clip, body, tau - (at[i]! - start), tau, play.mirror), { x: 0, y: 0, z: 0 }, h, 1)
+      const from = out.length > 0 ? { ...out[out.length - 1]!.position } : { x: play.pos.x - lead!.x, y: play.pos.y, z: play.pos.z - lead!.z }
       const run = clipRun({ clip: b.clip, from: tau - (at[i]! - start) }, body, from, h, start, end, play.mirror)
       const prev = out[out.length - 1]
       if (prev && prev.time >= run[0]!.time - 1e-6) endEarly(out[out.length - 2]!, prev, body)
@@ -467,6 +472,21 @@ function fightRun(play: MotionPlay, body: Body, heading: number, fell?: string, 
   return motionRun(play.presetId, body, play.pos, h, play.startT, play.endT, play.mirror)
 }
 
+/** A keyframe strike on a bot (no clip) comes no closer to its routine's target than this (m): it lands, it doesn't run through. */
+const STRIKE_STOP = 0.75
+
+/** Fork (fight-polish): a keyframe strike's mark on a bot, its lunge held STRIKE_STOP short of the play's target (`reach` ahead). */
+function short<M extends { time: number }>(mark: M, play: MotionPlay): M {
+  const p = (mark as unknown as { position?: V3 }).position
+  if (!p || play.reach === undefined || strikeImpacts(play.presetId).length === 0) return mark
+  const h = play.heading ?? 0
+  const fx = -Math.sin(h)
+  const fz = -Math.cos(h)
+  const ahead = (p.x - play.pos.x) * fx + (p.z - play.pos.z) * fz
+  const over = ahead - (play.reach - STRIKE_STOP)
+  return over > 0 ? copyTag(mark, { ...mark, position: { x: p.x - fx * over, y: p.y, z: p.z - fz * over } }) : mark
+}
+
 /** The fall clips (a get-up after one matches it). */
 const FALL_CLIPS = new Set(Object.keys(GET_UP_AFTER))
 
@@ -504,7 +524,7 @@ export function clipPlays<M extends { time: number }>(marks: M[], body: Body, he
     const fight = MOTION_PRESETS.find((p) => p.id === play?.presetId)?.category === 'fight'
     const run = !play ? null : fight ? fightRun(play, body, heading, fell, last?.time) : motionRun(play.presetId, body, play.pos, play.heading ?? heading, play.startT, play.endT, play.mirror)
     if (!play || !run) {
-      out.push(marks[i]!)
+      out.push(play && fight && play.reach !== undefined ? short(marks[i]!, play) : marks[i]!)
       i++
       continue
     }
@@ -517,6 +537,11 @@ export function clipPlays<M extends { time: number }>(marks: M[], body: Body, he
       end.position = { x: p.x, y: end.position.y, z: p.z }
       i++
     }
+    // Fork (fight-polish): a strike run starting back from its play (fightRun) takes the plain step-in mark before it back with it.
+    const step = out[out.length - 1] as { position?: V3; clip?: unknown; joints?: unknown } | undefined
+    const p0 = run[0]!.position
+    if (step?.position && !step.clip && !step.joints && Math.hypot(step.position.x - play.pos.x, step.position.z - play.pos.z) < 1e-6 && Math.hypot(p0.x - play.pos.x, p0.z - play.pos.z) > 1e-6)
+      out[out.length - 1] = { ...step, position: { x: p0.x, y: step.position.y, z: p0.z } } as unknown as M
     // A run that starts as the last one ends: the last ends a moment early, so the two crossfade.
     const prev = out[out.length - 1] as ClipRunMark | undefined
     const prevStart = out[out.length - 2] as ClipRunMark | undefined

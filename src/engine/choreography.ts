@@ -192,6 +192,8 @@ interface PlayOpts {
   facing?: number
   mirror?: boolean
   gait?: GaitId
+  /** Fork: a strike's target this far ahead (a bot's keyframe lunge stops short of it: mocap/library-clips.ts). */
+  reach?: number
 }
 
 /**
@@ -207,7 +209,7 @@ function playMotion(
 ): number {
   const fwd = opts.facing !== undefined ? forwardOf(opts.facing) : { x: 0, z: 0 }
   // Fork: one play, which a bot plays as a clip run (mocap/library-clips.ts).
-  const play = { presetId: preset.id, pos: { ...pos }, heading: opts.facing, startT, endT: startT + preset.duration, mirror: opts.mirror }
+  const play = { presetId: preset.id, pos: { ...pos }, heading: opts.facing, startT, endT: startT + preset.duration, mirror: opts.mirror, ...(opts.reach !== undefined ? { reach: opts.reach } : {}) }
   for (const kf of preset.keyframes) {
     if (marks.length >= MAX_MARKS_PER_ENTITY) break
     const forward = kf.move?.forward ?? 0
@@ -558,7 +560,7 @@ function attackBeat(
   })
   const atkFace = facingTo(atk.pos, def.pos)
   const defFace = facingTo(def.pos, atk.pos)
-  playMotion(atk.marks, attack, atk.pos, t, { facing: atkFace, mirror })
+  playMotion(atk.marks, attack, atk.pos, t, { facing: atkFace, mirror, reach: FIGHT_RANGE })
   // Reaction lands mid-attack.
   const reactT = t + beatDur * 0.35
   const reactEnd = playMotion(def.marks, react, def.pos, reactT, { facing: defFace })

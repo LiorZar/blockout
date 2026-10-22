@@ -954,6 +954,45 @@ Changes in this fork (2026):
   block's striking limb ≥ 5 cm off the head and torso; it failed at 1.3–3.6
   cm before), the shell picks in `mocap-fights.test.ts`,
   `mocap-fights-solve.test.ts`, `mocap-fights-routines.test.ts`.
+- Bot weapons kept out of bodies (fight-polish; `src/engine/weapon-shape.ts`
+  new, `src/engine/fight/solve.ts`; plan `docs/plans/2026-10-21-fight-polish.md`):
+  the bot fight checks (guard opening, orbit, post-blow push) compared skins
+  only, so a parried sword lay across a face and a falling defender's spear
+  went through its attacker. Each held weapon is now a few capsules
+  (`weapon-shape.ts`, pinned to the built models) and the checks count them:
+  each fighter's weapons in the other's skin, a weapon strike opening the
+  guard arm or leg it passes through, a defender's own weapon swinging out
+  with its arm (no deeper into its holder). A bot with a blade, club, shaft
+  or shield blocks and parries on its idle, the guard arm raised by a small
+  solve (`armedGuard`): the weapon meets the blow 30 cm in front of the
+  struck zone at its height, a blade across the line of attack, a shield
+  facing it, kept out of its own body (no deeper than its idle holds it) at
+  the guard and on the way in; its free arm swings out of the attacking
+  weapon's way. After a blow, a weapon riding a fall or follow-through into
+  the other body swings its arm clear (`swingWeapons`); armed bots rest far
+  enough apart that a weapon held out, or swept up into the idle as they
+  arrive, stays out of the other (`restGap`, `restDepth`). A bot's fist move
+  comes off its shield arm when the other hand can take it. To keep the solve
+  fast, a blow's placement reuses an armed guard solved for a guard point
+  within 5 mm, and a weapon whose axis points stay clear of a body's bone boxes
+  skips the skin test (a skin is built only from the bones it comes near).
+  Procedural people
+  and mannequins are untouched (`mocap-fights-legacy` hash-identical). Tests:
+  `tests/unit/weapon-shape.test.ts` (new), `tests/unit/mocap-fights-real.test.ts`
+  (weapon blocks ≥ 5 cm clear of the defender, no weapon over 3 cm in the
+  other body within 0.1 s of an impact, an armed fight solves the same twice).
+- Bot routines keep their distance (fight-polish; `src/engine/mocap/library-clips.ts`,
+  `src/engine/choreography.ts`): a one-vs-many routine stands each attacker
+  at fighting range (1.2 m) for its strike, but a bot's strike clip carries
+  it on toward the hero, and a keyframe-only lunge (the tackle, no clip)
+  ran straight through it; sparring and brawl sank 4–8 cm into the hero for
+  up to a second. A strike's first clip run now starts back by the clip's own
+  travel to its impact (the plain step-in before it with it), and a routine
+  strike's play carries its target distance (`reach`, a tag the procedural
+  marks don't use), which holds a bot's keyframe lunge 0.75 m short of it.
+  Procedural people play exactly as before. Test:
+  `tests/unit/mocap-fights-routines.test.ts` (a travelling strike lands from
+  where the keyframe move strikes, its step-in moved back with it).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
