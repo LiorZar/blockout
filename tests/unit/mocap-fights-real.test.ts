@@ -15,6 +15,7 @@ import { boneSkin, fighterPose, meshDepth, skinMesh } from '@engine/mocap/surfac
 import { personDims, toWorld } from '@engine/skeleton'
 import type { ClipState, EntityState, FightDoc, Scene, Shot, V3 } from '@engine/types'
 import { heldWeaponSamples } from '@engine/weapon-shape'
+import { holdArm } from '@engine/weapon-hold'
 import { weaponSpec } from '@engine/weapons'
 import { mocapLibraryDir, parseMocapManifest } from '../../src/shared/mocap-library'
 
@@ -332,4 +333,101 @@ describe.skipIf(!HAS_LIBRARY)('the Fight Director on the real library (skipped w
     expect(JSON.stringify(b.tracks)).toBe(JSON.stringify(a.tracks))
     expect(JSON.stringify(b.report)).toBe(JSON.stringify(a.report))
   }, 300_000)
+})
+
+// held-weapons: a weapon a bot holds stays out of its own holder on the clips that put it there, and on the rendered walk.
+describe.skipIf(!HAS_LIBRARY)('held weapons on the real library (held-weapons; skipped without it)', () => {
+  /** The holder's bones a weapon is kept out of: all but the holding forearm and hand (both for a two-hander; a shield's upper arm too). */
+  const holderBones = (assetId: string, hand: 'L' | 'R'): Set<number> => {
+    const spec = weaponSpec(assetId)!
+    const sides = spec.twoHanded ? ['Left', 'Right'] : [hand === 'L' ? 'Left' : 'Right']
+    const parts = spec.kind === 'shield' ? ['Arm', 'ForeArm', 'Hand'] : ['ForeArm', 'Hand']
+    const skip = new Set(sides.flatMap((sd) => parts.map((x) => BONE_INDEX[`${sd}${x}` as keyof typeof BONE_INDEX])))
+    return new Set([...ALL_BONES].filter((b) => !skip.has(b)))
+  }
+  const depthIn = (pcs: { p: V3[]; r: number }[], mesh: ReturnType<typeof skinMesh>): number => Math.max(...pcs.map((w) => meshDepth(w.p, mesh) + w.r))
+  // The clips that held a weapon 3.2–9.7 cm in its holder at b322531 (fight-polish's list, and the gun clips).
+  const CASES: [string, string[]][] = [
+    ['prop.shield', ['fightIdle', 'hookHead', 'knockedDown']],
+    ['prop.staff', ['heavySwing']],
+    ['prop.baseballBat', ['fightIdle', 'knockedDown', 'getUpBack', 'hitHeadBig']],
+    ['prop.sword', ['knockedDown', 'getUpKnockdown', 'hitHeadBig']],
+    ['prop.katana', ['hitHeadBig', 'koBack']],
+    ['prop.axe', ['hitHeadBig', 'getUpBack']],
+    ['prop.rifle', ['rifleAim', 'rifleFire', 'rifleIdle']],
+    ['prop.shotgun', ['rifleAim', 'rifleFire']],
+    ['prop.pistol', ['pistolAim', 'pistolFire', 'fightIdle']]
+  ]
+
+  it('no held weapon sits more than 3 cm in its own holder on any frame of those clips, Y Bot and X Bot, either hand', () => {
+    const fails: string[] = []
+    for (const id of BOTS) {
+      const dims = personDims(id)
+      const m = dims.mocap!
+      for (const [assetId, clips] of CASES) {
+        const spec = weaponSpec(assetId)!
+        const hand = HAND[assetId] ?? 'R'
+        for (const clipId of clips) {
+          const clip = mocapClip(clipId)
+          if (!clip) continue
+          for (const mirror of [false, true]) {
+            for (let f = 0; f < clip.frames; f += 2) {
+              const st: ClipState = { id: clipId, t: f / clip.fps, ...(mirror ? { mirror: true } : {}) }
+              // The arm lifted off the body where the clip's fist is in it, as applyHolds lifts it.
+              const arm = holdArm(dims, st, spec, hand, 1) ?? undefined
+              const sk = boneSkin(m, fighterPose(m, arm, st), holderBones(assetId, hand))!
+              const d = depthIn(heldWeaponSamples(dims, arm, hand, spec, 1, st), skinMesh(sk.p, sk.tri))
+              if (d > 0.03) fails.push(`${id} ${assetId} ${clipId}${mirror ? '~m' : ''} f${f}: ${(d * 100).toFixed(2)} cm`)
+            }
+          }
+        }
+      }
+    }
+    expect(fails).toEqual([])
+  }, 900_000)
+
+  it('a bot walking, jogging, running, crouching, sitting or lying with a weapon holds it clear of its own body, as rendered', async () => {
+    const { buildAsset } = await import('@renderer/viewport/builders')
+    const { heldWeaponMatrix, steadyArm } = await import('@renderer/viewport/hold')
+    const { botInput } = await import('@renderer/mocap/scene')
+    const { holdJoints, travelCarry } = await import('@engine/weapons')
+    const { holdLoop } = await import('@engine/weapon-hold')
+    const { weaponSamples } = await import('@engine/weapon-shape')
+    const THREE = await import('three')
+    const fails: string[] = []
+    const GAITS = [['walk', 1.4], ['jog', 3], ['run', 5], ['crouch', 0], ['crouch', 0.8], ['sit', 0], ['lie', 0]] as const
+    for (const id of BOTS) {
+      const dims = personDims(id)
+      const m = dims.mocap!
+      const b = buildAsset(id)
+      const entity = { id: 'p', assetId: id, transform: { position: { x: 0, y: 0, z: 0 }, rotationY: 0, scale: 1 } } as unknown as Parameters<typeof botInput>[0]
+      for (const assetId of ['prop.baseballBat', 'prop.katana', 'prop.spear', 'prop.staff', 'prop.rifle', 'prop.shotgun', 'prop.shield', 'prop.sword', 'prop.bow']) {
+        const spec = weaponSpec(assetId)!
+        const hand = HAND[assetId] ?? spec.defaultHand
+        const weapons = [{ spec, hand, scale: 1 }]
+        for (const [gait, speed] of GAITS) {
+          // As applyHolds holds it (a crouch, sit or lie loop: in the loop's own arms) and the renderer shows it (mocap/scene.ts botInput).
+          const ov = holdLoop(id, gait, speed) ? undefined : holdJoints(dims, undefined, weapons, {}, travelCarry(gait, speed))
+          for (let k = 0; k < 48; k += 4) {
+            const time = k / 24
+            const input = { gait, phase: 0, speed, distance: speed * time, time, ...(ov ? { overrides: ov } : {}) }
+            botInput(entity, { entityId: 'p' } as EntityState, input, { inputAt: () => null, held: new Set([hand]), weapons })
+            b.animate!(input)
+            if (gait === 'walk' || gait === 'jog' || gait === 'run') {
+              steadyArm(b.group, hand, input.overrides)
+              if (spec.support) steadyArm(b.group, hand === 'L' ? 'R' : 'L', input.overrides)
+            }
+            b.group.updateMatrixWorld(true)
+            const mat = heldWeaponMatrix(b.group, dims, spec, hand, 1)!
+            const pcs = weaponSamples(assetId).map((s) => ({ p: s.p.map((q) => { const v = new THREE.Vector3(q.x, q.y, q.z).applyMatrix4(mat); return { x: v.x, y: v.y, z: v.z } }), r: s.r }))
+            const pose = (b.group.userData.mocapHold as { pose: Parameters<typeof boneSkin>[1] }).pose
+            const sk = boneSkin(m, pose, holderBones(assetId, hand))!
+            const d = depthIn(pcs, skinMesh(sk.p, sk.tri))
+            if (d > 0.03) fails.push(`${id} ${assetId} ${gait}${speed > 0 ? ` ${speed}` : ''} t=${time.toFixed(3)}: ${(d * 100).toFixed(2)} cm`)
+          }
+        }
+      }
+    }
+    expect(fails).toEqual([])
+  }, 900_000)
 })

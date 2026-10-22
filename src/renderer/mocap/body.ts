@@ -31,7 +31,7 @@ import { clipWarp, gaitClipId, gaitPose as gaitClipPose } from '@engine/mocap/ga
 import { qconj, qeuler, qmul, qrot, qslerp, vadd, type Quat } from '@engine/mocap/quat'
 import { BONE_INDEX, FRAME_BONE, MOCAP_BONES } from '@engine/mocap/rig'
 import { personDims, type Bone } from '@engine/skeleton'
-import type { GaitId } from '@engine/types'
+import type { ClipState, GaitId } from '@engine/types'
 import type { AnimInput, BuiltAsset, PersonJoints } from '../viewport/builders'
 import { primaryBones } from './extract'
 import { mocapTemplate } from './library'
@@ -48,13 +48,31 @@ const RELAXED_CLIP = 'idle'
 const FIST_CLIP = 'boxIdle'
 
 const STILL_GAITS = new Set<GaitId>(['stand', 'gesture'])
+/** held-weapons: gaits whose weapon arm the renderer steadies (hold.ts steadyArm). */
+const TRAVEL_GAITS = new Set<GaitId>(['walk', 'jog', 'run'])
 
 const q = (o: THREE.Object3D): Quat => [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w]
+
+/**
+ * held-weapons: what a bot shows, for its held weapons' hold rule (`hold.ts`): the pose (arms steadied
+ * on a travelling gait), whether it plays a mark clip, the keyframe rig or a gait's loop, and the clip
+ * state and overrides it was given.
+ */
+export interface BotHold {
+  pose: MocapPose
+  kind: 'clip' | 'rig' | 'gait'
+  clip?: AnimInput['clip']
+  overrides?: Record<string, number>
+  /** A gait's loop played as is (crouch, sit, lie: not a travelling gait's), at its clip time: the weapon held as on a clip. */
+  loop?: ClipState
+}
 
 /** A pose, and whether it came off the hidden rig (the phase-1 path, the root's transform kept). */
 interface Posed {
   pose: MocapPose
   rig?: boolean
+  /** held-weapons: the loop clip and time of a still or crouched gait (BotHold.loop). */
+  loop?: ClipState
 }
 
 /** A bot's visual, or null while its library template isn't loaded. */
@@ -242,7 +260,8 @@ export function buildMocapPerson(
     const id = movesBody(ov) && STILL_GAITS.has(input.gait) ? undefined : gaitClipId(assetId, input.gait, input.speed, input.seated)
     const clip = id ? mocapClip(id) : undefined
     if (id && clip) {
-      return { pose: gaitClipPose(m, clip, clipWarp(m, clip, assetId), input.distance / ((input.scale ?? 1) * m.k), input.time, ov).pose }
+      const g = gaitClipPose(m, clip, clipWarp(m, clip, assetId), input.distance / ((input.scale ?? 1) * m.k), input.time, ov)
+      return { pose: g.pose, ...(TRAVEL_GAITS.has(input.gait) ? {} : { loop: { id, t: g.t } }) }
     }
     animatePerson(j, input)
     return { pose: rigPose(), rig: true }
@@ -262,8 +281,11 @@ export function buildMocapPerson(
   }
 
   let last: { pose: MocapPose; rig: boolean } = { pose: mocapPose(m, rigLocals()), rig: true }
+  // held-weapons: the pose as shown, its arms steadied (mocapSteady) on top, for the hold rule (hold.ts).
+  let steadied: MocapPose | null = null
   const animate = (input: AnimInput): void => {
     const r = resolve(input)
+    steadied = null
     if (r.rig) {
       // Phase 1: the hidden rig as posed (its root carries the gait's grounding).
       animatePerson(j, input)
@@ -277,6 +299,8 @@ export function buildMocapPerson(
       setBones(p)
       last = { pose: p, rig: false }
     }
+    const kind: BotHold['kind'] = input.clip && mocapClip(input.clip.id) ? 'clip' : r.rig ? 'rig' : 'gait'
+    group.userData.mocapHold = { pose: last.pose, kind, clip: input.clip, overrides: input.overrides, ...(kind === 'gait' && r.loop ? { loop: r.loop } : {}) } satisfies BotHold
   }
   // hold.ts steadyArm: a weapon arm keeps its posed rotation through a travelling gait.
   group.userData.mocapSteady = (side: 'L' | 'R', overrides: Record<string, number> | undefined): void => {
@@ -290,10 +314,14 @@ export function buildMocapPerson(
     }
     if (last.rig) {
       const p = mocapPose(m, rigLocals())
-      return setBones(last.pose.XG ? withExtras(m, p, poseLocals(m, last.pose)) : p)
+      steadied = last.pose.XG ? withExtras(m, p, poseLocals(m, last.pose)) : p
+      ;(group.userData.mocapHold as BotHold).pose = steadied
+      return setBones(steadied)
     }
-    // On a clip: the arm hangs off the clip's chest as the rig would hold it.
-    const G = [...last.pose.G]
+    // On a clip: the arm hangs off the clip's chest as the rig would hold it (held-weapons: on top of
+    // an arm already steadied, so a two-handed weapon keeps both).
+    const from = steadied ?? last.pose
+    const G = [...from.G]
     const half = (side === 'L' ? -1 : 1) * (m.rig.armRest / 2)
     const sh = side === 'L' ? qeuler(-ov('shoulderLX'), 0, -ov('shoulderLZ')) : qeuler(-ov('shoulderRX'), 0, ov('shoulderRZ'))
     const arm = qmul(G[BONE_INDEX.Spine2]!, qmul(sh, [0, 0, Math.sin(half), Math.cos(half)]))
@@ -302,8 +330,10 @@ export function buildMocapPerson(
     G[BONE_INDEX[`${s}Arm`]] = arm
     G[BONE_INDEX[`${s}ForeArm`]] = fore
     G[BONE_INDEX[`${s}Hand`]] = fore
-    const p = chain(m, G, last.pose.P[0]!)
-    setBones(last.pose.XG ? withExtras(m, p, poseLocals(m, last.pose)) : p)
+    const p = chain(m, G, from.P[0]!)
+    steadied = from.XG ? withExtras(m, p, poseLocals(m, from)) : p
+    ;(group.userData.mocapHold as BotHold).pose = steadied
+    setBones(steadied)
   }
 
   const tint = new THREE.Color()

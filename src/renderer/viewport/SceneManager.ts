@@ -37,7 +37,7 @@ import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
 import { buildAsset, markMesh, labelSprite, type AnimInput, type BuiltAsset } from './builders'
 import { heldWeaponMatrix, steadyArm } from './hold'
-import { canHoldWeapons, weaponSpec } from '@engine/weapons'
+import { canHoldWeapons, weaponSpec, type HeldWeapon } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
 import { StageEnvironment, toneMapSky } from './environment'
 import { renderStable } from './stable-render'
@@ -2261,8 +2261,15 @@ export class SceneManager {
     }
     seat(input, Math.min(Math.max(0, input.time), shot.duration), es)
     const held = new Set<'L' | 'R'>()
-    for (const e of scene.entities) if (e.heldBy?.entityId === visual.entity.id) held.add(e.heldBy.hand)
-    botInput(visual.entity, es, input, { inputAt, fights: scene.fights, held })
+    // held-weapons: and the weapons in them (a crouch, sit or lie loop holds them in its own arms, mocap/scene.ts).
+    const weapons: HeldWeapon[] = []
+    for (const e of scene.entities) {
+      if (e.heldBy?.entityId !== visual.entity.id) continue
+      held.add(e.heldBy.hand)
+      const spec = weaponSpec(e.assetId)
+      if (spec) weapons.push({ spec, hand: e.heldBy.hand, scale: e.transform.scale })
+    }
+    botInput(visual.entity, es, input, { inputAt, fights: scene.fights, held, weapons })
   }
 
   private isHeldWeapon(obj: THREE.Object3D): boolean {

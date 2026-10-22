@@ -15,8 +15,11 @@
 
 import * as THREE from 'three'
 import { heldInElbow, weaponRotation, type Hand, type M3, type WeaponSpec } from '@engine/weapons'
+import { holdTurn, poseHoldTurn, turnedRotation } from '@engine/weapon-hold'
+import { qtoM3, type Quat } from '@engine/mocap/quat'
 import type { PersonDims } from '@engine/skeleton'
 import type { V3 } from '@engine/types'
+import type { BotHold } from '../mocap/body'
 
 function compose(r: M3, k: number, t: V3, out: THREE.Matrix4): THREE.Matrix4 {
   return out.set(
@@ -36,6 +39,22 @@ function worldRot(o: THREE.Object3D): M3 {
   return [e[0]!, e[4]!, e[8]!, e[1]!, e[5]!, e[9]!, e[2]!, e[6]!, e[10]!]
 }
 
+/**
+ * held-weapons: a bot's hold turn (`weapon-hold.ts`) for what it shows: on a
+ * mark clip or the keyframe rig the engine's own (the evaluator's clip state
+ * and joints, so both put the weapon in the same place); on a crouch, sit or
+ * lie loop as on a clip, at the loop's clip time; on a travelling gait's
+ * loop, measured on the pose as shown, its arms steadied.
+ */
+function botTurn(person: THREE.Object3D, dims: PersonDims, spec: WeaponSpec, hand: Hand, weaponScale: number): Quat | null {
+  const held = person.userData.mocapHold as BotHold | undefined
+  if (!dims.mocap || !held) return null
+  if (held.kind !== 'gait') return holdTurn(dims, held.overrides, held.clip, spec, hand, weaponScale)
+  if (held.loop) return holdTurn(dims, held.overrides, held.loop, spec, hand, weaponScale)
+  const q = poseHoldTurn(dims.mocap, held.pose, spec, hand, weaponScale)
+  return q[3] > 1 - 1e-12 ? null : q
+}
+
 /** World matrix of a weapon model held in `hand` of the rig `person` (null when the rig has no such arm). */
 export function heldWeaponMatrix(
   person: THREE.Object3D,
@@ -49,13 +68,23 @@ export function heldWeaponMatrix(
   const shoulder = person.getObjectByName(hand === 'L' ? 'shoulderL' : 'shoulderR')
   const torso = person.getObjectByName('torso')
   if (!elbow || !shoulder) return null
+  const turn = botTurn(person, dims, spec, hand, weaponScale)
   if (spec.mount === 'hand') {
     const h = heldInElbow(dims, spec, hand, weaponScale)
+    if (turn) {
+      // Turned in the grip about the palm (0, −lowerArmLen, 0).
+      const c = qtoM3(turn)
+      const d = { x: h.t.x, y: h.t.y + dims.lowerArmLen, z: h.t.z }
+      const r = [0, 0, 0, 0, 0, 0, 0, 0, 0].map((_, i) => c[3 * Math.floor(i / 3)]! * h.r[i % 3]! + c[3 * Math.floor(i / 3) + 1]! * h.r[3 + (i % 3)]! + c[3 * Math.floor(i / 3) + 2]! * h.r[6 + (i % 3)]!) as M3
+      const t = { x: c[0] * d.x + c[1] * d.y + c[2] * d.z, y: c[3] * d.x + c[4] * d.y + c[5] * d.z - dims.lowerArmLen, z: c[6] * d.x + c[7] * d.y + c[8] * d.z }
+      return out.multiplyMatrices(elbow.matrixWorld, compose(r, weaponScale, t, tmpLocal))
+    }
     return out.multiplyMatrices(elbow.matrixWorld, compose(h.r, weaponScale, h.t, tmpLocal))
   }
   const handW = elbow.localToWorld(new THREE.Vector3(0, -dims.lowerArmLen, 0))
   const shoulderW = shoulder.getWorldPosition(new THREE.Vector3())
-  const r = weaponRotation(spec, hand, { hand: handW, handRot: worldRot(elbow), shoulder: shoulderW, torso: torso ? worldRot(torso) : undefined })
+  const handRot = worldRot(elbow)
+  const r = turnedRotation(weaponRotation(spec, hand, { hand: handW, handRot, shoulder: shoulderW, torso: torso ? worldRot(torso) : undefined }), handRot, turn)
   const k = weaponScale * new THREE.Vector3().setFromMatrixScale(elbow.matrixWorld).x
   const g = spec.grip
   const t = {

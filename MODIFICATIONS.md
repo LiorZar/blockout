@@ -1038,6 +1038,41 @@ Changes in this fork (2026):
   0.7 / 0.1 cm. Tests: `tests/unit/mocap-contact-lock.test.ts` (new),
   `tests/unit/mocap-clips-real.test.ts` (a knee counts its whole drift, not
   only along the travel).
+- Bots hold weapons clear of their own bodies (held-weapons; `src/engine/weapon-hold.ts`
+  (new), `src/engine/weapons.ts`, `src/engine/weapon-shape.ts`, `src/engine/evaluate.ts`,
+  `src/engine/fight/solve.ts`, `src/renderer/mocap/body.ts`, `src/renderer/mocap/scene.ts`,
+  `src/renderer/viewport/hold.ts`, `src/renderer/viewport/SceneManager.ts`): the library's
+  Mixamo clips were recorded empty-handed, so a weapon held rigidly in a bot's fist went
+  through its holder (a shield through the head in the fight idle, a rifle's stock in the
+  chest on the aim, a bat in the legs in a fall). A bot's weapon now turns in the grip
+  about the palm by the least that keeps it out of the holder's hulls (each bone's skin as
+  a convex hull of its support points, the other hand's fingers too, and for a shield a hand
+  and forearm 3.5 cm wider where the skin bends round a grip; the holding forearm and hand
+  left out); on
+  a clip the turn is a curve over its frames, followed frame to frame so it never flips
+  round the body, and a joint overlay or crossfade nudges it on the pose only past 1.5 cm
+  (never deeper than the curve's turn); a shield faces out from the spine. Where the fist
+  itself is in the body (a hand on the knee on a get-up, a bow bringing the fist to the
+  thigh, a hand at the chin) the holding arm moves one way per run of frames (forward and a
+  little out, back and in, straight out to the side, or the elbow opened, never past
+  straight and never for a shield) by the least move past which the weapon stays out,
+  eased over 5 frames on a clip and scaled back on a frame the easing would put in the
+  body; `applyHolds` adds it, so the engine and the renderer agree. On a keyframe motion
+  the evaluator eases the arm in before the fist reaches the body and out after (it looks
+  at the holder's own marks 0.25 s either side; state(t) stays pure). On a crouch, crouched
+  walk, sit or lie loop the loop's own arms hold the weapon as on a clip; walking, jogging
+  or running a long weapon rides on the shoulder (`TRAVEL_CARRY`, by speed), and the
+  renderer's walk steadies both arms of a two-handed weapon. Procedural people and studio
+  mannequins hold weapons exactly as before (`mocap-fights-legacy` hash-identical). Probes
+  (`.maestro/held-weapons/`), runs of frames deeper than 3 cm: every clip × 12 weapons × both
+  bots × mirror 9786 at b322531 → 125 (full sweep, before the last fixes) → 12 on the 33
+  clips that held those, re-swept with the final rule (1–3 frames each, worst 6.05 cm: a
+  shield on fast dance spins, a pistol or sword at the other forearm; in BACKLOG.md);
+  keyframe motions 1335 → 0; gaits as rendered 328 → 0; weapon
+  fights keep every fight-polish bar. Tests: `tests/unit/weapon-hold.test.ts` (new, fixture
+  skeleton and synthetic clips), `tests/unit/mocap-fights-real.test.ts` (the clips that put
+  a weapon in its holder, and walking, jogging, running, crouching, sitting and lying as
+  rendered).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

@@ -46,7 +46,8 @@ import { boneSkin, fighterPose, meshDepth, partAhead, skinDepth, skinMesh, skinP
 import { MOTION_PRESETS, type MotionPreset } from '../motions'
 import { personDims, poseEffectors, toWorld, type Effector, type PersonDims } from '../skeleton'
 import type { ClipState, EntityState, FightBeat, FightDoc, FightOutcome, GaitId, MarkClip, Scene, Shot, V3 } from '../types'
-import { SUPPORT_SLACK, handFrame, heldPointLocal, holdJoints, supportReach, weaponContact, weaponRotation, weaponSpec, type HeldWeapon } from '../weapons'
+import { SUPPORT_SLACK, handFrame, heldPointLocal, holdJoints, supportReach, weaponContact, weaponSpec, type HeldWeapon } from '../weapons'
+import { heldRotation } from '../weapon-hold'
 import { heldWeaponSamples, weaponSamples, type WeaponSamples } from '../weapon-shape'
 import { DEFENSES, REACTIONS, SHIELD_BLOCK, SHOT_MOVES, fightMotion, gripPitch, gunAimMove, shotHand, shotImpacts, strikeImpacts, type StrikeImpact } from './moves'
 import { impact, snapAmplitude, snapCurve, weaponHeft, type ImpactResult } from './physics'
@@ -2961,8 +2962,10 @@ function armedGuard(def: Fighter, joints: Joints, clip: ClipState | undefined, s
   const stride = Math.max(2, Math.ceil(all.reduce((n, x) => n + x.p.length, 0) / GUARD_POINTS))
   const pieces = all.map((x) => ({ p: x.p.filter((_, k) => k % stride === 0 || k === x.p.length - 1), r: x.r * w.scale * def.scale }))
   const holding = (j: Joints): ((q: V3) => V3) => {
-    const f = handFrame(def.dims, clip ? j : holdJoints(def.dims, j, def.held), w.hand, clip)
-    const r = weaponRotation(w.spec, w.hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder, torso: f.torso })
+    const hj = clip ? j : holdJoints(def.dims, j, def.held)
+    const f = handFrame(def.dims, hj, w.hand, clip)
+    // held-weapons: turned in the grip by the clip's hold turn (weapon-hold.ts); the guard keeps it off its holder itself.
+    const r = heldRotation(def.dims, hj, w.hand, w.spec, w.scale, clip, f, false)
     const g = w.spec.grip
     return (q) => {
       const x = (q.x - g.x) * w.scale

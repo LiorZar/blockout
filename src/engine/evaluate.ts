@@ -286,6 +286,32 @@ export class ShotEvaluator {
 
   evaluate(t: number): ShotState {
     const time = Math.min(Math.max(0, t), this.shot.duration)
+    const entities = this.trackStates(time)
+    // Fork: held weapons ride their holder's hand (src/engine/weapons.ts); a bot's arm eases off its own body
+    // looking at its marks a moment either side (`holderAt`).
+    applyHolds(this.scene.entities, entities, { time, states: this.holderAt })
+
+    return { time, camera: this.evaluateCamera(time, entities), entities }
+  }
+
+  /**
+   * Fork (held-weapons): the states from the marks alone (no holds, no camera, a posed move not grounded) at another
+   * time, clamped to the shot; remembered by time (pure per document).
+   */
+  private holderAt = (t: number): EntityState[] => {
+    const time = Math.min(Math.max(0, t), this.shot.duration)
+    let states = this.aheadStates.get(time)
+    if (!states) {
+      if (this.aheadStates.size >= 256) this.aheadStates.clear()
+      states = this.trackStates(time, false)
+      this.aheadStates.set(time, states)
+    }
+    return states
+  }
+  private aheadStates = new Map<number, EntityState[]>()
+
+  /** Every entity's state at `time` from its marks, boardings and marriages (`grounded` false: a posed move's floor line skipped). */
+  private trackStates(time: number, grounded = true): EntityState[] {
     const entities: EntityState[] = []
 
     for (const { entity, marks, legs } of this.entityLegs.values()) {
@@ -332,7 +358,7 @@ export class ShotEvaluator {
       const clip = entity.assetId.startsWith('person.') ? clipStateAt(r, time, u, entity) : undefined
       const position = clip
         ? clipPosition(entity, r, u, heading, r.position)
-        : from?.joints && to?.joints && entity.assetId.startsWith('person.')
+        : grounded && from?.joints && to?.joints && entity.assetId.startsWith('person.')
           ? {
               ...r.position,
               y: posedMoveY(
@@ -369,10 +395,7 @@ export class ShotEvaluator {
 
     this.resolveBoardings(entities, time)
     this.resolveMarriages(entities, time)
-    // Fork: held weapons ride their holder's hand (src/engine/weapons.ts).
-    applyHolds(this.scene.entities, entities)
-
-    return { time, camera: this.evaluateCamera(time, entities), entities }
+    return entities
   }
 
   /**

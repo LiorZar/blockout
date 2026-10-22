@@ -22,6 +22,7 @@ import { assetSpec } from './assets'
 import { LABEL_COLOR_NAMES } from './palette'
 import { personDims, poseFrames, toWorld, type PersonDims } from './skeleton'
 import type { ClipState, Entity, EntityState, HeldBy, V3 } from './types'
+import { easedRigLift, heldRotation, holdArm, holdLoop, liftJoints, rigLift } from './weapon-hold'
 
 export type Hand = HeldBy['hand']
 
@@ -460,7 +461,8 @@ export function heldPointLocal(
   clip?: ClipState
 ): V3 {
   const f = handFrame(dims, joints, hand, clip)
-  const r = weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder, torso: f.torso })
+  // Fork (held-weapons): a bot's weapon turns in the grip to clear its own body (weapon-hold.ts).
+  const r = heldRotation(dims, joints, hand, spec, weaponScale, clip, f)
   return add(f.p, apply(r, scale(sub(modelPoint, spec.grip), weaponScale)))
 }
 
@@ -638,6 +640,28 @@ function longGunRetarget(dims: PersonDims, joints: Record<string, number>, hand:
   return Object.fromEntries(keys.map((k, i) => [k, x[i]!]))
 }
 
+/**
+ * A bot's long weapon on the move (held-weapons): the holding arm's carry on top of the idle hold (shoulder X / Z, elbow).
+ * A bat or a katana rests back on the shoulder, both fists at the chest; a spear or a staff rides upright at the
+ * shoulder in one hand, its butt clear of the stride and the floor; the long guns cross the body, the bow stands at the side.
+ */
+export const TRAVEL_CARRY: Record<string, { shoulderX: number; shoulderZ: number; elbow: number }> = {
+  'prop.katana': { shoulderX: -1.1, shoulderZ: 0, elbow: 2.0 },
+  'prop.baseballBat': { shoulderX: -1.1, shoulderZ: 0, elbow: 2.0 },
+  'prop.spear': { shoulderX: -1.4, shoulderZ: 0, elbow: 1.4 },
+  'prop.staff': { shoulderX: -1.1, shoulderZ: 0, elbow: 1.6 },
+  'prop.rifle': { shoulderX: -0.45, shoulderZ: 0, elbow: 0.6 },
+  'prop.shotgun': { shoulderX: -0.45, shoulderZ: 0, elbow: 0.6 },
+  'prop.bow': { shoulderX: -0.45, shoulderZ: 0, elbow: 0.6 }
+}
+
+/** How far a moving bot's carry is raised (0 standing … 1 from 1 m/s on a walk, jog or run). */
+export function travelCarry(gait: string, speed: number): number {
+  if (gait !== 'walk' && gait !== 'jog' && gait !== 'run') return 0
+  const u = clamp(speed, 0, 1)
+  return u * u * (3 - 2 * u)
+}
+
 /** The off arm stops just short of locking straight. */
 const REACH = 0.995
 
@@ -661,7 +685,10 @@ export function supportReach(
   const support = spec.support ?? spec.grip
   const shoulder = handFrame(dims, joints, hand === 'R' ? 'L' : 'R').shoulder
   const arm = (dims.upperArmLen + dims.lowerArmLen) * REACH
-  const at = (s: number): V3 => heldPointLocal(dims, joints, hand, spec, add(support, scale(sub(spec.grip, support), s)), weaponScale)
+  // One hand frame and grip for every point along the weapon (heldPointLocal's).
+  const f = handFrame(dims, joints, hand)
+  const r = heldRotation(dims, joints, hand, spec, weaponScale, undefined, f)
+  const at = (s: number): V3 => add(f.p, apply(r, scale(sub(add(support, scale(sub(spec.grip, support), s)), spec.grip), weaponScale)))
   const gap = (s: number): number => len(sub(at(s), shoulder)) - arm
   const along = len(sub(spec.grip, support)) * weaponScale
   if (gap(0) <= 0) return { point: at(0), slideM: 0, shortM: 0 }
@@ -684,19 +711,72 @@ export interface HeldWeapon {
   scale: number
 }
 
-/**
- * The holder's joints with its weapons' grip poses (pure; the evaluator and
- * the fight solver share it): each weapon's idle hold blends into its arm as
- * far as that arm is at rest, and the free off hand of a two-handed weapon
- * reaches the support point. `fixed` are the static pose sliders, which the
- * renderer adds on top. Returns `joints` itself when nothing changes.
- */
-export function holdJoints(
-  dims: PersonDims,
-  joints: Record<string, number> | undefined,
-  held: HeldWeapon[],
-  fixed: Record<string, number> = {}
-): Record<string, number> | undefined {
+/** held-weapons: a bot's holding-arm lift on the keyframe rig (weapon-hold.ts `rigLift`) for a weapon, on the joints before it. */
+export type RigLift = (h: HeldWeapon, joints: Record<string, number>) => number
+
+/** held-weapons: the evaluator's time and its holders' own states at other times (before holds), for the rig lift to look ahead. */
+export interface HoldsAt {
+  time: number
+  states: (t: number) => EntityState[]
+}
+
+/** Raw rig lifts per hand on the 24 fps grid, by the evaluator's look-up (pure per document). */
+const GRID_LIFTS = new WeakMap<object, Map<string, Map<number, Partial<Record<Hand, number>>>>>()
+
+/** A holder's raw rig lifts at n / 24 s (none off the rig: on a clip, travelling, crouched…). */
+function gridLifts(at: HoldsAt, holder: Entity, dims: PersonDims, held: HeldWeapon[], fixed: Record<string, number>, n: number): Partial<Record<Hand, number>> {
+  let byAt = GRID_LIFTS.get(at.states)
+  if (!byAt) {
+    byAt = new Map()
+    GRID_LIFTS.set(at.states, byAt)
+  }
+  let byN = byAt.get(holder.id)
+  if (!byN) {
+    byN = new Map()
+    byAt.set(holder.id, byN)
+  }
+  let out = byN.get(n)
+  if (!out) {
+    out = {}
+    const st = at.states(n / 24).find((s) => s.entityId === holder.id)
+    if (st && !st.clip && (st.gait === 'stand' || st.gait === 'gesture')) {
+      const lifts = out
+      const pose = holdPose(dims, st.joints, held, fixed, 0)
+      liftArms({ ...pose.out }, pose.hands, fixed, (h, j) => (lifts[h.hand] = rigLift(dims, j, h.spec, h.hand, h.scale)))
+    }
+    byN.set(n, out)
+  }
+  return out
+}
+
+/** A holder's rig lift at the evaluator's time, eased in and out over its neighbours on the 24 fps grid (weapon-hold.ts). */
+function easedLift(at: HoldsAt, holder: Entity, dims: PersonDims, held: HeldWeapon[], fixed: Record<string, number>): RigLift {
+  const f = at.time * 24
+  const n = Math.round(f)
+  // On the grid the lift at the time is the grid's own (the same joints).
+  const onGrid = Math.abs(f - n) < 1e-6
+  return (h, j) =>
+    easedRigLift(at.time, onGrid ? (gridLifts(at, holder, dims, held, fixed, n)[h.hand] ?? 0) : rigLift(dims, j, h.spec, h.hand, h.scale), (k) => gridLifts(at, holder, dims, held, fixed, k)[h.hand] ?? 0)
+}
+
+/** The hold pose before a bot's arm lifts and the off hand reaches: the hands, the joints, how far each arm is at rest. */
+interface HoldPose {
+  hands: Partial<Record<Hand, HeldWeapon>>
+  out: Record<string, number>
+  rest: Partial<Record<Hand, number>>
+  touched: boolean
+}
+
+/** Bots' hold poses remembered (a pure function of the inputs: the rig lift looks at the same frames again; cleared when full). */
+const POSES = new WeakMap<object, Map<string, HoldPose>>()
+
+/** `holdJoints` up to the arm's lift: each idle hold blended in, the travel carry, a shouldered long gun retargeted. */
+function holdPose(dims: PersonDims, joints: Record<string, number> | undefined, held: HeldWeapon[], fixed: Record<string, number>, travel: number): HoldPose {
+  const m = dims.mocap
+  const key = m ? `${m.k}|${travel}|${held.map((h) => `${h.spec.assetId}:${h.hand}:${h.scale}`).join(',')}|${JSON.stringify(fixed)}|${JSON.stringify(joints ?? {})}` : ''
+  const byRig = m ? POSES.get(m.rig) : undefined
+  const known = byRig?.get(key)
+  if (known) return known
   const hands: Partial<Record<Hand, HeldWeapon>> = {}
   for (const h of held) hands[h.hand] ??= h
   const out: Record<string, number> = { ...joints }
@@ -716,6 +796,13 @@ export function holdJoints(
     }
     if (w <= 0) continue
     for (const [k, val] of Object.entries(idleJoints(h.spec, hand))) out[k] = (out[k] ?? 0) + val * w
+    // held-weapons: a bot on the move carries a long weapon on its shoulder (TRAVEL_CARRY), clear of the stride.
+    const carry = dims.mocap && travel > 0 ? TRAVEL_CARRY[h.spec.assetId] : undefined
+    if (carry) {
+      out[`shoulder${hand}X`] = (out[`shoulder${hand}X`] ?? 0) + carry.shoulderX * travel * w
+      out[`shoulder${hand}Z`] = (out[`shoulder${hand}Z`] ?? 0) + carry.shoulderZ * travel * w
+      out[`elbow${hand}`] = (out[`elbow${hand}`] ?? 0) + carry.elbow * travel * w
+    }
     touched = true
   }
   for (const hand of ['R', 'L'] as Hand[]) {
@@ -738,6 +825,53 @@ export function holdJoints(
     for (const [k, val] of Object.entries(fix)) out[k] = (out[k] ?? 0) + val * shouldered
     touched = true
   }
+  const pose = { hands, out, rest, touched }
+  if (m) {
+    const map = byRig ?? new Map<string, HoldPose>()
+    if (!byRig) POSES.set(m.rig, map)
+    if (map.size >= 64) map.clear()
+    map.set(key, pose)
+  }
+  return pose
+}
+
+/** Each holding arm lifted in `out` by `lift` on the joints so far (the right hand's first); whether any moved. */
+function liftArms(out: Record<string, number>, hands: Partial<Record<Hand, HeldWeapon>>, fixed: Record<string, number>, lift: RigLift): boolean {
+  let moved = false
+  for (const hand of ['R', 'L'] as Hand[]) {
+    const h = hands[hand]
+    if (!h) continue
+    const s = lift(h, sumJoints(out, fixed))
+    if (s === 0) continue
+    for (const [k, val] of Object.entries(liftJoints(hand, s))) out[k] = (out[k] ?? 0) + val
+    moved = true
+  }
+  return moved
+}
+
+/**
+ * The holder's joints with its weapons' grip poses (pure; the evaluator and
+ * the fight solver share it): each weapon's idle hold blends into its arm as
+ * far as that arm is at rest, and the free off hand of a two-handed weapon
+ * reaches the support point. `fixed` are the static pose sliders, which the
+ * renderer adds on top. Returns `joints` itself when nothing changes.
+ */
+export function holdJoints(
+  dims: PersonDims,
+  joints: Record<string, number> | undefined,
+  held: HeldWeapon[],
+  fixed: Record<string, number> = {},
+  travel = 0,
+  rig: boolean | RigLift = false
+): Record<string, number> | undefined {
+  const pose = holdPose(dims, joints, held, fixed, travel)
+  const hands = pose.hands
+  const rest = pose.rest
+  const out: Record<string, number> = { ...pose.out }
+  let touched = pose.touched
+  // held-weapons: a bot shown on the keyframe rig (`rig`) lifts its holding arm off its own body where its fist is in it
+  // (weapon-hold.ts; a RigLift eases it in and out), before the off hand reaches the support.
+  if (rig && dims.mocap && liftArms(out, hands, fixed, rig === true ? (h, j) => rigLift(dims, j, h.spec, h.hand, h.scale) : rig)) touched = true
   for (const hand of ['R', 'L'] as Hand[]) {
     const h = hands[hand]
     const off: Hand = hand === 'R' ? 'L' : 'R'
@@ -759,8 +893,10 @@ export function holdJoints(
  * The evaluator hook (evaluate.ts, after marriages): each holder takes its
  * weapons' grip poses (`holdJoints`), and every held weapon's state moves to
  * its grip in the hand. A scene without held weapons is left untouched.
+ * `at` (held-weapons): the time and the holders' states at other times, so
+ * a bot's rig lift eases in before its fist reaches its body.
  */
-export function applyHolds(entities: Entity[], states: EntityState[]): void {
+export function applyHolds(entities: Entity[], states: EntityState[], at?: HoldsAt): void {
   if (!entities.some((e) => e.heldBy)) return
   const byId = new Map(entities.map((e) => [e.id, e]))
   const stateOf = new Map(states.map((st) => [st.entityId, st]))
@@ -780,9 +916,22 @@ export function applyHolds(entities: Entity[], states: EntityState[]): void {
     const held: HeldWeapon[] = (['R', 'L'] as Hand[])
       .filter((hand) => hands[hand])
       .map((hand) => ({ spec: hands[hand]!.spec, hand, scale: hands[hand]!.weapon.transform.scale }))
-    // Fork (mocap clips): a bot playing a clip holds the weapon in the clip's own hands.
+    // Fork (mocap clips): a bot playing a clip holds the weapon in the clip's own hands
+    // (held-weapons: the arm moved off the body where the clip's fist is in it, weapon-hold.ts).
     const clip = dims.mocap ? st.clip : undefined
-    if (!clip) st.joints = holdJoints(dims, st.joints, held, fixed)
+    if (!clip) {
+      // held-weapons: on a crouch, sit or lie loop a bot's own arms hold the weapon (the renderer adds the clip's arm move,
+      // weapon-hold.ts `loopArm`); on a still gait the hold pose plays on the keyframe rig, its arm off the body there.
+      if (!dims.mocap || !holdLoop(holder.assetId, st.gait, st.speed)) {
+        const rig = !!dims.mocap && (st.gait === 'stand' || st.gait === 'gesture')
+        const lift: boolean | RigLift = rig && at ? easedLift(at, holder, dims, held, fixed) : rig
+        st.joints = holdJoints(dims, st.joints, held, fixed, dims.mocap ? travelCarry(st.gait, st.speed) : 0, lift)
+      }
+    } else
+      for (const h of held) {
+        const arm = holdArm(dims, clip, h.spec, h.hand, h.scale)
+        if (arm) st.joints = sumJoints(st.joints, arm)
+      }
     const combined = sumJoints(st.joints, fixed)
     for (const hand of ['R', 'L'] as Hand[]) {
       const h = hands[hand]

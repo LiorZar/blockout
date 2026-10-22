@@ -12,7 +12,8 @@
 
 import type { ClipState, V3 } from './types'
 import type { PersonDims } from './skeleton'
-import { handFrame, weaponRestLift, weaponRotation, type Hand, type WeaponSpec } from './weapons'
+import { handFrame, weaponRestLift, type Hand, type WeaponSpec } from './weapons'
+import { heldRotation } from './weapon-hold'
 
 /** A capsule: the segment a → b (model frame, m) and its radius. */
 export interface WeaponPiece {
@@ -84,7 +85,8 @@ export function weaponSamples(assetId: string): WeaponSamples[] {
  */
 export function heldWeaponSamples(dims: PersonDims, joints: Record<string, number> | undefined, hand: Hand, spec: WeaponSpec, weaponScale: number, clip?: ClipState, world?: { position: V3; heading: number; scale: number }): WeaponSamples[] {
   const f = handFrame(dims, joints, hand, clip)
-  const m = weaponRotation(spec, hand, { hand: f.p, handRot: f.r, shoulder: f.shoulder, torso: f.torso })
+  // held-weapons: a bot's weapon turned in the grip to clear its own body (weapon-hold.ts).
+  const m = heldRotation(dims, joints, hand, spec, weaponScale, clip, f)
   const g = spec.grip
   const at = (q: V3): V3 => {
     const x = (q.x - g.x) * weaponScale

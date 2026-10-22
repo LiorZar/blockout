@@ -10,7 +10,10 @@
 
 import { smoothstep } from '@engine/easing'
 import { gaitClipId } from '@engine/mocap/gait-clips'
+import { personDims } from '@engine/skeleton'
 import type { Entity, EntityState, FightDoc, GaitId } from '@engine/types'
+import { holdLoop, loopArm } from '@engine/weapon-hold'
+import type { HeldWeapon } from '@engine/weapons'
 import type { AnimInput } from '../viewport/builders'
 
 /** Seconds a change of gait pose crossfades over. */
@@ -34,9 +37,23 @@ export function poseKind(assetId: string, input: AnimInput): string {
  * fists (a fighter's hands, a hand holding a weapon; else the marks' `handL`
  * / `handR` channels).
  */
-export function botInput(entity: Entity, es: EntityState, input: AnimInput, o: { inputAt: (t: number) => AnimInput | null; fights?: FightDoc[]; held: ReadonlySet<'L' | 'R'> }): void {
+export function botInput(entity: Entity, es: EntityState, input: AnimInput, o: { inputAt: (t: number) => AnimInput | null; fights?: FightDoc[]; held: ReadonlySet<'L' | 'R'>; weapons?: HeldWeapon[] }): void {
   input.scale = entity.transform.scale
   if (es.clip) input.clip = es.clip
+  // held-weapons: on a crouch, sit or lie loop the loop's own arms hold the weapons, each arm moved off the body where
+  // the loop's fist is in it, as on a clip (weapon-hold.ts).
+  const loop = !es.clip && o.weapons?.length ? holdLoop(entity.assetId, input.gait, input.speed, input.seated) : undefined
+  if (loop) {
+    const dims = personDims(entity.assetId, entity.params)
+    const distance = input.distance / ((input.scale ?? 1) * (dims.mocap?.k ?? 1))
+    for (const w of o.weapons!) {
+      const arm = loopArm(dims, entity.assetId, loop, distance, input.time, w.spec, w.hand, w.scale)
+      if (!arm) continue
+      const ov: Record<string, number> = { ...input.overrides }
+      for (const [k, v] of Object.entries(arm)) ov[k] = (ov[k] ?? 0) + v
+      input.overrides = ov
+    }
+  }
   const fighter = !!o.fights?.some((f) => f.fighterIds.includes(entity.id))
   const hand = (h: 'L' | 'R'): number => (fighter || o.held.has(h) ? 1 : Math.min(1, Math.max(0, input.overrides?.[`hand${h}`] ?? 0)))
   const L = hand('L')
