@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts); see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -136,9 +136,13 @@ function evaluateTrack<M extends MarkBase>(
       const d = progress * leg.path.length
       // Finite-difference instantaneous speed (pure in t).
       const du = 0.001
-      const p2 = easedProgress(Math.min(1, u + du), leg.from.easeOut, leg.to.easeIn)
+      // Fork (qa-fixes): on the arrival instant the difference looks back, so a frame landing on a mark keeps the leg's speed (it read 0, and a bot stood for that frame).
+      const u2 = Math.min(1, u + du)
+      const u1 = u2 < u + du ? u2 - du : u
+      const p2 = easedProgress(u2, leg.from.easeOut, leg.to.easeIn)
+      const p1 = u1 === u ? progress : easedProgress(u1, leg.from.easeOut, leg.to.easeIn)
       const speed =
-        ((p2 - progress) * leg.path.length) / (du * (leg.arriveTime - leg.departTime))
+        ((p2 - p1) * leg.path.length) / (du * (leg.arriveTime - leg.departTime))
       return {
         position: leg.path.pointAt(d),
         travelHeading: leg.path.length > 0.001 ? leg.path.headingAt(d) : null,

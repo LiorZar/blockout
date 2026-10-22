@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror, routines recast to chosen bodies, mocap clip runs on bots; see MODIFICATIONS.md.
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror, routines recast to chosen bodies, mocap clip runs on bots, the chase on tracks (chase-tracks.ts); see MODIFICATIONS.md.
 /**
  * Choreography engine: routines that read as REAL staged choreography —
  * timed dance phrases hit on the count and change formation with real walking;
@@ -20,6 +20,7 @@ import { MOTION_PRESETS, type MotionPreset } from './motions'
 import { bodyLowY, motionRootY, type Body } from './floor'
 import type { GaitId, MarkClip } from './types'
 import { clipPlays, copyTag, playOf, playsClips, tagPlay } from './mocap/library-clips'
+import { chaseOnTracks } from './chase-tracks'
 
 /* ----------------------------- public model ---------------------------- */
 
@@ -83,6 +84,8 @@ export interface ChoreoMarkSpec {
   posedMove?: boolean
   /** Fork: a mocap clip run's mark on a bot (types.ts `ActorMark.clip`). */
   clip?: MarkClip
+  /** Fork (qa-fixes): a pose riding a travel gait (a chase beat over the run): the gait grounds it, so the floor rule leaves its height. */
+  ride?: boolean
 }
 
 export interface ChoreoEntitySpec {
@@ -836,160 +839,13 @@ function serpentine(
   return pts
 }
 
-/** Position at arc-distance `d` along a polyline (clamped). */
-function alongPath(pts: { x: number; z: number }[], cumLen: number[], d: number): { x: number; z: number; heading: number } {
-  const total = cumLen[cumLen.length - 1]!
-  const dd = Math.max(0, Math.min(total, d))
-  let i = 1
-  while (i < cumLen.length && cumLen[i]! < dd) i++
-  const i0 = Math.max(0, i - 1)
-  const i1 = Math.min(pts.length - 1, i)
-  const segLen = Math.max(1e-6, cumLen[i1]! - cumLen[i0]!)
-  const f = (dd - cumLen[i0]!) / segLen
-  const a = pts[i0]!
-  const b = pts[i1]!
-  const x = a.x + (b.x - a.x) * f
-  const z = a.z + (b.z - a.z) * f
-  const heading = facingTo(a, b)
-  return { x, z, heading }
-}
-
+/**
+ * Fork (qa-fixes): the chase runs on tracks (`chase-tracks.ts`): every mark
+ * off one arc distance per performer, so nothing teleports, the pursuers start
+ * behind the runner and nobody runs through anybody.
+ */
 function chaseRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {
-  const n = Math.max(2, Math.min(6, Math.round(spec.performers)))
-  const dur = spec.durationS
-  const amplitude = spec.amplitude ?? 4
-  const ending: ChaseEnding = spec.ending === 'escape' ? 'escape' : 'caught'
-  const runnerSpeed = 5.2
-  const length = Math.min(120, runnerSpeed * dur * 0.95)
-  const pts = serpentine(ctx, length, amplitude, spec.seed)
-  const cumLen: number[] = [0]
-  for (let i = 1; i < pts.length; i++) cumLen.push(cumLen[i - 1]! + dist2(pts[i - 1]!, pts[i]!))
-  const total = cumLen[cumLen.length - 1]!
-
-  const rng = mulberry32(spec.seed)
-  const samples = 14
-  // Runner arc-distance over time (accelerates jog→run).
-  const runnerDist = (t: number): number => {
-    const f = t / dur
-    return total * (f * 0.82 + f * f * 0.13)
-  }
-  // Gap closes over the chase (caught) or opens (escape).
-  const gap0 = 3.5
-  const gapAt = (t: number): number => {
-    const f = t / dur
-    return ending === 'caught' ? gap0 * (1 - f * 0.92) : gap0 * (1 + f * 1.1)
-  }
-
-  // Two seeded near-miss beats at TIME fractions (narrative moments, wherever
-  // the actors are then) — not arc-distances, which would bunch up late.
-  const beatT1 = dur * (0.3 + rng() * 0.08)
-  const beatT2 = dur * (0.6 + rng() * 0.08)
-  const runnerPos = (t: number): { x: number; z: number; heading: number } =>
-    alongPath(pts, cumLen, runnerDist(t))
-  const pursuerPos = (t: number, lag: number): { x: number; z: number; heading: number } =>
-    alongPath(pts, cumLen, runnerDist(t) - gapAt(t) - lag)
-
-  const out: ChoreoEntitySpec[] = []
-
-  // ---- Runner ----
-  const runnerMarks: ChoreoMarkSpec[] = []
-  const runStart = alongPath(pts, cumLen, 0)
-  for (let s = 0; s <= samples; s++) {
-    const t = (s / samples) * dur
-    const p = alongPath(pts, cumLen, runnerDist(t))
-    runnerMarks.push({
-      time: t,
-      position: { x: p.x, y: 0, z: p.z },
-      gait: t / dur < 0.35 ? 'jog' : 'run',
-      easeIn: 0,
-      easeOut: s === 0 ? 0.2 : 0,
-      hold: 0,
-      arriveHeading: p.heading
-    })
-  }
-  // Scripted vault at beat 1, skid-stop + direction change at beat 2.
-  overlayAt(runnerMarks, motion('vault-obstacle'), runnerPos(beatT1), beatT1)
-  overlayAt(runnerMarks, motion('sprint-skid-stop'), runnerPos(beatT2), beatT2)
-  // Ending.
-  if (ending === 'caught') {
-    const knock = motion('knockdown-fall')
-    if (knock) {
-      const endP = alongPath(pts, cumLen, runnerDist(dur))
-      playMotion(runnerMarks, knock, { x: endP.x, y: 0, z: endP.z }, Math.max(0, dur - knock.duration), { facing: endP.heading })
-    }
-  }
-  out.push({
-    assetId: 'person.man',
-    name: 'Runner',
-    position: { x: runStart.x, y: 0, z: runStart.z },
-    rotationY: runStart.heading,
-    label: { text: 'RUNNER', color: '#e5484d' },
-    marks: dedupeSort(runnerMarks)
-  })
-
-  // ---- Pursuer(s) ----
-  for (let pi = 1; pi < n; pi++) {
-    const lag = (pi - 1) * 1.6
-    const marks: ChoreoMarkSpec[] = []
-    const start = alongPath(pts, cumLen, -gapAt(0) - lag)
-    for (let s = 0; s <= samples; s++) {
-      const t = (s / samples) * dur
-      const d = runnerDist(t) - gapAt(t) - lag
-      const p = alongPath(pts, cumLen, d)
-      marks.push({
-        time: t,
-        position: { x: p.x, y: 0, z: p.z },
-        gait: 'run',
-        easeIn: 0,
-        easeOut: s === 0 ? 0.2 : 0,
-        hold: 0,
-        arriveHeading: p.heading
-      })
-    }
-    if (pi === 1) {
-      // Pursuer stumbles at beat 1 (near-miss) and overshoots the corner at
-      // beat 2 (1.5m past, then corrects on the next travel mark).
-      overlayAt(marks, motion('stumble-trip'), pursuerPos(beatT1, lag), beatT1)
-      const sp = pursuerPos(beatT2, lag)
-      const spFwd = forwardOf(sp.heading)
-      overlayAt(marks, motion('sprint-skid-stop'), { x: sp.x + spFwd.x * 1.5, z: sp.z + spFwd.z * 1.5, heading: sp.heading }, beatT2)
-      if (ending === 'caught') {
-        const tackle = motion('tackle-lunge')
-        if (tackle) {
-          const endP = alongPath(pts, cumLen, runnerDist(dur) - 0.6)
-          playMotion(marks, tackle, { x: endP.x, y: 0, z: endP.z }, Math.max(0, dur - tackle.duration), { facing: endP.heading })
-        }
-      } else {
-        const giveUp = firstOf(['sprint-skid-stop'])
-        const hands = motion('hands-on-hips')
-        if (giveUp) {
-          const endP = alongPath(pts, cumLen, runnerDist(dur) - gapAt(dur) - lag)
-          const t0 = Math.max(0, dur - 1.6)
-          let tt = playMotion(marks, giveUp, { x: endP.x, y: 0, z: endP.z }, t0, { facing: endP.heading })
-          if (hands) playMotion(marks, hands, { x: endP.x, y: 0, z: endP.z }, tt, { facing: endP.heading })
-        }
-      }
-    }
-    out.push({
-      assetId: pi % 2 === 1 ? 'person.man' : 'person.woman',
-      name: n > 2 ? `Pursuer ${pi}` : 'Pursuer',
-      position: { x: start.x, y: 0, z: start.z },
-      rotationY: start.heading,
-      marks: dedupeSort(marks)
-    })
-  }
-  return out
-}
-
-/** Overlay a scripted motion at a fixed time and position (a staged beat). */
-function overlayAt(
-  marks: ChoreoMarkSpec[],
-  preset: MotionPreset | undefined,
-  p: { x: number; z: number; heading: number },
-  t: number
-): void {
-  if (!preset) return
-  playMotion(marks, preset, { x: p.x, y: 0, z: p.z }, Math.max(0, t), { facing: p.heading, gait: 'run' })
+  return chaseOnTracks(spec, ctx, { serpentine, mulberry32, motion, playMotion, dedupeSort })
 }
 
 /* ------------------------------- shared -------------------------------- */
@@ -1123,7 +979,7 @@ function floorRoutine(specs: ChoreoEntitySpec[], bodies: Body[] | undefined): vo
   specs.forEach((e, i) => {
     const body = bodies?.[i] ?? { assetId: e.assetId }
     for (const m of e.marks) {
-      if (!m.joints) continue
+      if (!m.joints || m.ride) continue
       m.position.y = motionRootY(0, m.position.y, bodyLowY(body, m.joints))
     }
   })

@@ -1090,6 +1090,29 @@ Changes in this fork (2026):
   shield-only hand pad (a shield ≥ 2 cm off the other hand; a pistol beside the other hand
   not turned). Each test fails with its rule disabled (mutated copies of `weapon-hold.ts`,
   `.maestro/mocap-followup/mutate.sh`).
+- The Choreographer's foot chase runs on tracks (qa-fixes, mocap-qa bugs 1, 2 and 5;
+  `src/engine/chase-tracks.ts` (new), `src/engine/choreography.ts`, `src/engine/evaluate.ts`):
+  upstream laid each scripted beat (vault, skid-stop, stumble, the ending's fall and tackle)
+  at one fixed spot while the travel samples inside its window stayed on the path, so a
+  performer ran ahead and snapped back (3.4–5.3 m in one frame); the pursuers' start
+  clamped to the path's start, so the whole cast began on one spot; the pursuer's skid was
+  laid 1.5 m past its own spot, on the runner. `chaseRoutine` now calls `chaseOnTracks`
+  (`alongPath` and `overlayAt` go): every performer has an arc distance along the same
+  seeded serpentine as a pure function of time and every mark comes off it. The path runs
+  on straight past its start, so the pursuers start 3.5 m and 5.1 m behind the runner. A
+  beat rides the track: its keyframe pose plays over the run while the root keeps going
+  (a bot keeps the pose over its run loop; the library's trip clip is a fall), marked
+  `ride` so the floor rule leaves its height (the run grounds it; on a bot the rule had
+  sunk the run loop's toes 12–31 cm). The runner's skid brakes to a quarter of its speed
+  and back; the pursuers, laid against the runner's track, brake with it; each stays
+  0.9 m along the path behind the one ahead. Caught: from 1.6 s before the end the
+  runner falls forward with its momentum (`trip-and-fall-flat`; a bot plays its clip)
+  and the tackler closes from its gap to 0.45 m behind it on contact; escape: the
+  pursuer brakes to a stop, hands on its hips. The evaluator's speed on the instant a
+  leg arrives at a mark now looks back (it read 0, and a bot stood for that frame).
+  QA's chase (seeds 7, 3, 21, people and bots): frames over 0.45 m 44–68 → 0, worst
+  0.25 m; hips under 35 cm only after the tackle's contact; lowest rendered toe −31 cm
+  → −0.1 cm. Test: `tests/unit/chase-tracks.test.ts` (new; fails on 7d9e5c1).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
