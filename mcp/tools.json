@@ -2,7 +2,7 @@
   {
     "name": "get_state",
     "title": "See the current scene",
-    "description": "Call FIRST. Returns a summary of the current project, scene, and active shot: the placed entities (id, asset, label, position) and the choreography marks on the timeline (actor + camera). Coordinates are in meters, +X is right, -Z is forward/away from the default camera; heading 0 faces -Z; rotationDeg turns counter-clockwise seen from above (90 faces -X).",
+    "description": "Call FIRST. Returns a summary of the current project, scene, and active shot: the placed entities (id, asset, label, position) and the choreography marks on the timeline (actor + camera). Coordinates are in meters, +X is right, -Z is forward/away from the default camera; heading 0 faces -Z; rotationDeg turns counter-clockwise seen from above (90 faces -X). `mocap` says whether the local Mixamo library has loaded the bots and all their clips (`ready`); until then a tool that casts or moves a bot (stage_fight, update_fight, spawn_sequence / spawn_choreography with bot bodies, choreograph_entities, apply_motion) waits for it, up to 120 s.",
     "inputSchema": {
       "type": "object",
       "properties": {},

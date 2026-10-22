@@ -29,9 +29,13 @@ const CONTROL_PROTOCOL_VERSION = 1
 const CONTROL_CAPABILITIES = ['health', 'rpc', 'set_reference', 'motion-handoff-v1'] as const
 
 // Per-action timeouts: rendering/exporting legitimately take longer.
+// Fork (qa-fixes): tools that cast or move bots wait up to 120 s for the Mixamo clips (renderer/control/handler.ts), then solve.
+const BOT_TOOLS = new Set(['stage_fight', 'update_fight', 'spawn_sequence', 'spawn_choreography', 'choreograph_entities', 'apply_motion'])
+
 function timeoutForAction(action: string): number {
   if (action.startsWith('export_')) return 600_000
   if (action === 'screenshot') return 120_000
+  if (BOT_TOOLS.has(action)) return 180_000
   return 30_000
 }
 

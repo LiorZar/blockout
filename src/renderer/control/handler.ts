@@ -9,8 +9,8 @@
 
 import { useStore, currentProjectJson, fightNotice, refightShot, releaseHeldBy, slowFight, slowRoutine, solveInScene } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
-import { isMocapAsset } from '@engine/mocap/registry'
-import { assetListed } from '../mocap/library'
+import { isMocapAsset, waitForMocap } from '@engine/mocap/registry'
+import { assetListed, mocapStatus } from '../mocap/library'
 import { createActorMark, createCameraMark } from '@engine/schema'
 import { newId } from '@engine/ids'
 import { nextLabelColor, resolveColor, LABEL_COLOR_NAMES } from '@engine/palette'
@@ -394,6 +394,7 @@ function summary(): unknown {
     project: s.doc?.name ?? null,
     mode: s.mode,
     time: s.time,
+    mocap: mocapStatus(), // fork (qa-fixes): whether the Mixamo library has loaded the bots and all their clips
     scene: scene
       ? {
           id: scene.id,
@@ -495,10 +496,34 @@ function routineSpecFromParams(params: Params): RoutineSpec {
  */
 const ALLOWED_DURING_EXPORT = /^(get_|list_|export_)|^screenshot$/
 
+/** Fork (qa-fixes, mocap-qa bug 3): the longest a tool waits for the Mixamo library's clips (ms). */
+const MOCAP_WAIT = 120_000
+
+/**
+ * Fork (qa-fixes, mocap-qa bug 3): whether a call casts or moves a mocap bot.
+ * The bots' bodies load before their clips; a fight, routine or motion laid
+ * in between plays keyframe moves and keeps them, so such a call waits.
+ */
+function involvesBots(action: string, params: Params): boolean {
+  const scene = useStore.getState().scene()
+  const assetOf = (id: string): string => scene?.entities.find((e) => e.id === id)?.assetId ?? ''
+  const list = (key: string): string[] => (Array.isArray(params[key]) ? (params[key] as unknown[]).filter((v): v is string => typeof v === 'string') : [])
+  let ids: string[] = []
+  if (action === 'stage_fight') ids = [...list('assets'), ...list('fighterIds').map(assetOf)]
+  else if (action === 'update_fight') ids = (scene?.fights?.find((f) => f.id === params.fightId)?.fighterIds ?? []).map(assetOf)
+  else if (action === 'spawn_sequence' || action === 'spawn_choreography') ids = list('bodies')
+  else if (action === 'choreograph_entities' || action === 'apply_motion') ids = list('entityIds').map(assetOf)
+  return ids.some(isMocapAsset)
+}
+
 async function execute(action: string, params: Params): Promise<unknown> {
   const s = useStore.getState()
   if (s.exportProgress.running && !ALLOWED_DURING_EXPORT.test(action)) {
     throw new Error('An export is already running.')
+  }
+  // Fork (qa-fixes): a call that casts or moves a bot waits for the library's clips, and says so if they never come.
+  if (involvesBots(action, params) && !(await waitForMocap(MOCAP_WAIT))) {
+    throw new Error(`${action}: the Mixamo library is still loading after ${MOCAP_WAIT / 1000} s, so the bots can't play their clips yet; nothing was staged. Try again once get_state says mocap.ready.`)
   }
   switch (action) {
     case 'get_state':

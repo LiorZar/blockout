@@ -26,7 +26,7 @@ import { buildRoutine, mirrorJoints } from '@engine/choreography'
 import { mirrorForHolder } from '@engine/fight/moves'
 import { seatSpots } from '@engine/mocap/library-clips'
 import { mocapClipVersion } from '@engine/mocap/clip'
-import { mocapRig, mocapVersion } from '@engine/mocap/registry'
+import { mocapRig, mocapVersion, waitForMocap } from '@engine/mocap/registry'
 import { ACTION_PRESETS } from '@engine/action-presets'
 import { ShotEvaluator } from '@engine/evaluate'
 import type { ShotSpec } from '@engine/shot'
@@ -365,6 +365,8 @@ export function slowRoutine(spec: import('@engine/choreography').RoutineSpec, en
 /** How long a staging notice waits where no frame will come (no window, a hidden one), and at most in a visible one, ms. */
 const NOTICE_WAIT = 50
 const NOTICE_MAX = 1000
+/** Fork (qa-fixes): the longest a staging notice waits for the Mixamo library's clips, ms. */
+const NOTICE_CLIPS = 120_000
 
 /**
  * Mocap fights (fork): before a seconds-long solve, say so and let it paint:
@@ -375,7 +377,9 @@ const NOTICE_MAX = 1000
  */
 export function fightNotice(text: string): Promise<void> {
   useStore.getState().toast(text, 'info')
-  return new Promise((resolve) => {
+  // Fork (qa-fixes, mocap-qa bug 3): a bot fight solves once the library's clips are in (bounded), never on keyframes meant for a load.
+  const clips = waitForMocap(NOTICE_CLIPS)
+  const painted = new Promise<void>((resolve) => {
     let done = false
     const go = (): void => {
       if (done) return
@@ -386,6 +390,7 @@ export function fightNotice(text: string): Promise<void> {
     if (frames) requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(go, 0)))
     setTimeout(go, frames ? NOTICE_MAX : NOTICE_WAIT)
   })
+  return Promise.all([painted, clips]).then(() => undefined)
 }
 
 /** A fighter for the solver, with the weapons it holds in `scene` (fork) plus `extra` (about to be put in its hands). */

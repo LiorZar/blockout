@@ -134,7 +134,7 @@ when Blockout's tools aren't available (for example, port 17480 is taken).
 
 | Tool | Params | Does |
 |---|---|---|
-| `get_state` | — | **Call first.** Project / scene / active-shot summary: placed entities (id, asset, label, colour, position, held weapons) and the actor + camera marks on the timeline (camera marks with their ids and any `shot` words), the rig, and `allScenes`. |
+| `get_state` | — | **Call first.** Project / scene / active-shot summary: placed entities (id, asset, label, colour, position, held weapons) and the actor + camera marks on the timeline (camera marks with their ids and any `shot` words), the rig, `allScenes`, and `mocap` (`ready` once the Mixamo library has loaded every clip; until then a tool that casts or moves a bot waits for it, up to 120 s). |
 | `list_assets` | `category?` | The placeable asset catalog (people, animals, vehicles, furniture, environment kits, primitives). Filter by category. |
 | `add_entity` | `assetId, x, z, label?, rotationDeg?, color?` | Place an entity on the ground. A labelled entity gets its own colour automatically (or `color`: a name or hex). Returns the new id and colour. |
 | `move_entity` | `entityId, x, z, y?, rotationDeg?` | Reposition an entity; omitted fields unchanged. |

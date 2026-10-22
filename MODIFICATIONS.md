@@ -1113,6 +1113,19 @@ Changes in this fork (2026):
   QA's chase (seeds 7, 3, 21, people and bots): frames over 0.45 m 44–68 → 0, worst
   0.25 m; hips under 35 cm only after the tackle's contact; lowest rendered toe −31 cm
   → −0.1 cm. Test: `tests/unit/chase-tracks.test.ts` (new; fails on 7d9e5c1).
+- Tools wait for the Mixamo clips (qa-fixes, mocap-qa bug 3; `src/engine/mocap/registry.ts`,
+  `src/renderer/mocap/library.ts`, `src/renderer/control/handler.ts`, `src/renderer/store.ts`, `src/main/control.ts`,
+  `mcp/tools.json`, `AGENTS.md`, `mcp/README.md`): the bots' bodies load seconds before their
+  96 clips, so a bot fight staged in between solved on keyframe moves and kept them on the
+  timeline (the prompt, which re-solves at export, then described another fight and lost a
+  beat). The library's load is tracked in the engine registry (`trackMocapLoad`,
+  `mocapLoadDone`, `waitForMocap`); `stage_fight`, `update_fight`, `spawn_sequence` /
+  `spawn_choreography` with bot bodies, and `choreograph_entities` / `apply_motion` on bots
+  wait for it (at most 120 s; after that the call fails and stages nothing), and so does the
+  Fight Director's and the Choreographer's staging notice (`fightNotice`). `get_state`
+  reports `mocap: { ready, bots, clips }`. The control server gives those six tools 180 s
+  instead of 30 s. Test: `tests/e2e/mocap-race.spec.ts` (new; the clip reads held back in
+  the main process).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

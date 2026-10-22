@@ -36,6 +36,41 @@ export function registerMocapBody(assetId: string, src: MocapSource): MocapRig {
   return rig
 }
 
+/** Fork (qa-fixes, mocap-qa bug 3): the library load in flight (the renderer's), and whether it has ended. */
+let loading: Promise<void> | null = null
+let loaded = true
+
+/** The renderer's library load: until it ends, bots have bodies but not yet all their clips. */
+export function trackMocapLoad(p: Promise<void>): void {
+  loading = p
+  loaded = false
+  void p.then(
+    () => {
+      if (loading === p) loaded = true
+    },
+    () => {
+      if (loading === p) loaded = true
+    }
+  )
+}
+
+/** Whether no library load is running (it ended, or none started). */
+export function mocapLoadDone(): boolean {
+  return loaded
+}
+
+/** Wait for the library load at most `ms`: true once it has ended, false on the timeout. */
+export async function waitForMocap(ms: number): Promise<boolean> {
+  if (loaded || !loading) return true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms)
+  })
+  const done = await Promise.race([loading.then(() => true, () => true), late])
+  clearTimeout(timer)
+  return done
+}
+
 /** Forget every registered bot (tests). */
 export function clearMocapBodies(): void {
   RIGS.clear()

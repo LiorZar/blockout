@@ -14,7 +14,7 @@ import { useSyncExternalStore } from 'react'
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { registerMocapClip } from '@engine/mocap/clip'
-import { isMocapAsset, mocapRig, registerMocapBody } from '@engine/mocap/registry'
+import { isMocapAsset, mocapLoadDone, mocapRig, registerMocapBody, trackMocapLoad } from '@engine/mocap/registry'
 import type { MocapManifest, MocapManifestClip } from '../../shared/mocap-library'
 import { readClipTake } from './clips'
 import { extractMocap, fileUnit, primaryBones } from './extract'
@@ -36,6 +36,8 @@ const LISTENERS = new Set<() => void>()
 let loading: Promise<void> | null = null
 let clips: MocapManifestClip[] = []
 let loads = 0
+/** Fork (qa-fixes): clips sampled and registered so far. */
+let sampled = 0
 
 /** Every bone's bind pose under its parent, from the skinned meshes' bind matrices. */
 function bindLocals(root: THREE.Group): Map<string, THREE.Matrix4> {
@@ -90,6 +92,7 @@ function notify(): void {
 
 /** Load the library once (a missing or broken one leaves the bots hidden). */
 export function loadMocapLibrary(): Promise<void> {
+  const fresh = !loading
   loading ??= (async () => {
     const api = window.blockout
     let manifest: MocapManifest | null = null
@@ -123,6 +126,7 @@ export function loadMocapLibrary(): Promise<void> {
         const root = new FBXLoader().parse(await api.mocapRead(c.file), '')
         registerClipTake(c.key, root, source, { fps: c.fps, loop: c.loop, inPlace: c.inPlace })
         ok++
+        sampled++
       } catch (e) {
         console.warn(`[mocap] clip ${c.key} (${c.file}) didn't load: ${e instanceof Error ? e.message : String(e)}`)
       }
@@ -130,7 +134,14 @@ export function loadMocapLibrary(): Promise<void> {
     console.log(`[mocap] library: ${manifest.characters.length} characters, ${manifest.clips.length} clips, ${ok} sampled`)
     notify()
   })()
+  // Fork (qa-fixes, mocap-qa bug 3): tools that cast or move bots wait for it (control/handler.ts, store.ts fightNotice).
+  if (fresh) trackMocapLoad(loading)
   return loading
+}
+
+/** Fork (qa-fixes): whether the library has finished loading (bodies and every clip), the bots loaded and the clips sampled. */
+export function mocapStatus(): { ready: boolean; bots: string[]; clips: number } {
+  return { ready: mocapLoadDone(), bots: [...TEMPLATES.keys()], clips: sampled }
 }
 
 /** Resolves when the library has loaded (or there is none). */
