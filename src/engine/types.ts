@@ -187,6 +187,8 @@ export interface MarkClip {
   id: string
   at: number
   mirror?: boolean
+  /** Fork (mocap-backlog): the seat prop's top under a chair sit, metres over the mark's floor in the body's own size (src/engine/mocap/seat.ts). */
+  seat?: number
 }
 
 /**
@@ -199,7 +201,9 @@ export interface ClipState {
   t: number
   mirror?: boolean
   w?: number
-  from?: { id: string; t: number; mirror?: boolean }
+  from?: { id: string; t: number; mirror?: boolean; seat?: number }
+  /** Fork (mocap-backlog): the seat top the clip sits on (`MarkClip.seat`). */
+  seat?: number
 }
 
 export interface CameraMark extends MarkBase {

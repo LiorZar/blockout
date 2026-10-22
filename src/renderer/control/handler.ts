@@ -237,6 +237,20 @@ function fightCast(params: Params): { assets?: [string, string]; labels?: [strin
   return { ...(assets ? { assets } : {}), ...(labels ? { labels } : {}) }
 }
 
+/** Fork (mocap-backlog): spawn_sequence `bodies`, the Sequences panel's Bodies: [men's, women's] person asset ids. */
+function sequenceBodies(params: Params): [string, string] | undefined {
+  const raw = params.bodies
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw) || raw.length !== 2) throw new Error('spawn_sequence: bodies must be two entries, [the men, the women].')
+  return raw.map((v, q) => {
+    if (typeof v !== 'string' || !v.startsWith('person.') || !ASSET_CATALOG.some((a) => a.id === v)) {
+      throw new Error(`spawn_sequence: bodies[${q}] "${String(v)}" isn't a person — call list_assets with category people.`)
+    }
+    if (!assetListed(v)) throw new Error(`spawn_sequence: bodies[${q}] "${v}" ${MOCAP_MISSING}`)
+    return v
+  }) as [string, string]
+}
+
 /** Beats from `script` (text), `beats` (array) or `random` ({seed, style, ending}). */
 function fightBeatsFromParams(params: Params, tool: string, labels: [string, string], duration: number): FightBeat[] | undefined {
   const script = str(params, 'script')
@@ -989,13 +1003,19 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const z = flt(params, 'z') ?? 0
       const headingDeg = flt(params, 'headingDeg') ?? 0
       const fightsBefore = s.scene()?.fights?.length ?? 0
-      s.spawnSequence({ type, count, style, origin: { x, z, heading: toRad(headingDeg) } })
+      // Fork (mocap-backlog): the bodies the crowd is cast as (a car chase casts cars); a bot fight of two says it is staging, then solves before answering.
+      const bodies = sequenceBodies(params)
+      const cast = bodies && type !== 'carChase' ? { bodies } : {}
+      const now = type === 'fight' && count === 2 && slowFight({ beats: [], ...(bodies ? { assets: bodies } : {}) })
+      if (now) await fightNotice('Staging fight…')
+      s.spawnSequence({ type, count, style, origin: { x, z, heading: toRad(headingDeg) }, ...cast, ...(now ? { now } : {}) })
       const after = useStore.getState()
       const sel = after.selection
       return {
         staged: sel?.kind === 'entities' ? sel.entityIds.length : 0,
         entityIds: sel?.kind === 'entities' ? sel.entityIds : [],
-        ...newFightId(fightsBefore)
+        ...newFightId(fightsBefore),
+        ...(bodies && type === 'carChase' ? { note: 'bodies ignored: a car chase casts cars.' } : {})
       }
     }
 

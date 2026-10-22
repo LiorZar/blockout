@@ -44,7 +44,7 @@ export interface TrackPoint {
   legProgress: number
 }
 
-const ref = (c: MarkClip): { id: string; t: number; mirror?: boolean } => (c.mirror ? { id: c.id, t: c.at, mirror: true } : { id: c.id, t: c.at })
+const ref = (c: MarkClip): { id: string; t: number; mirror?: boolean; seat?: number } => ({ id: c.id, t: c.at, ...(c.mirror ? { mirror: true } : {}), ...(c.seat !== undefined ? { seat: c.seat } : {}) })
 
 /** Two marks of one clip run: the same clip and mirror, its time going forward. */
 const sameClip = (a: MarkClip | undefined, b: MarkClip | undefined): a is MarkClip => !!a && !!b && a.id === b.id && !!a.mirror === !!b.mirror && b.at >= a.at
@@ -118,6 +118,10 @@ export function sanitizeClipMarks(scene: Scene): void {
         const c = (m as { clip?: unknown } | null)?.clip as Partial<MarkClip> | null | undefined
         if (c === undefined) continue
         if (!c || typeof c !== 'object' || typeof c.id !== 'string' || !c.id || typeof c.at !== 'number' || !Number.isFinite(c.at)) delete m.clip
-        else if (c.mirror !== undefined && typeof c.mirror !== 'boolean') delete c.mirror
+        else {
+          if (c.mirror !== undefined && typeof c.mirror !== 'boolean') delete c.mirror
+          // Fork (mocap-backlog): a seat top is a height in metres.
+          if (c.seat !== undefined && !(typeof c.seat === 'number' && c.seat > 0 && c.seat < 5)) delete c.seat
+        }
       }
 }

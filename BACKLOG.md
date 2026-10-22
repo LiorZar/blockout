@@ -24,10 +24,12 @@
 - Choreographer chase and dance routines ignore the set and run through buildings (they head toward the editor camera).
 - ~~Export folder stamps are UTC (`export-2026-10-19-19-32-01` at 22:32 local).~~ DONE (fix-env: local time, same format; `export/stamp.ts`)
 - Mocap crouch is a derived pose (`crouchStill`): the Mixamo crouch idle holds the right hand at head height for the whole loop, so the bots keep its breathing body with the crouched walk's arms. A Mixamo crouch idle with both hands down would replace it.
-- Mocap chair sit uses the clip's own seat height (~0.45 m), so a bot on a stool (0.65 m) or a couch cushion overlaps the seat a little.
-- X Bot crawl: the left knee joint drifts 2.1 cm per contact (1.6 cm along the travel, from retargeting the Y Bot take onto her proportions; the rest is hip sway), just over the 2 cm slide bar.
-- Choreographer routine KOs on keyframe people: the routine lays a plain "stand" mark (no joints) at each reaction's end, so a knocked-out body lerps back toward a standing pose instead of staying down (pre-existing; bots hold the fall since mocap-fights).
-- MCP `spawn_sequence` takes no `bodies`, so an agent can't cast Mocap bots in a sequence (the Sequences panel can).
+- ~~Mocap chair sit uses the clip's own seat height (~0.45 m), so a bot on a stool (0.65 m) or a couch cushion overlaps the seat a little.~~ DONE (mocap-backlog: a sit-down's clip marks carry the seat top and the pose rests the hips on it, feet on the floor)
+- A bot's plain `sit` gait over a seat prop still sits at the clip's own height: the renderer poses it (SceneManager.ts sets `input.seated`, mocap/body.ts `gaitPose`); pass the seat's top through and rest the pose on it with `seatLift` (`src/engine/mocap/seat.ts`). Left for after held-weapons (its files).
+- ~~X Bot crawl: the left knee joint drifts 2.1 cm per contact (1.6 cm along the travel, from retargeting the Y Bot take onto her proportions; the rest is hip sway), just over the 2 cm slide bar.~~ DONE (mocap-backlog: a retargeted bot's planted knee is pinned, 0.7 cm; Y Bot unchanged)
+- ~~Choreographer routine KOs on keyframe people: the routine lays a plain "stand" mark (no joints) at each reaction's end, so a knocked-out body lerps back toward a standing pose instead of staying down (pre-existing; bots hold the fall since mocap-fights).~~ DONE (mocap-backlog: the fall's last pose holds until the performer's next move, or to the end)
+- ~~MCP `spawn_sequence` takes no `bodies`, so an agent can't cast Mocap bots in a sequence (the Sequences panel can).~~ DONE (mocap-backlog: `bodies: [men's, women's]`)
+- MCP `spawn_choreography` takes no `bodies` either (`RoutineSpec` has it), so an agent can't cast Mocap bots in a routine; same pattern as `spawn_sequence`.
 - Move the bot fight solve to a worker: a Y Bot vs X Bot fight still solves in 1–6.7 s on the main thread (combos 5–6.7 s, punches 3.5–4 s; target ≤ 1 s) behind the "Staging fight…" notice. The time is spread over guard skinning (~20 %), placement (~25 %) and body overlap (~30 %); see the T5 calls in `docs/plans/2026-10-20-mocap-fights.md`.
 
 ## Features

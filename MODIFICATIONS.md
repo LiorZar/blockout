@@ -993,6 +993,51 @@ Changes in this fork (2026):
   Procedural people play exactly as before. Test:
   `tests/unit/mocap-fights-routines.test.ts` (a travelling strike lands from
   where the keyframe move strikes, its step-in moved back with it).
+- `spawn_sequence` casts bodies (mocap-backlog; `src/renderer/control/handler.ts`,
+  `src/renderer/store.ts`, `mcp/tools.json`, `AGENTS.md`, `mcp/README.md`): the
+  tool takes the Sequences panel's `bodies`, `[men's, women's]` person asset
+  ids (checked like `stage_fight`'s `assets`; a bot only with the library), so
+  an agent can cast the mocap bots in a crowd; a car chase ignores it and says
+  so in a `note`. A bot fight of two says it is staging, then solves before
+  the tool answers (`spawnSequence` takes `now`, as `spawnChoreography` does).
+  Test: `tests/e2e/mocap-bots.spec.ts` (a crowd and a fight of two cast as
+  Y Bot and X Bot through the tool).
+- Routine falls hold on keyframe bodies (mocap-backlog; `src/engine/choreography.ts`,
+  `src/engine/mocap/library-clips.ts` `playOf`): a routine lays a plain stand
+  mark at a fall's end (the push-back) and copies it to the end of a finish,
+  so a knocked-down procedural person or mannequin lerped back toward
+  standing. Those marks now carry the fall's last pose as a posed move until
+  the performer's next move (the get-up, the next exchange), or to the end:
+  the rule a bot already follows on its fall clip. Bots' marks are unchanged
+  (the pass skips bodies that play clips). Test:
+  `tests/unit/routine-falls.test.ts` (new).
+- Mocap chair sits fit the seat (mocap-backlog; `src/engine/mocap/seat.ts` (new),
+  `clip.ts`, `clip-marks.ts`, `library-clips.ts`, `src/engine/types.ts`): the
+  chair idle and the stand-to-sit rest the hips at the height the take was
+  captured on (0.40–0.42 m), so a bot on a stool (0.65 m), a couch cushion or
+  an office chair sat 6–34 cm inside the seat. A sit-down over a seat prop
+  records the seat's top (`SEAT_TOP`, from the builders, × scale) on its clip
+  marks (`MarkClip.seat`, optional, sanitized on load; `ClipState.seat`), and
+  `mocapClipPose` lifts the hips until their lowest point rests on it, each
+  leg turned (thigh and shin, the knee in its own plane) so the feet keep
+  their spot on the floor; nothing changes while the hips are above the seat,
+  so the stand-to-sit comes down onto it. A seat lower than the clip's isn't
+  sat down onto. The plain `sit` gait over a seat (posed in the renderer) is
+  not fitted yet. Tests: `tests/unit/mocap-seats.test.ts` (its synthetic sits
+  now stand on the floor), `tests/unit/mocap-clips-real.test.ts` (both bots on
+  a chair, stool, couch and office chair: hips on the top within 1 cm, feet
+  ±2 cm, every 1/12 s).
+- A retargeted bot's planted knee stays put (mocap-backlog; `src/engine/mocap/contact-lock.ts`
+  (new), `clip.ts`): the X Bot plays the library's Y Bot takes on other
+  proportions, so on the crawl its left knee slid 2.1 cm a step against the
+  contact the warp follows. On a travelling in-place loop, a bot that isn't
+  the clip's source turns each thigh so a knee on the floor keeps its joint
+  where it planted (the shin rides along), easing the correction out over the
+  swing; measured once per bot and clip, pure in t. The clip's own bot plays
+  it as captured (Y Bot's crawl unchanged). X Bot crawl knees 2.1 / 0.8 cm →
+  0.7 / 0.1 cm. Tests: `tests/unit/mocap-contact-lock.test.ts` (new),
+  `tests/unit/mocap-clips-real.test.ts` (a knee counts its whole drift, not
+  only along the travel).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

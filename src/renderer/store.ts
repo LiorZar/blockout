@@ -227,6 +227,8 @@ interface BlockoutState {
     origin?: { x: number; z: number; heading: number }
     /** Fork: the bodies the men and the women are cast as. */
     bodies?: [string, string]
+    /** Fork (mocap-backlog): stage a slow (bot) fight of two at once, the caller having said so. */
+    now?: boolean
   }): void
   /**
    * Drop a full choreography routine — a dance number, a paired fight, a
@@ -1511,7 +1513,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     if (opts.type === 'fight' && opts.count === 2) {
       // Mocap fights (fork): the chosen bodies fight; with a loaded bot the solve takes seconds, so say so first.
       const input = { beats: routineFightBeats(Math.floor(Math.random() * 1_000_000_000), 'brawl', 'finish', duration), at: origin, ...(opts.bodies ? { assets: opts.bodies } : {}) }
-      if (slowFight(input)) void fightNotice('Staging fight…').then(() => stageRoutineFight(input))
+      if (!opts.now && slowFight(input)) void fightNotice('Staging fight…').then(() => stageRoutineFight(input))
       else stageRoutineFight(input)
       return
     }

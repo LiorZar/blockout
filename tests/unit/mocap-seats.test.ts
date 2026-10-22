@@ -1,12 +1,18 @@
-// Fork addition (2026): a mocap bot sits on a seat prop when one takes its hips, on the floor otherwise (fixture skeleton, synthetic clips); see MODIFICATIONS.md.
+// Fork addition (2026): a mocap bot sits on a seat prop when one takes its hips, on the floor otherwise, at the seat's height (fixture skeleton, synthetic clips); see MODIFICATIONS.md.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { clearMocapClips, registerMocapClip } from '@engine/mocap/clip'
+import { clearMocapClips, mocapClip, mocapClipPose, registerMocapClip } from '@engine/mocap/clip'
+import { boneLowY as boneLow, seatContactY } from '@engine/mocap/seat'
+import type { MocapDims, MocapPose } from '@engine/mocap/fk'
+import { BONE_INDEX } from '@engine/mocap/rig'
+import { sanitizeClipMarks } from '@engine/mocap/clip-marks'
+import { ShotEvaluator } from '@engine/evaluate'
+import { bodyLowY } from '@engine/floor'
 import { gaitClipId } from '@engine/mocap/gait-clips'
 import { SEAT_ASSETS, clipMotion, clipPlays, runTravel, seatSpots, seatUnder, tagPlay } from '@engine/mocap/library-clips'
 import { clearMocapBodies, registerMocapBody } from '@engine/mocap/registry'
-import { createEntity } from '@engine/schema'
+import { createEntity, createProject } from '@engine/schema'
 import { choreographMotion } from '@engine/sequences'
-import { toWorld } from '@engine/skeleton'
+import { personDims, toWorld } from '@engine/skeleton'
 import type { V3 } from '@engine/types'
 import { poseKind } from '@renderer/mocap/scene'
 import { fixtureSource } from './mocap-fixture'
@@ -19,8 +25,10 @@ beforeAll(() => {
   registerMocapBody(MALE, fixtureSource())
   // Synthetic clips under the library's keys: stepping back 0.45 m into a sit, two sitting loops.
   const SIT = { hipLX: -1.5, hipRX: -1.5, kneeL: 1.5, kneeR: 1.5 }
-  registerMocapClip('standToSit', syntheticClip(MALE, sweep({}, SIT, 61), { inPlace: false, hips: (f) => ({ x: 0, y: 0, z: 0.0075 * f }) }))
-  registerMocapClip('sitChair', syntheticClip(MALE, sweep(SIT, { ...SIT, torsoX: 0.1 }, 31), { loop: true, inPlace: false }))
+  // Feet on the floor, as a real take stands (mocap-backlog measures the sit's height).
+  const into = sweep({}, SIT, 61)
+  registerMocapClip('standToSit', syntheticClip(MALE, into, { inPlace: false, hips: (f) => ({ x: 0, y: -bodyLowY({ assetId: MALE }, into[f]), z: 0.0075 * f }) }))
+  registerMocapClip('sitChair', syntheticClip(MALE, sweep(SIT, { ...SIT, torsoX: 0.1 }, 31), { loop: true, inPlace: false, grounded: true }))
   registerMocapClip('sitFloor', syntheticClip(MALE, sweep({ hipLX: -1.5, hipRX: -1.5 }, { hipLX: -1.5, hipRX: -1.5, torsoX: 0.1 }, 31), { loop: true, inPlace: false, grounded: true }))
 })
 
@@ -90,5 +98,68 @@ describe('a bot sits on a seat prop, or on the floor', () => {
     expect(gaitClipId(MALE, 'sit', 0)).toBe('sitFloor')
     expect(poseKind(MALE, { gait: 'sit', phase: 0, speed: 0, distance: 0, time: 0, seated: true })).toBe('sitChair')
     expect(poseKind(MALE, { gait: 'sit', phase: 0, speed: 0, distance: 0, time: 0 })).toBe('sitFloor')
+  })
+})
+
+// mocap-backlog: the sit fits the seat's height (docs/plans/2026-10-22-mocap-backlog.md).
+describe('a bot sits at the seat prop’s height', () => {
+  const body = { assetId: MALE }
+  const m = (): MocapDims => personDims(MALE).mocap!
+  const feet = (pose: MocapPose): number => Math.min(...['LeftFoot', 'RightFoot', 'LeftToeBase', 'RightToeBase'].map((b) => boneLow(m(), pose, BONE_INDEX[b as 'LeftFoot'])))
+  const sitOn = (assetId: string, scale = 1): ReturnType<typeof clipMotion> => {
+    const pos = { x: 0, y: 0, z: 0 }
+    const seat = { ...chair(0.02, 0.03, assetId), transform: { ...chair(0, 0).transform, position: { x: 0.02, y: 0, z: 0.03 }, scale } }
+    return clipMotion('sit-down', body, pos, 0, 8, 0, false, seatSpots([seat]))
+  }
+
+  it('sit-down on a seat prop records the seat top on its runs', () => {
+    expect(sitOn('furniture.stool')!.map((mk) => mk.clip.seat)).toEqual([0.65, 0.65, 0.65, 0.65])
+    expect(sitOn('furniture.chair')!.map((mk) => mk.clip.seat)).toEqual([0.48, 0.48, 0.48, 0.48])
+    expect(sitOn('furniture.stool', 1.2)![0]!.clip.seat).toBeCloseTo(0.78, 9)
+    // The floor sit has none.
+    expect(clipMotion('sit-down', body, { x: 0, y: 0, z: 0 }, 0, 8, 0, false, [])!.every((mk) => mk.clip.seat === undefined)).toBe(true)
+  })
+
+  it('on a seat higher than the clip’s, the hips rest on its top and the feet stay on the floor', () => {
+    const own = mocapClipPose(m(), { id: 'sitChair', t: 0.5 })!
+    const h0 = seatContactY(m(), own)
+    expect(h0).toBeLessThan(0.6)
+    for (const seat of [0.65, h0 + 0.03, 0.7]) {
+      const pose = mocapClipPose(m(), { id: 'sitChair', t: 0.5, seat })!
+      expect(seatContactY(m(), pose), `seat ${seat}`).toBeCloseTo(seat, 3)
+      expect(Math.abs(feet(pose) - feet(own)), `seat ${seat}: feet`).toBeLessThan(0.02)
+      // The upper body rides up with the hips; the feet keep their spot.
+      const rise = pose.P[BONE_INDEX.Hips]!.y - own.P[BONE_INDEX.Hips]!.y
+      expect(rise, `seat ${seat}: the hips rise`).toBeGreaterThan(0.5 * (seat - h0))
+      expect(pose.P[BONE_INDEX.Head]!.y - own.P[BONE_INDEX.Head]!.y).toBeCloseTo(rise, 9)
+      for (const b of ['LeftFoot', 'RightFoot'] as const) expect(Math.hypot(pose.P[BONE_INDEX[b]]!.x - own.P[BONE_INDEX[b]]!.x, pose.P[BONE_INDEX[b]]!.z - own.P[BONE_INDEX[b]]!.z), `seat ${seat}: ${b}`).toBeLessThan(0.15)
+    }
+  })
+
+  it('no seat, or one the hips are above, leaves the pose as the clip has it', () => {
+    const own = mocapClipPose(m(), { id: 'sitChair', t: 0.5 })!
+    expect(mocapClipPose(m(), { id: 'sitChair', t: 0.5, seat: seatContactY(m(), own) - 0.05 })).toEqual(own)
+    // The stand-to-sit stands clear of a stool until its hips come down onto it, then rests on it.
+    const D = mocapClip('standToSit')!.duration
+    expect(mocapClipPose(m(), { id: 'standToSit', t: 0, seat: 0.65 })).toEqual(mocapClipPose(m(), { id: 'standToSit', t: 0 }))
+    expect(seatContactY(m(), mocapClipPose(m(), { id: 'standToSit', t: D, seat: 0.65 })!)).toBeCloseTo(0.65, 3)
+  })
+
+  it('the evaluator plays the seat to the pose, and the body stands on its feet', () => {
+    const marks = sitOn('furniture.stool')!
+    const doc = createProject('Stool')
+    const scene = doc.scenes[0]!
+    const e = createEntity(MALE, 'P', { x: 0, y: 0, z: 0 })
+    scene.entities.push(e)
+    scene.blocking[0]!.tracks.push({ entityId: e.id, marks: marks.map((mk, i) => ({ id: `m${i}`, ...mk, position: { ...mk.position }, clip: { ...mk.clip } })) })
+    const st = new ShotEvaluator(scene, { ...scene.shots[0]!, duration: 8 }).evaluate(6).entities[0]!
+    expect(st.clip?.seat).toBe(0.65)
+    expect(bodyLowY(body, st.joints, st.clip)).toBeCloseTo(feet(mocapClipPose(m(), { id: 'sitChair', t: st.clip!.t })!), 3)
+    // A saved project keeps the seat; a bad one is dropped.
+    const bad = JSON.parse(JSON.stringify(scene)) as typeof scene
+    bad.blocking[0]!.tracks[0]!.marks[0]!.clip!.seat = Number.NaN
+    sanitizeClipMarks(bad)
+    expect(bad.blocking[0]!.tracks[0]!.marks[0]!.clip!.seat).toBeUndefined()
+    expect(bad.blocking[0]!.tracks[0]!.marks[1]!.clip!.seat).toBe(0.65)
   })
 })

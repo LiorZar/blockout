@@ -897,6 +897,15 @@
         "headingDeg": {
           "type": "number",
           "description": "Facing/travel direction in degrees (default 0)."
+        },
+        "bodies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[the men's, the women's] body: person asset ids from list_assets, e.g. [\"person.mannequinMale\", \"person.mannequinFemale\"] or the mocap bots [\"person.mocapMale\", \"person.mocapFemale\"] when listed (bots play their motions as mocap clips). Default man and woman. Ignored by a car chase."
         }
       },
       "required": [

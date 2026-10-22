@@ -15,7 +15,8 @@ import { personDims, poseEffectors, toWorld } from '@engine/skeleton'
 import { ShotEvaluator } from '@engine/evaluate'
 import { createEntity, createProject } from '@engine/schema'
 import { choreographMotion } from '@engine/sequences'
-import { seatSpots, type SeatSpot } from '@engine/mocap/library-clips'
+import { SEAT_TOP, seatSpots, type SeatSpot } from '@engine/mocap/library-clips'
+import { seatContactY } from '@engine/mocap/seat'
 import type { GaitId } from '@engine/types'
 import { mocapLibraryDir, parseMocapManifest } from '../../src/shared/mocap-library'
 import { lowestSkinned } from './mocap-ground'
@@ -137,6 +138,38 @@ describe.skipIf(!HAS_LIBRARY)('the library clips on the bots (skipped without th
     }
   }, 300_000)
 
+  it('a chair sit rests the hips on the seat prop’s top and keeps the feet on the floor (±2 cm), every 1/12 s, on both bots', () => {
+    // mocap-backlog: chair, stool, couch and office chair; the hips on the seat from the moment the stand-to-sit lands.
+    const fails: string[] = []
+    for (const id of BOTS) {
+      const m = personDims(id).mocap!
+      for (const assetId of ['furniture.chair', 'furniture.stool', 'furniture.couch', 'furniture.officeChair']) {
+        const doc = createProject('Seats')
+        const scene = doc.scenes[0]!
+        const e = createEntity(id, 'P', { x: 0, y: 0, z: 0 })
+        const seat = createEntity(assetId, 'Seat', { x: 0, y: 0, z: 0 })
+        scene.entities.push(e, seat)
+        const marks = choreographMotion('sit-down', { x: 0, y: 0, z: 0 }, 0, 8, 0, { assetId: id }, false, seatSpots([seat]))!
+        expect(marks.map((mk) => mk.clip?.id), `${id} ${assetId}`).toEqual(['standToSit', 'standToSit', 'sitChair', 'sitChair'])
+        scene.blocking[0]!.tracks.push({ entityId: e.id, marks: marks.map((mk, i) => ({ id: `m${i}`, ...mk, position: { ...mk.position } })) })
+        const ev = new ShotEvaluator(scene, { ...scene.shots[0]!, duration: 8 })
+        const top = SEAT_TOP[assetId]!
+        let worstSeat = 0
+        let worstFoot = 0
+        for (let t = 0; t <= 8 + 1e-9; t += STEP) {
+          const st = ev.evaluate(t).entities[0]!
+          const pose = mocapClipPose(m, st.clip!, st.joints)!
+          const feet = [BONE_INDEX.LeftFoot, BONE_INDEX.RightFoot].map((b, k) => st.position.y + Math.min(surfaceLow(m, pose, b), surfaceLow(m, pose, k === 0 ? BONE_INDEX.LeftToeBase : BONE_INDEX.RightToeBase)))
+          worstFoot = Math.max(worstFoot, ...feet.map(Math.abs))
+          if (t >= marks[1]!.time) worstSeat = Math.max(worstSeat, Math.abs(st.position.y + seatContactY(m, pose) - top))
+        }
+        if (worstSeat > 0.01) fails.push(`${id} ${assetId}: hips ${(worstSeat * 100).toFixed(1)} cm off the seat top`)
+        if (worstFoot > 0.02) fails.push(`${id} ${assetId}: a foot ${(worstFoot * 100).toFixed(1)} cm off the floor`)
+      }
+    }
+    expect(fails).toEqual([])
+  }, 300_000)
+
   it('a bare crouch keeps both hands below the chest, every 1/12 s, on both bots', () => {
     const fails: string[] = []
     for (const id of BOTS) {
@@ -194,17 +227,16 @@ describe.skipIf(!HAS_LIBRARY)('the library clips on the bots (skipped without th
     const fails: string[] = []
     // The gait test's rule, for every contact of a run: a foot (heel and ball), a hand, a knee is planted while
     // each of its bones is within 3 mm of the floor and it moves slower than half the run; its slide is how far
-    // its joints drift from where it planted, every 1/120 s. A knee joint sits 5 cm over the round knee it
-    // rests on: it rolls sideways as the hips sway, so a knee counts its drift along the travel only.
-    const GROUPS: [string, number[], boolean?][] = [
+    // its joints drift from where it planted, every 1/120 s. mocap-backlog: a knee counts its whole drift (the
+    // X Bot's crawl knee, retargeted, is pinned: mocap/contact-lock.ts).
+    const GROUPS: [string, number[]][] = [
       ['left foot', [BONE_INDEX.LeftFoot, BONE_INDEX.LeftToeBase]],
       ['right foot', [BONE_INDEX.RightFoot, BONE_INDEX.RightToeBase]],
       ['left hand', [BONE_INDEX.LeftHand]],
       ['right hand', [BONE_INDEX.RightHand]],
-      ['left knee', [BONE_INDEX.LeftLeg], true],
-      ['right knee', [BONE_INDEX.RightLeg], true]
+      ['left knee', [BONE_INDEX.LeftLeg]],
+      ['right knee', [BONE_INDEX.RightLeg]]
     ]
-    const fwd = { x: -Math.sin(0.6), z: -Math.cos(0.6) }
     for (const id of BOTS) {
       const m = personDims(id).mocap!
       for (const move of ['crawl', 'mocap-sneak', 'mocap-drunkWalk', 'mocap-sprint']) {
@@ -234,13 +266,13 @@ describe.skipIf(!HAS_LIBRARY)('the library clips on the bots (skipped without th
         let s0 = at(0)
         for (let t = 0; t + dt <= end; t += dt) {
           const s1 = at(t + dt)
-          GROUPS.forEach(([, bones, along], g) => {
+          GROUPS.forEach(([, bones], g) => {
             const p = s0.joint(bones)
             const q = s1.joint(bones)
             const slow = Math.hypot(q.x - p.x, q.z - p.z) / dt < 0.5 * speed
             if (slow && bones.every((b) => s0.y + ballLow(m, s0.pose, b) < 0.003)) {
               const o = (starts[g] ??= p)
-              worst[g] = Math.max(worst[g]!, along ? Math.abs((p.x - o.x) * fwd.x + (p.z - o.z) * fwd.z) : Math.hypot(p.x - o.x, p.z - o.z))
+              worst[g] = Math.max(worst[g]!, Math.hypot(p.x - o.x, p.z - o.z))
             } else starts[g] = null
           })
           s0 = s1

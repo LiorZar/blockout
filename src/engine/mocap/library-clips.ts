@@ -266,18 +266,21 @@ export function clipMotion(id: string, body: Body | undefined, pos: V3, heading:
 
 /* --------------------------------- seats -------------------------------- */
 
+/** Fork (mocap-backlog): each seat prop's seat top at scale 1 (m), from its builder (`builders.ts`). */
+export const SEAT_TOP: Readonly<Record<string, number>> = {
+  'furniture.chair': 0.48,
+  'furniture.stool': 0.65,
+  'furniture.armchair': 0.545,
+  'furniture.couch': 0.545,
+  'furniture.officeChair': 0.7,
+  'furniture.wheelchair': 0.54,
+  'furniture.toilet': 0.49,
+  'prop.bench': 0.48,
+  'prop.poolLounger': 0.39
+}
+
 /** Catalog props a bot sits on: over one, a sit is a chair sit; elsewhere it sits on the floor. */
-export const SEAT_ASSETS: ReadonlySet<string> = new Set([
-  'furniture.chair',
-  'furniture.stool',
-  'furniture.armchair',
-  'furniture.couch',
-  'furniture.officeChair',
-  'furniture.wheelchair',
-  'furniture.toilet',
-  'prop.bench',
-  'prop.poolLounger'
-])
+export const SEAT_ASSETS: ReadonlySet<string> = new Set(Object.keys(SEAT_TOP))
 
 /** A seat prop where it stands. */
 export interface SeatSpot {
@@ -316,10 +319,14 @@ function sitRun(body: Body, pos: V3, heading: number, startT: number, endT: numb
     const landing = toWorld(back, pos, heading, 1)
     const start = seatUnder(seats, pos) ? toWorld({ x: -back.x, y: 0, z: -back.z }, pos, heading, 1) : seatUnder(seats, landing) ? pos : null
     if (start) {
-      const run = clipRun({ clip: into.id }, body, { ...start, y: pos.y }, heading, startT, endT)
+      // Fork (mocap-backlog): the runs sit on the seat's top (in the body's own size; `seat.ts`).
+      const spot = (seatUnder(seats, pos) ?? seatUnder(seats, landing))!
+      const seat = Math.round(((SEAT_TOP[spot.assetId]! * spot.scale + spot.position.y - pos.y) / (body.scale ?? 1)) * 1e6) / 1e6
+      const onSeat = (run: ClipRunMark[]): ClipRunMark[] => run.map((mk) => ({ ...mk, clip: { ...mk.clip, seat } }))
+      const run = onSeat(clipRun({ clip: into.id }, body, { ...start, y: pos.y }, heading, startT, endT))
       const end = run[1]!
       if (!mocapClip('sitChair') || endT - end.time <= BLEND) return run
-      const idle = clipRun({ clip: 'sitChair' }, body, { ...end.position }, heading, end.time, endT)
+      const idle = onSeat(clipRun({ clip: 'sitChair' }, body, { ...end.position }, heading, end.time, endT))
       endEarly(run[0]!, end, body)
       return [...run, ...idle]
     }
@@ -354,6 +361,11 @@ const PLAYS = new WeakMap<object, MotionPlay>()
 export function tagPlay<T extends object>(play: MotionPlay, mark: T): T {
   PLAYS.set(mark, play)
   return mark
+}
+
+/** Fork (mocap-backlog): the play a routine's or sequence's mark belongs to, if any. */
+export function playOf(mark: object): MotionPlay | undefined {
+  return PLAYS.get(mark)
 }
 
 /** A copy of a mark keeps its play. */

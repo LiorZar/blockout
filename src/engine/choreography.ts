@@ -19,7 +19,7 @@
 import { MOTION_PRESETS, type MotionPreset } from './motions'
 import { bodyLowY, motionRootY, type Body } from './floor'
 import type { GaitId, MarkClip } from './types'
-import { clipPlays, copyTag, tagPlay } from './mocap/library-clips'
+import { clipPlays, copyTag, playOf, playsClips, tagPlay } from './mocap/library-clips'
 
 /* ----------------------------- public model ---------------------------- */
 
@@ -1066,10 +1066,42 @@ export function buildRoutine(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySp
   const specs = routineOf(spec, ctx)
   // Fork: recast before grounding, so posed marks rest each body on the floor.
   if (spec.bodies) for (const e of specs) e.assetId = e.assetId === 'person.man' ? spec.bodies[0] : e.assetId === 'person.woman' ? spec.bodies[1] : e.assetId
-  // Fork: a bot plays its motions as clip runs (mocap/library-clips.ts).
-  specs.forEach((e, i) => (e.marks = clipPlays(e.marks, ctx.bodies?.[i] ?? { assetId: e.assetId }, e.rotationY)))
+  // Fork: a bot plays its motions as clip runs (mocap/library-clips.ts); any other body holds its falls.
+  specs.forEach((e, i) => {
+    const body = ctx.bodies?.[i] ?? { assetId: e.assetId }
+    e.marks = clipPlays(holdFalls(e.marks, body), body, e.rotationY)
+  })
   floorRoutine(specs, ctx.bodies)
   return specs
+}
+
+/** Reactions that end on the floor. */
+const FALLS = new Set(['knockdown-fall', 'ko-collapse', 'trip-and-fall-flat', 'thrown-backward'])
+
+/**
+ * Fork (mocap-backlog): after a fall, the routine's plain stand marks (the
+ * push-back at its end, a finish's "stays down") hold the fall's last pose
+ * as a posed move until the performer's next move, or to the end: the rule a
+ * bot follows on its fall clip (`clipPlays`). A body that plays clips keeps
+ * its marks.
+ */
+function holdFalls(marks: ChoreoMarkSpec[], body: Body): ChoreoMarkSpec[] {
+  if (playsClips(body)) return marks
+  let held: Record<string, number> | undefined
+  return marks.map((m) => {
+    const play = playOf(m)
+    if (play) {
+      const fall = FALLS.has(play.presetId) ? motion(play.presetId) : undefined
+      const last = fall?.keyframes[fall.keyframes.length - 1]?.joints
+      held = last ? (play.mirror ? mirrorJoints(last) : { ...last }) : undefined
+      return m
+    }
+    if (!held || m.joints || m.clip || m.gait !== 'stand') {
+      held = undefined
+      return m
+    }
+    return { ...m, joints: { ...held }, posedMove: true }
+  })
 }
 
 function routineOf(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {

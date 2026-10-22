@@ -17,8 +17,9 @@
  * - `mocapClipPose` resolves a `ClipState` (crossfades on the shortest arc)
  *   and grounds the pose: its lowest point sits at the clip's clearance (the
  *   source bot's height off its floor past a contact band, `CONTACT`),
- *   scaled to the bot. Every consumer (floor, weapons, shot words, the
- *   renderer) sees the same grounded pose.
+ *   scaled to the bot; a chair sit rests on its seat's top (`seat.ts`), a
+ *   retargeted bot's planted knees stay put (`contact-lock.ts`). Every
+ *   consumer (floor, weapons, shot words, the renderer) sees the same pose.
  *
  * PURE: no DOM / three.js / Electron. Clips are registered at startup
  * (exports wait for the library), never on the `state(t)` path.
@@ -28,6 +29,8 @@ import type { Effector, PoseFrames } from '../skeleton'
 import type { ClipState, V3 } from '../types'
 import { effectorsOf, jointLocals, mocapPose, poseFramesOf, type MocapDims, type MocapPose, type RigLocals } from './fk'
 import { qconj, qmul, qnorm, qpow, qrot, qslerp, vadd, vscale, type Quat } from './quat'
+import { lockKnees } from './contact-lock'
+import { seatLift } from './seat'
 import { mocapRig } from './registry'
 import { BONE_INDEX, MOCAP_BONES, type MocapBone } from './rig'
 
@@ -535,7 +538,8 @@ export function mocapClipPose(m: MocapDims, st: ClipState, joints?: Record<strin
   const clip = CLIPS.get(st.id)
   if (!clip) return null
   const s = clipSample(clip, st.t, st.mirror)
-  let pose = clipPose(m, s, joints)
+  // Fork (mocap-backlog): a retargeted bot's planted knees stay put (`contact-lock.ts`).
+  let pose = lockKnees(m, clip, st.t, !!st.mirror, clipPose(m, s, joints))
   let clear = s.clear * clipScale(m, s.hipH)
   const w = Math.min(1, Math.max(0, st.w ?? 1))
   if (w < 1) {
@@ -544,13 +548,17 @@ export function mocapClipPose(m: MocapDims, st: ClipState, joints?: Record<strin
     let ca = 0
     if (fc && st.from) {
       const sa = clipSample(fc, st.from.t, st.from.mirror)
-      a = clipPose(m, sa, joints)
+      a = lockKnees(m, fc, st.from.t, !!st.from.mirror, clipPose(m, sa, joints))
       ca = sa.clear * clipScale(m, sa.hipH)
     } else a = mocapPose(m, jointLocals(joints))
     pose = blendPoses(m, a, pose, w)
     clear = ca + (clear - ca) * w
   }
-  return groundPose(m, pose, clear)
+  // Fork (mocap-backlog): a chair sit rests on its seat prop's top (`seat.ts`).
+  const grounded = groundPose(m, pose, clear)
+  const seat = st.seat ?? (w < 1 ? st.from?.seat : undefined)
+  const lift = seat === undefined ? null : seatLift(m, grounded, seat)
+  return lift ? chain(m, lift.G, lift.hips, grounded.XG) : grounded
 }
 
 /** A bot's pose for joints and an optional clip state: the clip's (joints as its overlay), else the rig pose. */
