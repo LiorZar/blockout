@@ -1073,6 +1073,23 @@ Changes in this fork (2026):
   skeleton and synthetic clips), `tests/unit/mocap-fights-real.test.ts` (the clips that put
   a weapon in its holder, and walking, jogging, running, crouching, sitting and lying as
   rendered).
+- `spawn_choreography` casts bodies (mocap-followup; `src/renderer/control/handler.ts`,
+  `mcp/tools.json`, `AGENTS.md`, `mcp/README.md`): the tool takes the Choreographer's
+  `bodies`, `[men's, women's]` person asset ids, checked as `spawn_sequence`'s are (one
+  `castBodies` for both; a bot only with the library), so an agent can cast the mocap
+  bots in a dance, fight or chase routine; a routine fight of two hands them to the
+  Fight Director as its fighters (`RoutineSpec.bodies`, as the panel does). Test:
+  `tests/e2e/mocap-bots.spec.ts` (a hip-hop routine and a routine fight of two cast as
+  Y Bot and X Bot through the tool; a non-person body refused).
+- The newest hold rules under test (mocap-followup; `tests/unit/weapon-hold-rules.test.ts`
+  (new), no engine change): on the fixture bot and synthetic clips, the lift cut (a
+  forward-lift run snapping to a hand behind the back: the eased lift is scaled back,
+  every frame clear), the on-pose refine keeping its clearest turn (overlays no turn
+  clears: never deeper than the clip's curve), the elbow way (a fist under the chin opens
+  the elbow; a fist a forward lift frees keeps it; a shield never opens it) and the
+  shield-only hand pad (a shield ≥ 2 cm off the other hand; a pistol beside the other hand
+  not turned). Each test fails with its rule disabled (mutated copies of `weapon-hold.ts`,
+  `.maestro/mocap-followup/mutate.sh`).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

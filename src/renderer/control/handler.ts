@@ -237,16 +237,16 @@ function fightCast(params: Params): { assets?: [string, string]; labels?: [strin
   return { ...(assets ? { assets } : {}), ...(labels ? { labels } : {}) }
 }
 
-/** Fork (mocap-backlog): spawn_sequence `bodies`, the Sequences panel's Bodies: [men's, women's] person asset ids. */
-function sequenceBodies(params: Params): [string, string] | undefined {
+/** Fork (mocap-backlog): spawn_sequence / spawn_choreography `bodies`, the panels' Bodies: [men's, women's] person asset ids. */
+function castBodies(params: Params, tool: string): [string, string] | undefined {
   const raw = params.bodies
   if (raw === undefined) return undefined
-  if (!Array.isArray(raw) || raw.length !== 2) throw new Error('spawn_sequence: bodies must be two entries, [the men, the women].')
+  if (!Array.isArray(raw) || raw.length !== 2) throw new Error(`${tool}: bodies must be two entries, [the men, the women].`)
   return raw.map((v, q) => {
     if (typeof v !== 'string' || !v.startsWith('person.') || !ASSET_CATALOG.some((a) => a.id === v)) {
-      throw new Error(`spawn_sequence: bodies[${q}] "${String(v)}" isn't a person — call list_assets with category people.`)
+      throw new Error(`${tool}: bodies[${q}] "${String(v)}" isn't a person — call list_assets with category people.`)
     }
-    if (!assetListed(v)) throw new Error(`spawn_sequence: bodies[${q}] "${v}" ${MOCAP_MISSING}`)
+    if (!assetListed(v)) throw new Error(`${tool}: bodies[${q}] "${v}" ${MOCAP_MISSING}`)
     return v
   }) as [string, string]
 }
@@ -1004,7 +1004,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const headingDeg = flt(params, 'headingDeg') ?? 0
       const fightsBefore = s.scene()?.fights?.length ?? 0
       // Fork (mocap-backlog): the bodies the crowd is cast as (a car chase casts cars); a bot fight of two says it is staging, then solves before answering.
-      const bodies = sequenceBodies(params)
+      const bodies = castBodies(params, 'spawn_sequence')
       const cast = bodies && type !== 'carChase' ? { bodies } : {}
       const now = type === 'fight' && count === 2 && slowFight({ beats: [], ...(bodies ? { assets: bodies } : {}) })
       if (now) await fightNotice('Staging fight…')
@@ -1033,6 +1033,9 @@ async function execute(action: string, params: Params): Promise<unknown> {
     case 'spawn_choreography': {
       requireDoc()
       const spec = routineSpecFromParams(params)
+      // Fork (mocap-backlog): the bodies the routine casts (the Choreographer's Bodies).
+      const bodies = castBodies(params, 'spawn_choreography')
+      if (bodies) spec.bodies = bodies
       const x = flt(params, 'x') ?? 0
       const z = flt(params, 'z') ?? 0
       const headingDeg = flt(params, 'headingDeg') ?? 0

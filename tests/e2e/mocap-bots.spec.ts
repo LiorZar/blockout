@@ -8,7 +8,8 @@
  * a bot fight says it is staging before its solve and reads back without
  * one, and a bot fight exports byte-identically twice. mocap-backlog
  * (docs/plans/2026-10-22-mocap-backlog.md): spawn_sequence casts the bots
- * through its bodies. Skipped without the
+ * through its bodies; mocap-followup (docs/plans/2026-10-22-mocap-followup.md):
+ * spawn_choreography does too. Skipped without the
  * library (it is never in the repo); nothing from it is written into the
  * repo.
  */
@@ -167,6 +168,40 @@ test.describe('mocap bots', () => {
     expect(cars.ok, cars.error).toBe(true)
     expect(cars.data!.note).toMatch(/bodies/)
     expect((await rpc('undo')).ok).toBe(true)
+  })
+
+  test('spawn_choreography casts the bots through its bodies (a dance routine, and a routine fight of two)', async () => {
+    test.setTimeout(240_000)
+    // (The previous test waited for the clips to sample.)
+    const bodies = ['person.mocapMale', 'person.mocapFemale']
+    const assets = (ids: string[]): Promise<string[]> =>
+      page.evaluate((ids) => {
+        const store = (window as unknown as { __blockout: { store: { getState(): { scene(): { entities: { id: string; assetId: string }[] } } } } }).__blockout.store
+        return ids.map((id) => store.getState().scene().entities.find((e) => e.id === id)?.assetId ?? '')
+      }, ids)
+    // (Seed 3 over 8 s plays top-rock, a clip, and spin-freeze, keyframes only.)
+    const dance = await rpc<{ entityIds: string[] }>('spawn_choreography', { kind: 'dance', performers: 4, durationS: 8, seed: 3, style: 'hiphop', bodies, x: 30, z: -30 })
+    expect(dance.ok, dance.error).toBe(true)
+    expect(dance.data!.entityIds).toHaveLength(4)
+    expect(new Set(await assets(dance.data!.entityIds))).toEqual(new Set(bodies))
+    const lanes = await Promise.all(dance.data!.entityIds.map((lane) => rpc<{ clip?: { id: string } }[]>('list_marks', { lane })))
+    expect(lanes.some((l) => l.data!.some((m) => m.clip)), 'the bots dance clip runs').toBe(true)
+    expect((await rpc('undo')).ok).toBe(true)
+    // A routine fight of two goes to the Fight Director with the bots as its fighters, solved before the tool answers.
+    const fight = await rpc<{ fightId?: string }>('spawn_choreography', { kind: 'fight', performers: 2, durationS: 6, seed: 5, style: 'sparring', bodies, x: 30, z: -30 })
+    expect(fight.ok, fight.error).toBe(true)
+    expect(fight.data!.fightId).toBeTruthy()
+    const fighters = await page.evaluate((fightId) => {
+      const store = (window as unknown as { __blockout: { store: { getState(): { scene(): { entities: { id: string; assetId: string }[]; fights?: { id: string; fighterIds: string[] }[] } } } } }).__blockout.store
+      const scene = store.getState().scene()
+      return scene.fights!.find((f) => f.id === fightId)!.fighterIds.map((id) => scene.entities.find((e) => e.id === id)!.assetId)
+    }, fight.data!.fightId!)
+    expect(fighters).toEqual(bodies)
+    expect((await rpc('undo')).ok).toBe(true)
+    // Checked like spawn_sequence's.
+    const bad = await rpc('spawn_choreography', { kind: 'chase', performers: 2, bodies: ['vehicle.sedan', 'person.mocapFemale'] })
+    expect(bad.ok).toBe(false)
+    expect(bad.error).toMatch(/spawn_choreography: bodies\[0\]/)
   })
 
   test('a bot is a skinned character in the scene', async () => {
