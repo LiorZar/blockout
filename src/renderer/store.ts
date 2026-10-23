@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies, mocap clip runs and mocap fights (solve cache, staging busy state); see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies, mocap clip runs and mocap fights (solve cache, staging busy state), routines on the set; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -37,6 +37,7 @@ import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
 import { randomFightScript } from '@engine/fight/script'
 import { clearShift } from '@engine/fight/obstacles'
 import { fightObstacles } from './fight-obstacles'
+import { routineSet } from './routine-set'
 import { clearShotSpec, shotWordsClearer } from './camera-view'
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
@@ -360,6 +361,21 @@ export function slowRoutine(spec: import('@engine/choreography').RoutineSpec, en
   const scene = useStore.getState().scene()
   const people = entityIds.filter((id) => scene?.entities.find((e) => e.id === id)?.assetId.startsWith('person.'))
   return people.length === 2 && slowFight({ beats: [], fighters: [people[0]!, people[1]!] })
+}
+
+/** Fork (set-routines): what the last Choreographer routine said: notes (what moved) and warnings (what doesn't fit the set). */
+let routineReport: { notes: string[]; warnings: string[] } = { notes: [], warnings: [] }
+
+export function lastRoutineReport(): { notes: string[]; warnings: string[] } {
+  return routineReport
+}
+
+/** Fork (set-routines): the set a routine in the active take stays on, and fresh note / warning lists for it. */
+function routineOnSet(): { set?: import('@engine/routine-set').RoutineSet; notes: string[]; warnings: string[] } {
+  const scene = useStore.getState().scene()
+  const shot = useStore.getState().shot()
+  routineReport = { notes: [], warnings: [] }
+  return { ...(scene ? { set: routineSet(scene, scene.blocking.find((b) => b.id === shot?.blockingTakeId)) } : {}), ...routineReport }
 }
 
 /** How long a staging notice waits where no frame will come (no window, a hidden one), and at most in a visible one, ms. */
@@ -1604,6 +1620,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     }
     const { sceneId, shotId } = get()
     const duration = routineDuration(spec) // fork (fix-routines): the Choreographer's Duration
+    routineReport = { notes: [], warnings: [] } // fork (set-routines)
     // Fork (gap 3): a two-person fight goes through the fight solver.
     if (spec.kind === 'fight' && spec.performers === 2) {
       const input = { beats: routineFightBeats(spec.seed, spec.style, spec.ending, duration), at, ...(spec.bodies ? { assets: spec.bodies } : {}) }
@@ -1612,7 +1629,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       else stageRoutineFight(input)
       return
     }
-    const specs = buildRoutine({ ...spec, durationS: duration }, { origin: at })
+    const specs = buildRoutine({ ...spec, durationS: duration }, { origin: at, ...routineOnSet() }) // fork (set-routines): on the set
     const newIds: string[] = []
     get().mutate(`choreograph ${spec.kind}`, (doc) => {
       const scene = doc.scenes.find((s) => s.id === sceneId)
@@ -1652,6 +1669,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
         `Choreographed ${spec.kind} with ${newIds.length} performer${newIds.length > 1 ? 's' : ''} — ▶ to watch. Every performer stays individually editable.`,
         'success'
       )
+      for (const t of [...routineReport.notes, ...routineReport.warnings]) get().toast(t, 'info') // fork (set-routines)
     }
   },
 
@@ -1677,6 +1695,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const cz = people.reduce((s, e) => s + e.transform.position.z, 0) / people.length
     const heading = people[0]!.transform.rotationY
     const duration = routineDuration(spec) // fork (fix-routines): the Choreographer's Duration
+    routineReport = { notes: [], warnings: [] } // fork (set-routines)
     // Fork (gap 3): two people fight through the fight solver (their bodies and spots stay).
     if (spec.kind === 'fight' && people.length === 2) {
       const beats = routineFightBeats(spec.seed, spec.style, spec.ending, duration)
@@ -1684,7 +1703,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     }
     const specs = buildRoutine(
       { ...spec, performers: people.length, durationS: duration },
-      { origin: { x: cx, z: cz, heading }, bodies: people.map((e) => ({ assetId: e.assetId, params: e.params, scale: e.transform.scale })) }
+      { origin: { x: cx, z: cz, heading }, bodies: people.map((e) => ({ assetId: e.assetId, params: e.params, scale: e.transform.scale })), ...routineOnSet() } // fork (set-routines): on the set
     )
     let applied = 0
     get().mutate(`apply choreography: ${spec.kind}`, (doc) => {
@@ -1719,8 +1738,10 @@ export const useStore = create<BlockoutState>((set, get) => ({
         applied++
       }
     })
-    if (applied > 0)
+    if (applied > 0) {
       get().toast(`Choreographed ${applied} performer${applied > 1 ? 's' : ''} — ▶ to watch.`, 'success')
+      for (const t of [...routineReport.notes, ...routineReport.warnings]) get().toast(t, 'info') // fork (set-routines)
+    }
     return applied
   },
 

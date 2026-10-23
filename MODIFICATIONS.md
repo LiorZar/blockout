@@ -1188,6 +1188,35 @@ Changes in this fork (2026):
   street 28.3 / 23.6 → equal; worst 7×7 probe 39.2 → 0.1 levels; depth frames byte-identical
   before and after (`.maestro/export-look/`). Test: `tests/e2e/export-look.spec.ts` (new; 3 of
   3 fail on edf6dc0), `tests/unit/environment.test.ts` (extended).
+- Choreographer routines stay on the set (set-routines T1; `src/engine/routine-set.ts` and
+  `src/renderer/routine-set.ts` new, `src/engine/chase-tracks.ts`, `src/engine/choreography.ts`,
+  `src/renderer/store.ts`, `src/renderer/control/handler.ts`, `mcp/tools.json`): the chase ran its serpentine along
+  the routine's heading whatever stood there and the dances stood where they were clicked, so
+  QA's chase (mocap-qa run2) left Downtown's 36 m tile after 2 s, and in the Alley and the
+  Nightclub it started in the walls and off the tile; six dancers changing formation in the
+  Alley walked into its walls. The set now comes in as data read off the built kits: floors
+  (pieces under 0.35 m: ground, street, kerbs), streets (flat strips ≥ 12 m × 3 m, 2.5 : 1) and
+  solids (pieces between 0.35 m and 1.9 m, shop glass included; editor-only and animated dressing
+  left out); static props are solids. A chase runs along the street nearest the click (the
+  longest clear lane of it), else along the longest clear line through the most open spot near
+  the click, its root 0.6 m from every solid and the floor's edge; the runner starts at the
+  click while the room ahead holds the run, else the route slides back along the street; a
+  straight run too short for a running pace (3 m/s while running) turns into a lap (corners ≤
+  100°, 3 m from its own earlier stretches); the weave stays on the street and clear; the fall
+  (a bot's clip travel included) lands clear. A set that holds less than the Duration at a run
+  gets the longest shorter chase that runs, then everyone holds or slows to a stop, and a
+  warning says so. Dances and fights shift (≤ 8 m), then turn (15° steps), to the nearest spot
+  where every formation spot and walk is clear, else they stay and warn. What moved (notes) and
+  what doesn't fit (warnings) go to the toast and to `spawn_choreography` /
+  `choreograph_entities` (`notes`, `warnings`). A scene with no floor and no solid stages
+  exactly as before. QA's chase (seeds 7, 3, 21) and two dances (QA's 4-dancer line, 6 dancers
+  changing formation) on Downtown, Alley and Nightclub, people and bots, frames (of 193) with a
+  hip in a solid / off the tile, edf6dc0 → now: Downtown chases 0–2 / 144–148 → 0 / 0; Alley
+  chases 0–3 / all → 0 / 0 (cut to 4.25–6 s at a run); Nightclub chases 3–4 / all → 0 / 0
+  (a lap); the Alley's 6 dancers 10–11 / 0–116 → 0 / 0 (turned 90°); every other dance 0 / 0
+  before and after. Root steps ≤ 0.25 m a frame (qa-fixes' bar 0.45 m).
+  Tests: `tests/unit/routine-set.test.ts` (new, synthetic sets: 12 of 13 fail on edf6dc0's
+  routines), `tests/unit/routine-set-store.test.ts` (new, the real kits through the store).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror, routines recast to chosen bodies, mocap clip runs on bots, the chase on tracks (chase-tracks.ts); see MODIFICATIONS.md.
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and motion marks are posed moves, root channels mirror, routines recast to chosen bodies, mocap clip runs on bots, the chase on tracks (chase-tracks.ts), routines kept on the set (routine-set.ts); see MODIFICATIONS.md.
 /**
  * Choreography engine: routines that read as REAL staged choreography —
  * timed dance phrases hit on the count and change formation with real walking;
@@ -21,6 +21,7 @@ import { bodyLowY, motionRootY, type Body } from './floor'
 import type { GaitId, MarkClip } from './types'
 import { clipPlays, copyTag, playOf, playsClips, tagPlay } from './mocap/library-clips'
 import { chaseOnTracks } from './chase-tracks'
+import { fitGroup, isSet, nearestSolid, type GroupLayout, type RoutineSet } from './routine-set'
 
 /* ----------------------------- public model ---------------------------- */
 
@@ -67,6 +68,10 @@ export interface RoutineCtx {
   origin: { x: number; z: number; heading: number }
   /** Fork: the performers' own bodies (retargeted people), for the floor rule. */
   bodies?: Body[]
+  /** Fork (set-routines): the set the routine stays on (routine-set.ts); notes say what moved, warnings what doesn't fit. */
+  set?: RoutineSet
+  notes?: string[]
+  warnings?: string[]
 }
 
 /** A single blocking mark for one performer (superset of the sequence mark). */
@@ -963,12 +968,54 @@ function holdFalls(marks: ChoreoMarkSpec[], body: Body): ChoreoMarkSpec[] {
 function routineOf(spec: RoutineSpec, ctx: RoutineCtx): ChoreoEntitySpec[] {
   switch (spec.kind) {
     case 'dance':
-      return danceRoutine(spec, ctx)
+      return danceRoutine(spec, placeOnSet(spec, ctx)) // fork (set-routines)
     case 'fight':
-      return fightRoutine(spec, ctx)
+      return fightRoutine(spec, placeOnSet(spec, ctx)) // fork (set-routines)
     case 'chase':
       return chaseRoutine(spec, ctx)
   }
+}
+
+/**
+ * Fork (set-routines): a dance or a fight stands where it was placed only if
+ * every spot it uses is clear of the set; else it moves to the nearest spot
+ * that is (routine-set.ts `fitGroup`), and says so.
+ */
+function placeOnSet(spec: RoutineSpec, ctx: RoutineCtx): RoutineCtx {
+  if (!isSet(ctx.set)) return ctx
+  const layout = spec.kind === 'dance' ? danceLayout(spec) : fightLayout(spec)
+  const fit = fitGroup(ctx.set, ctx.origin, layout)
+  const where = ctx.set.name ?? 'the set'
+  const at = (o: { x: number; z: number }): string => `(${o.x.toFixed(1)}, ${o.z.toFixed(1)})`
+  if (!fit.fits) {
+    ctx.warnings?.push(`No clear floor on ${where} for this ${spec.kind} near ${at(ctx.origin)}: it stays where it was placed, into ${nearestSolid(ctx.set, ctx.origin, layout)}.`)
+    return ctx
+  }
+  if (fit.moved > 0.01 || fit.turnedDeg !== 0)
+    ctx.notes?.push(`Moved the ${spec.kind} ${fit.moved.toFixed(1)} m to ${at(fit.origin)}${fit.turnedDeg ? `, turned ${Math.abs(fit.turnedDeg)}°` : ''}, so it keeps clear of ${where}.`)
+  return { ...ctx, origin: fit.origin }
+}
+
+/** Fork (set-routines): every formation spot a dance uses, and the walks between them (`danceRoutine`'s order). */
+function danceLayout(spec: RoutineSpec): GroupLayout {
+  const n = Math.max(1, Math.min(40, Math.round(spec.performers)))
+  const bpm = spec.bpm && spec.bpm > 0 ? spec.bpm : 116
+  const phrases = Math.max(1, Math.round(spec.durationS / ((8 * 60) / bpm)))
+  const forms: FormationId[] = [spec.formation ?? 'line']
+  if (spec.formationChange && n > 1) for (let ph = 1; ph < phrases; ph++) forms.push(FORMATION_ORDER[ph % FORMATION_ORDER.length]!)
+  const spots = forms.map((f) => formationPositions(f, n).map((p) => ({ x: p.lx, z: p.lz })))
+  return { slots: spots.flat(), walks: spots.slice(1).flatMap((to, k) => to.map((p, i): [{ x: number; z: number }, { x: number; z: number }] => [spots[k]![i]!, p])) }
+}
+
+/** Fork (set-routines): a fight's spots: the pair, or the hero and the ring, with room for knockbacks round the middle. */
+function fightLayout(spec: RoutineSpec): GroupLayout {
+  const n = Math.max(2, Math.min(8, Math.round(spec.performers)))
+  const round = (c: { x: number; z: number }, r: number): { x: number; z: number }[] =>
+    Array.from({ length: 8 }, (_, i) => ({ x: c.x + Math.sin((i / 8) * Math.PI * 2) * r, z: c.z + Math.cos((i / 8) * Math.PI * 2) * r }))
+  if (n === 2) return { slots: [...round({ x: -FIGHT_RANGE / 2, z: 0 }, 1.2), ...round({ x: FIGHT_RANGE / 2, z: 0 }, 1.2)], walks: [] }
+  const ringR = Math.max(1.8, 1.4 + (n - 1) * 0.25)
+  const ring = Array.from({ length: n - 1 }, (_, i) => ({ x: Math.sin((i / (n - 1)) * Math.PI * 2) * ringR, z: -Math.cos((i / (n - 1)) * Math.PI * 2) * ringR }))
+  return { slots: [{ x: 0, z: 0 }, ...round({ x: 0, z: 0 }, 1.2), ...ring], walks: [] }
 }
 
 /**

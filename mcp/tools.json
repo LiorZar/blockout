@@ -931,7 +931,7 @@
   {
     "name": "spawn_choreography",
     "title": "Stage a dance, fight or chase",
-    "description": "Stage a full choreography routine — a dance number, a paired or one-vs-many fight, or a foot chase — spawning fresh performers AND their per-beat blocking in one call. Reads as real staged choreography: dances hit on the count and change formation, fights are paired attack→reaction exchanges that stay in range, chases run a serpentine path with near-misses. Position with x/z and headingDeg (heading 0 faces -Z). Call list_choreography_options for the vocabulary. A fight with 2 performers is solved by the Fight Director (blows land on their frame; returns fightId); with more it is crowd choreography where blows don't connect. For a scripted fight where blows land, use stage_fight.",
+    "description": "Stage a full choreography routine — a dance number, a paired or one-vs-many fight, or a foot chase — spawning fresh performers AND their per-beat blocking in one call. Reads as real staged choreography: dances hit on the count and change formation, fights are paired attack→reaction exchanges that stay in range, chases run a serpentine path with near-misses. Position with x/z and headingDeg (heading 0 faces -Z). Call list_choreography_options for the vocabulary. A fight with 2 performers is solved by the Fight Director (blows land on their frame; returns fightId); with more it is crowd choreography where blows don't connect. For a scripted fight where blows land, use stage_fight. On a set (a kit, props) the routine stays on the set's floor and clear of its walls and props: a chase runs along the street (or laps the open floor), a dance or fight moves to open floor; `notes` say what moved and `warnings` what the set can't hold (a chase it cuts short).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1023,7 +1023,7 @@
   {
     "name": "choreograph_entities",
     "title": "Choreograph existing people",
-    "description": "Retarget existing PERSON entities into a choreography routine: keeps their assets and labels but replaces their timeline with a fresh dance/fight/chase built around the group. Same routine options as spawn_choreography, plus entityIds. The performer count comes from the list and the routine centers on the group, so there is no x/z. A fight between exactly 2 people is solved by the Fight Director (blows land; returns fightId). For a scripted fight where blows land, use stage_fight with fighterIds.",
+    "description": "Retarget existing PERSON entities into a choreography routine: keeps their assets and labels but replaces their timeline with a fresh dance/fight/chase built around the group. Same routine options as spawn_choreography, plus entityIds. The performer count comes from the list and the routine centers on the group, so there is no x/z. A fight between exactly 2 people is solved by the Fight Director (blows land; returns fightId). For a scripted fight where blows land, use stage_fight with fighterIds. On a set (a kit, props) the routine stays on the set's floor and clear of its walls and props: a chase runs along the street (or laps the open floor), a dance or fight moves to open floor; `notes` say what moved and `warnings` what the set can't hold (a chase it cuts short).",
     "inputSchema": {
       "type": "object",
       "properties": {

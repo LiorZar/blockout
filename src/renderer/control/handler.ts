@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots, their clips and their fights) in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots, their clips and their fights, routines on the set) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -7,7 +7,7 @@
  * does is undoable, autosaved, and visible live.
  */
 
-import { useStore, currentProjectJson, fightNotice, refightShot, releaseHeldBy, slowFight, slowRoutine, solveInScene } from '../store'
+import { useStore, currentProjectJson, fightNotice, lastRoutineReport, refightShot, releaseHeldBy, slowFight, slowRoutine, solveInScene } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { isMocapAsset, waitForMocap } from '@engine/mocap/registry'
 import { assetListed, mocapStatus } from '../mocap/library'
@@ -461,6 +461,12 @@ function summary(): unknown {
  * spawn_choreography and choreograph_entities). The engine stays pure — this
  * renderer side picks the default seed when none is supplied.
  */
+/** Fork (set-routines): the last routine's notes (what moved to fit the set) and warnings (what doesn't fit), when it had any. */
+function routineNotes(): { notes?: string[]; warnings?: string[] } {
+  const r = lastRoutineReport()
+  return { ...(r.notes.length ? { notes: [...r.notes] } : {}), ...(r.warnings.length ? { warnings: [...r.warnings] } : {}) }
+}
+
 function routineSpecFromParams(params: Params): RoutineSpec {
   const kind = str(params, 'kind') as ChoreoKind | undefined
   if (!kind || !['dance', 'fight', 'chase'].includes(kind)) {
@@ -1073,7 +1079,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
         kind: spec.kind,
         staged: sel?.kind === 'entities' ? sel.entityIds.length : 0,
         entityIds: sel?.kind === 'entities' ? sel.entityIds : [],
-        ...newFightId(fightsBefore)
+        ...newFightId(fightsBefore),
+        ...routineNotes() // fork (set-routines): how the routine fits the set
       }
     }
 
@@ -1090,7 +1097,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (applied === 0) {
         throw new Error('No matching performers — choreography applies to people (person.* entities).')
       }
-      return { kind: spec.kind, choreographed: applied, ...newFightId(fightsBefore) }
+      return { kind: spec.kind, choreographed: applied, ...newFightId(fightsBefore), ...routineNotes() } // fork (set-routines)
     }
 
     case 'list_motion_presets': {
