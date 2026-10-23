@@ -1818,11 +1818,13 @@ export class SceneManager {
         // or dragged; framed moves (whip pan, static pan) aim by their marks.
         if (preset.track) shot.camera.trackEntityId = subject.id
         else delete shot.camera.trackEntityId
+        if (cleared.rig) shot.camera.rig = cleared.rig // fork (street-kit T5): a rig that keeps up with a moving vehicle
       }
     })
     s.setSelection({ kind: 'camera' })
+    const rig = cleared.rig ? ` Rig: ${cleared.rig === 'drone' ? 'Drone' : 'Car mount'}, to keep up.` : '' // fork (street-kit T5)
     s.toast(
-      `${preset.name} on ${entity.label?.text || entity.name} — ▶ to watch, then drag any mark to adjust.${cleared?.warning ? ` ${cleared.warning}` : cleared?.note ? ` ${cleared.note}` : ''}`,
+      `${preset.name} on ${entity.label?.text || entity.name} — ▶ to watch, then drag any mark to adjust.${rig}${cleared?.warning ? ` ${cleared.warning}` : cleared?.note ? ` ${cleared.note}` : ''}`,
       cleared?.warning ? 'error' : 'success'
     )
     return { ...(cleared?.note ? { note: cleared.note } : {}), ...(cleared?.warning ? { warning: cleared.warning } : {}) }

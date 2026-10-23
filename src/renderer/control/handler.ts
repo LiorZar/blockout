@@ -7,7 +7,7 @@
  * does is undoable, autosaved, and visible live.
  */
 
-import { useStore, currentProjectJson, fightNotice, lastRoutineReport, refightShot, releaseHeldBy, routineFightStaged, slowFight, slowRoutine, solveInScene, stageFightOffThread, updateFightOffThread } from '../store'
+import { useStore, currentProjectJson, fightNotice, lastRoutineReport, lastSequenceCamera, refightShot, releaseHeldBy, routineFightStaged, slowFight, slowRoutine, solveInScene, stageFightOffThread, updateFightOffThread } from '../store'
 import { offThread } from '../fight-offthread'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { isMocapAsset, waitForMocap } from '@engine/mocap/registry'
@@ -29,6 +29,7 @@ import { BUILTIN_PROFILES } from '@engine/profiles'
 import { generatePrompt } from '@engine/prompt'
 import { profileWarnings } from '@engine/profile-limits'
 import { OPEN_ROAD, onRoad, roadLength } from '@engine/road-kit' // fork (street-kit)
+import { CHASE_CAMERA_MOVE } from '../camera-move' // fork (street-kit T5)
 import { getSceneManager } from '../export/scene-access'
 import type { ActorMark, AspectId, CameraMark, Entity, GaitId, LightingPresetId, RigId, Scene, Shot, V3 } from '@engine/types'
 import { WEAPON_SPECS, weaponSpec } from '@engine/weapons'
@@ -219,6 +220,14 @@ function chaseRoadId(scene: Scene | null, leadId: string | undefined): { roadId?
     (e) => e.assetId === OPEN_ROAD && onRoad({ x: e.transform.position.x, z: e.transform.position.z, heading: e.transform.rotationY, length: roadLength(e.params) }, lead.transform.position)
   )
   return road ? { roadId: road.id } : {}
+}
+
+/** Fork (street-kit T5): the camera move a car chase laid on an unmoved camera: its preset, rig and what the lay said. */
+function chaseCamera(type: string): { camera?: { presetId: string; rig: string; note?: string; warning?: string } } {
+  const laid = type === 'carChase' ? lastSequenceCamera() : null
+  const rig = useStore.getState().shot()?.camera.rig
+  if (!laid || !rig) return {}
+  return { camera: { presetId: CHASE_CAMERA_MOVE, rig, ...(laid.note ? { note: laid.note } : {}), ...(laid.warning ? { warning: laid.warning } : {}) } }
 }
 
 function newFightId(fightsBefore: number): { fightId?: string } {
@@ -942,8 +951,10 @@ async function execute(action: string, params: Params): Promise<unknown> {
           `Unknown presetId "${presetId}". Valid: ${CAMERA_MOVE_PRESETS.map((p) => p.id).join(', ')}`
         )
       }
+      const rigBefore = s.shot()?.camera.rig // fork (street-kit T5)
       const view = requireManager().applyCameraMove(presetId, subjectId) // fork (fix-camera-set): note / warning
-      return { applied: presetId, ...view }
+      const rig = useStore.getState().shot()?.camera.rig
+      return { applied: presetId, ...view, ...(rig && rig !== rigBefore ? { rig } : {}) }
     }
 
     case 'list_camera_moves': {
@@ -1071,6 +1082,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         entityIds: sel?.kind === 'entities' ? sel.entityIds : [],
         ...newFightId(fightsBefore),
         ...(type === 'carChase' ? chaseRoadId(after.scene(), sel?.kind === 'entities' ? sel.entityIds[0] : undefined) : {}), // fork (street-kit)
+        ...chaseCamera(type), // fork (street-kit T5)
         ...(bodies && type === 'carChase' ? { note: 'bodies ignored: a car chase casts cars.' } : {})
       }
     }

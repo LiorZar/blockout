@@ -1516,6 +1516,22 @@ Changes in this fork (2026):
   had 180 warnings at HEAD (on Downtown) and 36 after T1, all "try jog"; now 0. `warnings()` is
   worked out once per evaluator: 4 ms on a 15 s 4-car chase. Test: `tests/unit/vehicle-speed.test.ts`
   (new: one per warning, and the chase).
+- A car chase that lays its own camera (street-kit T5; `src/renderer/camera-move.ts`, `src/renderer/store.ts`,
+  `src/renderer/viewport/SceneManager.ts`, `src/renderer/control/handler.ts`, `mcp/tools.json`): a staged
+  chase left the shot camera where it was, at the default pose looking at the origin, so the cars drove
+  out of frame and staging needed a camera move and a rig change by hand. Staging a Library /
+  `spawn_sequence` car chase on a shot camera with no marks now lays Lead the Subject on the lead car
+  through `layCameraMove` (`putCameraMove`, in the same undo step): a camera car in front of LEAD with
+  the pursuers behind it in frame; `spawn_sequence` returns `camera` (preset, rig, note / warning). A
+  camera with marks is left alone. `layCameraMove` also names the rig a follow or aerial move on a moving
+  vehicle needs to keep up (`LaidMove.rig`: Car mount, a drone in the air) while the shot's rig is still
+  the default Sticks, and `applyCameraMove` sets it in the same mutate (`apply_camera_move` returns
+  `rig`); a rig set by hand stays, and its speed warning with it. The chase as staged (both styles, 2–4
+  cars, 6 / 15 s, every frame at 24 fps): the lead's box out of frame, before 3036 of 3036 frames, now 0;
+  warnings 0 and 0; pursuers in frame 0.01 → 1.96 per frame. The 13 follow and aerial presets on a
+  moving lead (both styles, 2 / 4 cars): camera speed warnings on Sticks 52 of 52 moves, on the rig the
+  move names 0. Built app, one click (staged and exported, H3 Max, 15 s, 4 cars): the lead out of frame
+  0 of 361 frames in both styles, no warnings. Test: `tests/unit/chase-camera.test.ts` (new).
 - Fight coverage off the main thread (main-thread T1; `src/engine/fight/coverage-clear.ts`,
   `src/engine/fight/coverage-memo.ts` (new), `src/engine/fight/coverage.ts`, `src/engine/fight/solve-memo.ts`,
   `src/engine/camera-clear.ts`, `src/engine/shot.ts`, `src/engine/evaluate.ts`, `src/renderer/camera-view.ts`,

@@ -42,6 +42,7 @@ import { fightObstacles } from './fight-obstacles'
 import { offThread, planningRun } from './fight-offthread'
 import { routineSet } from './routine-set'
 import { baseLens, clearShotSpec, setBoxes } from './camera-view'
+import { CHASE_CAMERA_MOVE, putCameraMove, type LaidMove } from './camera-move' // fork (street-kit T5)
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
 export type Mode = 'stage' | 'shoot' | 'deliver'
@@ -373,6 +374,13 @@ let routineReport: { notes: string[]; warnings: string[] } = { notes: [], warnin
 
 export function lastRoutineReport(): { notes: string[]; warnings: string[] } {
   return routineReport
+}
+
+/** Fork (street-kit T5): the camera move the last staged sequence laid (a car chase on an unmoved camera), or null. */
+let sequenceCamera: LaidMove | null = null
+
+export function lastSequenceCamera(): LaidMove | null {
+  return sequenceCamera
 }
 
 /** Fork (set-routines): the set a routine in the active take stays on, and fresh note / warning lists for it. */
@@ -1620,6 +1628,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     if (opts.type === 'carChase') specs.push(carChaseRoad(seq, specs)) // fork (street-kit): the road under it
     const newIds: string[] = []
     let roadNote = '' // fork (street-kit)
+    sequenceCamera = null // fork (street-kit T5)
     get().mutate(`stage ${opts.type} sequence`, (doc) => {
       const scene = doc.scenes.find((s) => s.id === sceneId)
       const shot = scene?.shots.find((s) => s.id === shotId)
@@ -1661,12 +1670,16 @@ export const useStore = create<BlockoutState>((set, get) => ({
           })
         }
       }
+      // Fork (street-kit T5): a camera nobody has moved yet leads the lead car (newIds[0]) on a camera car.
+      if (opts.type === 'carChase' && shot && shot.camera.marks.length === 0 && newIds[0]) sequenceCamera = putCameraMove(scene, shot, CHASE_CAMERA_MOVE, newIds[0])
     })
     if (newIds.length > 0) {
       set({ selection: { kind: 'entities', entityIds: newIds } })
+      const laid = lastSequenceCamera() // fork (street-kit T5)
+      const cam = laid ? `; the camera tracks LEAD${laid.rig === 'carMount' ? ' from a car mount' : ''}${laid.warning ? `. ${laid.warning}` : ''}` : ''
       get().toast(
-        `${newIds.length} performers staged and choreographed${roadNote} — ▶ to watch. Drag the group to reposition; every performer stays individually editable.`,
-        'success'
+        `${newIds.length} performers staged and choreographed${roadNote}${cam} — ▶ to watch. Drag the group to reposition; every performer stays individually editable.`,
+        laid?.warning ? 'info' : 'success'
       )
     }
   },
