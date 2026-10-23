@@ -276,7 +276,16 @@ export function clipDistance(clip: MocapClip, warp: ClipWarp, t: number): number
 }
 
 /** A gait loop's pose on a bot: the clip at the warped time (grounded, `clip.ts`). */
-export function gaitPose(m: MocapDims, clip: MocapClip, warp: ClipWarp | null, distance: number, time: number, joints?: Record<string, number>): { pose: MocapPose; t: number } {
+export function gaitPose(
+  m: MocapDims,
+  clip: MocapClip,
+  warp: ClipWarp | null,
+  distance: number,
+  time: number,
+  joints?: Record<string, number>,
+  seat?: number
+): { pose: MocapPose; t: number } {
   const t = gaitClipTime(clip, warp, distance, time)
-  return { pose: mocapClipPose(m, { id: clip.id, t }, joints)!, t }
+  // Fork (shot-clear): a sit over a seat prop rests on its top (`seat`, as `MarkClip.seat`).
+  return { pose: mocapClipPose(m, { id: clip.id, t, ...(seat !== undefined ? { seat } : {}) }, joints)!, t }
 }

@@ -1448,6 +1448,16 @@ Changes in this fork (2026):
   frame): moves with blocked frames and no warning, HEAD 49, now 0 (2 warn: the high drone orbit
   can't clear the alley's 8 m walls). A fit takes ≤ 0.4 s, 1.9 s when none is clear. Test:
   `tests/unit/move-clear.test.ts` (new).
+- A bot's plain sit gait sits on its seat prop's top (shot-clear T3; `src/engine/mocap/gait-clips.ts`,
+  `src/engine/mocap/library-clips.ts`, `src/renderer/viewport/SceneManager.ts`,
+  `src/renderer/viewport/builders.ts`, `src/renderer/mocap/body.ts`): over a seat prop the `sit` gait
+  played the chair idle at the take's own height (~0.42 m), so a bot on a stool sat inside it. The
+  renderer now passes the seat's top (`AnimInput.seat`, `seatTopOver`, the sit-down's own formula)
+  and the gait loop rests on it through `seatLift`, as a sit-down's clip marks do. Real library, the
+  chair loop on both bots: the hips' lowest point off the seat top, worst over the loop, stool
+  22.9 / 25.1 cm, chair 5.9 / 8.1 cm, couch 12.4 / 14.6 cm, office chair 27.9 / 30.1 cm, now 0.0 cm,
+  feet on the floor; built app, Y Bot's Hips on a stool 0.597 → 0.887 m, on a chair 0.597 → 0.677 m.
+  Test: `tests/unit/mocap-seats.test.ts` (extended).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

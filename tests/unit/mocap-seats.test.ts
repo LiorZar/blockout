@@ -7,8 +7,8 @@ import { BONE_INDEX } from '@engine/mocap/rig'
 import { sanitizeClipMarks } from '@engine/mocap/clip-marks'
 import { ShotEvaluator } from '@engine/evaluate'
 import { bodyLowY } from '@engine/floor'
-import { gaitClipId } from '@engine/mocap/gait-clips'
-import { SEAT_ASSETS, clipMotion, clipPlays, runTravel, seatSpots, seatUnder, tagPlay } from '@engine/mocap/library-clips'
+import { gaitClipId, gaitPose } from '@engine/mocap/gait-clips'
+import { SEAT_ASSETS, clipMotion, clipPlays, runTravel, seatSpots, seatTopOver, seatUnder, tagPlay } from '@engine/mocap/library-clips'
 import { clearMocapBodies, registerMocapBody } from '@engine/mocap/registry'
 import { createEntity, createProject } from '@engine/schema'
 import { choreographMotion } from '@engine/sequences'
@@ -161,5 +161,27 @@ describe('a bot sits at the seat prop’s height', () => {
     sanitizeClipMarks(bad)
     expect(bad.blocking[0]!.tracks[0]!.marks[0]!.clip!.seat).toBeUndefined()
     expect(bad.blocking[0]!.tracks[0]!.marks[1]!.clip!.seat).toBe(0.65)
+  })
+})
+
+// Fork (shot-clear T3): a bot's plain sit gait over a seat prop sits at the seat's top too.
+describe('the sit gait over a seat prop sits at its top', () => {
+  const m = (): MocapDims => personDims(MALE).mocap!
+
+  it('the seat top over a floor, in the body’s own size, as the sit-down records it', () => {
+    const [stool] = seatSpots([chair(0, 0, 'furniture.stool')])
+    expect(seatTopOver(stool!, 0, 1)).toBe(0.65)
+    expect(seatTopOver(stool!, 0, 1.25)).toBeCloseTo(0.52, 9)
+    const [raised] = seatSpots([{ ...chair(0, 0), transform: { ...chair(0, 0).transform, position: { x: 0, y: 0.3, z: 0 }, scale: 1.2 } }])
+    expect(seatTopOver(raised!, 0.1, 1)).toBeCloseTo(0.48 * 1.2 + 0.2, 9)
+  })
+
+  it('the chair loop rests the hips on the seat it is given, and plays as the clip has it without one', () => {
+    const clip = mocapClip('sitChair')!
+    const own = gaitPose(m(), clip, null, 0, 0.5).pose
+    expect(seatContactY(m(), own)).toBeLessThan(0.6)
+    const sat = gaitPose(m(), clip, null, 0, 0.5, undefined, 0.65).pose
+    expect(seatContactY(m(), sat)).toBeCloseTo(0.65, 3)
+    expect(gaitPose(m(), clip, null, 0, 0.5, undefined, undefined).pose).toEqual(own)
   })
 })

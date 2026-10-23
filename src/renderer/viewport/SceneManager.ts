@@ -43,7 +43,7 @@ import { StageEnvironment, exposeSky } from './environment'
 import { applyViewLook, lookForPass } from './look'
 import { CastFill } from './cast-fill'
 import { renderStable } from './stable-render'
-import { seatSpots, seatUnder } from '@engine/mocap/library-clips'
+import { seatSpots, seatTopOver, seatUnder } from '@engine/mocap/library-clips'
 import { isMocapAsset } from '@engine/mocap/registry'
 import { loadMocapLibrary, onMocapLoaded } from '../mocap/library'
 import { botInput } from '../mocap/scene'
@@ -2260,7 +2260,10 @@ export class SceneManager {
     const seat = (input: AnimInput, time: number, at: EntityState): AnimInput => {
       if (input.gait !== 'sit') return input
       const states = statesAt(time)
-      input.seated = !!seatUnder(seatSpots(scene.entities, (id) => states.find((x) => x.entityId === id)?.position), at.position)
+      const spot = seatUnder(seatSpots(scene.entities, (id) => states.find((x) => x.entityId === id)?.position), at.position)
+      input.seated = !!spot
+      // Fork (shot-clear): and on its top, as a sit-down does (`seatTopOver`).
+      if (spot) input.seat = seatTopOver(spot, at.position.y, visual.entity.transform.scale)
       return input
     }
     const inputAt = (t: number): AnimInput | null => {

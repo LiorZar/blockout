@@ -330,7 +330,8 @@ export function buildMocapPerson(
     const id = movesBody(ov) && STILL_GAITS.has(input.gait) ? undefined : gaitClipId(assetId, input.gait, input.speed, input.seated)
     const clip = id ? mocapClip(id) : undefined
     if (id && clip) {
-      const g = gaitClipPose(m, clip, clipWarp(m, clip, assetId), input.distance / ((input.scale ?? 1) * m.k), input.time, ov)
+      // Fork (shot-clear): a sit over a seat prop rests on its top.
+      const g = gaitClipPose(m, clip, clipWarp(m, clip, assetId), input.distance / ((input.scale ?? 1) * m.k), input.time, ov, input.seated ? input.seat : undefined)
       return { pose: g.pose, ...(TRAVEL_GAITS.has(input.gait) ? {} : { loop: { id, t: g.t } }) }
     }
     animatePerson(j, input)

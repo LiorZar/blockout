@@ -49,6 +49,8 @@ export interface AnimInput {
   hands?: { L: number; R: number }
   /** Fork (mocap clips): a seat prop takes the hips (a sitting bot sits in the chair, else on the floor). */
   seated?: boolean
+  /** Fork (shot-clear): that seat's top, metres over the body's floor in its own size (`MarkClip.seat`). */
+  seat?: number
 }
 
 export interface BuiltAsset {

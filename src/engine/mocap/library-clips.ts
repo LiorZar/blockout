@@ -305,6 +305,14 @@ export function seatSpots(entities: readonly Entity[], at?: (entityId: string) =
     .map((e) => ({ assetId: e.assetId, position: at?.(e.id) ?? e.transform.position, scale: e.transform.scale }))
 }
 
+/**
+ * Fork (shot-clear): a seat prop's top over a floor at `floorY`, in a body's own size (`scale`): what a
+ * sit-down records on its runs (`MarkClip.seat`) and a sit gait over the seat rests on (`seat.ts`).
+ */
+export function seatTopOver(spot: SeatSpot, floorY: number, scale = 1): number {
+  return Math.round(((SEAT_TOP[spot.assetId]! * spot.scale + spot.position.y - floorY) / scale) * 1e6) / 1e6
+}
+
 /** Seats more than this above or below a point are on another floor (m). */
 const SEAT_FLOOR = 0.5
 
@@ -330,7 +338,7 @@ function sitRun(body: Body, pos: V3, heading: number, startT: number, endT: numb
     if (start) {
       // Fork (mocap-backlog): the runs sit on the seat's top (in the body's own size; `seat.ts`).
       const spot = (seatUnder(seats, pos) ?? seatUnder(seats, landing))!
-      const seat = Math.round(((SEAT_TOP[spot.assetId]! * spot.scale + spot.position.y - pos.y) / (body.scale ?? 1)) * 1e6) / 1e6
+      const seat = seatTopOver(spot, pos.y, body.scale ?? 1)
       const onSeat = (run: ClipRunMark[]): ClipRunMark[] => run.map((mk) => ({ ...mk, clip: { ...mk.clip, seat } }))
       const run = onSeat(clipRun({ clip: into.id }, body, { ...start, y: pos.y }, heading, startT, endT))
       const end = run[1]!
