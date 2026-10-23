@@ -2,9 +2,11 @@
  * The fight solver's worker (fork addition, fight-speed; see
  * MODIFICATIONS.md). renderer/fight-offthread.ts relays every bot and clip
  * the renderer registers, in order, and asks for solves: each is the
- * engine's solveFight, here instead of on the main thread.
+ * engine's solveFight, here instead of on the main thread. Fork
+ * (main-thread): and for a fight's coverage, the engine's clearCoverage.
  */
 
+import { clearCoverage } from '@engine/fight/coverage-clear'
 import { solveFight } from '@engine/fight/solve'
 import { registerMocapClip } from '@engine/mocap/clip'
 import { registerMocapBody } from '@engine/mocap/registry'
@@ -19,7 +21,7 @@ const message = (err: unknown): string => (err instanceof Error ? err.message : 
 
 ctx.onmessage = (e) => {
   const m = e.data
-  if (m.kind !== 'solve') {
+  if (m.kind !== 'solve' && m.kind !== 'cover') {
     if (broken) return
     try {
       if (m.kind === 'body') registerMocapBody(m.assetId, m.src)
@@ -34,7 +36,7 @@ ctx.onmessage = (e) => {
     return
   }
   try {
-    ctx.postMessage({ id: m.id, sol: solveFight(...m.args) })
+    ctx.postMessage(m.kind === 'solve' ? { id: m.id, sol: solveFight(...m.args) } : { id: m.id, cover: clearCoverage(...m.args) })
   } catch (err) {
     ctx.postMessage({ id: m.id, error: message(err) })
   }

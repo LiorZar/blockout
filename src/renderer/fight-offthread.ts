@@ -16,6 +16,9 @@
  * Without a worker (Vitest, a failed one) the solves run here, as before.
  */
 
+import type { CoverageMark } from '@engine/fight/coverage'
+import type { CoverageArgs } from '@engine/fight/coverage-clear'
+import { coveringElsewhere, rememberCoverage } from '@engine/fight/coverage-memo'
 import type { FightSolution } from '@engine/fight/solve'
 import { rememberFightSolve, solvingElsewhere, type FightSolveArgs } from '@engine/fight/solve-memo'
 import type { MocapClipSource } from '@engine/mocap/clip'
@@ -23,8 +26,10 @@ import type { MocapSource } from '@engine/mocap/rig'
 
 /** A bot or clip the engine registered, for the worker to register too. */
 export type MocapRegistration = { kind: 'body'; assetId: string; src: MocapSource } | { kind: 'clip'; id: string; src: MocapClipSource }
-export type FightWorkerRequest = MocapRegistration | { kind: 'solve'; id: number; args: FightSolveArgs }
-export type FightWorkerReply = { id: number; sol?: FightSolution; error?: string }
+export type FightWorkerRequest = MocapRegistration | { kind: 'solve'; id: number; args: FightSolveArgs } | { kind: 'cover'; id: number; args: CoverageArgs }
+export type FightWorkerReply = { id: number; sol?: FightSolution; cover?: CoverageMark[]; error?: string }
+/** Fork (main-thread): work for the worker, by its memo key: a fight solve, or a fight's coverage (engine/fight/coverage-memo.ts). */
+type Job = { kind: 'solve'; key: string; args: FightSolveArgs } | { kind: 'cover'; key: string; args: CoverageArgs }
 
 /** Planning runs before an action runs here anyway (each round solves at least one new fight; a memo this small can't hold more). */
 const ROUNDS = 12
@@ -32,13 +37,15 @@ const ROUNDS = 12
 let worker: Worker | null = null
 let failed = false
 let asked = 0
-const waiting = new Map<number, (sol: FightSolution | null) => void>()
+const waiting = new Map<number, (reply: FightWorkerReply | null) => void>()
 /** A stand-in for the worker (tests). */
 let stand: ((args: FightSolveArgs) => Promise<FightSolution | null>) | null = null
+/** Fork (main-thread): a stand-in for the worker's coverage (tests); with only `stand`, coverage is worked out here. */
+let coverStand: ((args: CoverageArgs) => Promise<CoverageMark[] | null>) | null = null
 let planning = false
-/** Solves asked of the worker and not answered yet, by memo key (one solve each, however many ask). */
-const inFlight = new Map<string, Promise<FightSolution | null>>()
-/** Solves the worker didn't answer (an error there): solved here from then on. */
+/** Solves (and coverage) asked of the worker and not answered yet, by memo key (one solve each, however many ask). */
+const inFlight = new Map<string, Promise<boolean>>()
+/** Solves (and coverage) the worker didn't answer (an error there): solved here from then on. */
 const refused = new Set<string>()
 /** Thrown to stop a planning run at a solve the memo doesn't have. */
 const STOP = new Error('fight solve off the main thread')
@@ -56,7 +63,7 @@ function fightWorker(): Worker | null {
     const done = waiting.get(e.data.id)
     waiting.delete(e.data.id)
     if (e.data.error) console.warn(`[fight] worker: ${e.data.error}`)
-    done?.(e.data.sol ?? null)
+    done?.(e.data)
   }
   worker.onerror = (e): void => {
     console.warn(`[fight] worker failed: ${e.message}`)
@@ -78,45 +85,73 @@ export function setFightSolver(fn: ((args: FightSolveArgs) => Promise<FightSolut
   refused.clear()
 }
 
+/** Tests (fork, main-thread): work coverage out with `fn` instead of the worker (null: the worker, or here beside a stand-in solver). */
+export function setCoverageWorker(fn: ((args: CoverageArgs) => Promise<CoverageMark[] | null>) | null): void {
+  coverStand = fn
+  refused.clear()
+}
+
 /** Whether a store action is running in planning mode (store.mutate commits nothing). */
 export function planningRun(): boolean {
   return planning
 }
 
-/** One solve off the main thread, remembered once it is in; null when there is no worker to do it. */
-function solveThere(key: string, args: FightSolveArgs): Promise<FightSolution | null> {
-  const known = inFlight.get(key)
-  if (known) return known
-  const w = stand ? null : fightWorker()
-  const asking: Promise<FightSolution | null> = stand
-    ? stand(args)
-    : w
-      ? new Promise((resolve) => {
-          const id = ++asked
-          waiting.set(id, resolve)
-          w.postMessage({ kind: 'solve', id, args } satisfies FightWorkerRequest)
-        })
-      : Promise.resolve(null)
-  const done = asking.then((sol) => {
-    inFlight.delete(key)
-    if (sol) rememberFightSolve(key, sol)
-    else refused.add(key)
-    return sol
+/** Fork (main-thread): whether coverage goes off the main thread: the worker, or a coverage stand-in (a stand-in solver alone works it out here). */
+const coverElsewhere = (): boolean => !!coverStand || (!stand && !!fightWorker())
+
+/** Ask the worker for a job's result; null when there is none to ask or it failed. */
+function post(job: Job): Promise<FightWorkerReply | null> {
+  const w = fightWorker()
+  if (!w) return Promise.resolve(null)
+  return new Promise((resolve) => {
+    const id = ++asked
+    waiting.set(id, resolve)
+    w.postMessage({ kind: job.kind, id, args: job.args } as FightWorkerRequest)
   })
-  inFlight.set(key, done)
-  return done
 }
 
-/** Run `run` in planning mode: its solves the memo doesn't have, or its value when it has them all. */
-function plan<T>(run: () => T): { value: T; missed: [] } | { missed: { key: string; args: FightSolveArgs }[] } {
-  const missed: { key: string; args: FightSolveArgs }[] = []
+/** One solve (or coverage) off the main thread, remembered once it is in; false when there is no worker to do it. */
+function solveThere(job: Job): Promise<boolean> {
+  const known = inFlight.get(job.key)
+  if (known) return known
+  const done =
+    job.kind === 'solve'
+      ? (stand ? stand(job.args) : post(job).then((r) => r?.sol ?? null)).then((sol) => {
+          if (sol) rememberFightSolve(job.key, sol)
+          return !!sol
+        })
+      : (coverStand ? coverStand(job.args) : post(job).then((r) => r?.cover ?? null)).then((cover) => {
+          if (cover) rememberCoverage(job.key, cover)
+          return !!cover
+        })
+  const settled = done.then((ok) => {
+    inFlight.delete(job.key)
+    if (!ok) refused.add(job.key)
+    return ok
+  })
+  inFlight.set(job.key, settled)
+  return settled
+}
+
+/** Run `run` in planning mode: its solves (and coverage) the memo doesn't have, or its value when it has them all. */
+function plan<T>(run: () => T): { value: T; missed: [] } | { missed: Job[] } {
+  const missed: Job[] = []
   planning = true
   try {
-    const value = solvingElsewhere((key, args) => {
-      if (refused.has(key)) return
-      missed.push({ key, args: structuredClone(args) })
-      throw STOP
-    }, run)
+    const value = solvingElsewhere(
+      (key, args) => {
+        if (refused.has(key)) return
+        missed.push({ kind: 'solve', key, args: structuredClone(args) })
+        throw STOP
+      },
+      () =>
+        coveringElsewhere((key, args) => {
+          if (refused.has(key) || !coverElsewhere()) return
+          // Not copied: they are the planning run's own throwaway document (and posting copies them).
+          missed.push({ kind: 'cover', key, args })
+          throw STOP
+        }, run)
+    )
     if (missed.length === 0) return { value, missed: [] }
   } catch (e) {
     // The action's own error (a bad input): it throws again for real.
@@ -133,7 +168,7 @@ export async function offThread<T>(run: () => T): Promise<T> {
   for (let round = 0; round < ROUNDS; round++) {
     const { missed } = plan(run)
     if (missed.length === 0) break
-    const sols = await Promise.all(missed.map((m) => solveThere(m.key, m.args)))
+    const sols = await Promise.all(missed.map((m) => solveThere(m)))
     if (sols.some((s) => !s)) break
   }
   return run()
@@ -148,6 +183,6 @@ export function readSoon<T>(read: () => T, ready: () => void): T | null {
   if (!stand && !fightWorker()) return read()
   const p = plan(read)
   if (p.missed.length === 0) return (p as { value: T }).value
-  void Promise.all(p.missed.map((m) => solveThere(m.key, m.args))).then(ready)
+  void Promise.all(p.missed.map((m) => solveThere(m))).then(ready)
   return null
 }

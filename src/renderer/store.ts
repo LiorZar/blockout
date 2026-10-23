@@ -34,13 +34,14 @@ import { GUARD_DISTANCE, type FighterInput, type FightSolution } from '@engine/f
 import { solveFightMemo } from '@engine/fight/solve-memo'
 import { nextLabelColor } from '@engine/palette'
 import { handFor, holdError, putInHand, setDown, weaponSpec, weaponsInHand } from '@engine/weapons'
-import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
+import type { CoverageMode } from '@engine/fight/coverage'
+import { clearCoverageMemo } from '@engine/fight/coverage-memo' // fork (main-thread)
 import { randomFightScript } from '@engine/fight/script'
 import { clearShift } from '@engine/fight/obstacles'
 import { fightObstacles } from './fight-obstacles'
 import { offThread, planningRun } from './fight-offthread'
 import { routineSet } from './routine-set'
-import { baseLens, clearShotSpec, shotWordsClearer } from './camera-view'
+import { baseLens, clearShotSpec, setBoxes } from './camera-view'
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
 export type Mode = 'stage' | 'shoot' | 'deliver'
@@ -484,9 +485,10 @@ function fightReach(scene: Scene, fight: FightDoc): [number, number] {
 function writeCoverage(scene: Scene, shot: Shot, fight: FightDoc, report: FightSolution['report'], mode: CoverageMode, lineSide: 1 | -1): number {
   const cam = shot.camera
   const focal = baseLens(cam.marks) // fork (shot-clear): the lens asked for, not the last framing's
+  // Fork (fix-camera-set): coverage keeps a clear view. Fork (main-thread): worked out once per input, in the fight worker under offThread.
+  const covered = clearCoverageMemo(scene, shot, fight, report, mode, lineSide, { reach: fightReach(scene, fight), focalLength: focal, boxes: setBoxes(scene, shot) })
   const ev = new ShotEvaluator(scene, shot)
-  const clear = shotWordsClearer(scene, shot, focal) // fork (fix-camera-set): coverage keeps a clear view
-  cam.marks = fightCoverage(fight, report, mode, lineSide, { reach: fightReach(scene, fight), clear }).map((m) => {
+  cam.marks = covered.map((m) => {
     const solved = ev.solveShotAt(m.shot, m.time, focal)
     const mark = createCameraMark(solved ? { ...solved.position } : { x: 0, y: 1.6, z: 5 }, m.time, solved?.pan ?? 0, solved?.tilt ?? 0, solved?.focalLength ?? focal)
     mark.roll = solved?.roll ?? 0

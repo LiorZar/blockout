@@ -17,7 +17,7 @@
 import { assetSpec } from './assets'
 import { ASPECT_RATIOS, SHOT_SIZES, frameSubject, verticalFov } from './camera'
 import { headingOf } from './path'
-import { personDims, poseEffectors, toWorld } from './skeleton'
+import { personDims, poseEffectors, toWorld, type Effector, type PersonDims } from './skeleton'
 import type { AspectId, ClipState, EntityCategory, SensorId, ShotSizeId, V3 } from './types'
 
 export type ShotSide = 'front' | 'frontLeft' | 'left' | 'backLeft' | 'back' | 'backRight' | 'right' | 'frontRight' | 'line'
@@ -126,11 +126,38 @@ const norm = (v: XZ): XZ | null => {
 export const turnXZ = (v: XZ, a: number): XZ =>
   a === 0 ? v : { x: v.x * Math.cos(a) + v.z * Math.sin(a), z: -v.x * Math.sin(a) + v.z * Math.cos(a) }
 
+/**
+ * Fork (main-thread): a person subject's dims and posed rig points, worked out once per subject object (a ShotSubject
+ * is read-only once made): camera-clear.ts checks each sample's subjects against every view it tries, and a bot's
+ * pose is its clip's whole FK.
+ */
+export function subjectPose(s: ShotSubject): { dims: PersonDims; fx: Record<Effector, V3> } {
+  let p = POSES.get(s)
+  if (!p) {
+    const dims = personDims(s.assetId, s.params)
+    p = { dims, fx: poseEffectors(dims, s.joints, s.clip) }
+    POSES.set(s, p)
+  }
+  return p
+}
+
+const POSES = new WeakMap<ShotSubject, { dims: PersonDims; fx: Record<Effector, V3> }>()
+const BODIES = new WeakMap<ShotSubject, Body>()
+
+/** Fork (main-thread): once per subject object, as subjectPose. */
 function bodyOf(s: ShotSubject): Body {
+  let b = BODIES.get(s)
+  if (!b) {
+    b = measureBody(s)
+    BODIES.set(s, b)
+  }
+  return b
+}
+
+function measureBody(s: ShotSubject): Body {
   const scale = s.scale
   if (s.assetId.startsWith('person.')) {
-    const dims = personDims(s.assetId, s.params)
-    const fx = poseEffectors(dims, s.joints, s.clip)
+    const { dims, fx } = subjectPose(s)
     const w = (p: V3): V3 => toWorld(p, s.position, s.heading, scale)
     const head = w(fx.head)
     const top = head.y + dims.headR * scale

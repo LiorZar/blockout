@@ -1481,6 +1481,26 @@ Changes in this fork (2026):
   overlap, no heading step over 2°); void (a ray below the horizon meeting no set, car or kit floor)
   from three live shot-words cameras on the lead, worst frame HEAD on Downtown 11–64 %, now 0 %.
   Test: `tests/unit/road-kit.test.ts` (new).
+- Fight coverage off the main thread (main-thread T1; `src/engine/fight/coverage-clear.ts`,
+  `src/engine/fight/coverage-memo.ts` (new), `src/engine/fight/coverage.ts`, `src/engine/fight/solve-memo.ts`,
+  `src/engine/camera-clear.ts`, `src/engine/shot.ts`, `src/engine/evaluate.ts`, `src/renderer/camera-view.ts`,
+  `src/renderer/fight-offthread.ts`, `src/renderer/fight-worker.ts`, `src/renderer/store.ts`): shot-clear's
+  every-frame check made a `fight_coverage` call on bots 0.4–6.3 s on the main thread, and the app ran it twice
+  (`offThread`'s planning run, then the real one). The solve memo's key leaves out the fight's `coverage`, which the
+  solver never reads, so a coverage mode no longer re-solves the fight (every second call did). The search is the
+  same, worked out once: a sample's subjects are posed once (`subjectPose`; a shot solve's bodies once per subject),
+  each view check once per time and variant, the cast sampled without its camera (`evaluateEntities`), one sample
+  store for all of a coverage's framings, and the cover rays cast against each box's cached heading without
+  allocating. A coverage's framings (`clearCoverage`, moved from `camera-view.ts`) are remembered by everything they
+  read (`coverage-memo.ts`; the marks' ids left out, an action's every run lays fresh ones), so under `offThread` the
+  fight worker works them out (a `cover` job beside `solve`) and the store's real run reads them. QA's run3 fight on
+  bots, gym / alley / downtown × 4 modes × 2 sides (`.maestro/main-thread/cover.probe.ts`, load 18–65 %): HEAD
+  0.43–6.26 s, pre-T1 (3c54c8e) 0.05–3.31 s, now 0.15–0.76 s worked out on one thread and 37–51 ms on the main
+  thread with the search in the worker; every case's camera marks equal to HEAD's. Built app, MCP `fight_coverage`
+  on the combos fight: HEAD one 0.94–1.29 s task, now none over 50 ms before the commit (the commit's mark rebuild
+  and selection box: T2, T3). The 29 fight solutions byte-equal; an export of a covered bot fight equal to HEAD's.
+  Tests: `tests/unit/coverage-memo.test.ts` (new), `fight-offthread.test.ts`, `fight-solve-memo.test.ts` (extended),
+  e2e `fight-worker.spec.ts` (MCP `fight_coverage` in the worker, equal to the main thread's).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

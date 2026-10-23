@@ -58,8 +58,8 @@ export interface CoverageOptions {
 /** Weapon reach class: 0 unarmed (or a knife, pistol, shield), 1 short (axe, bat), 2 long (sword, katana, spear, long gun). */
 const reachClass = (reach: number): 0 | 1 | 2 => (reach >= 0.7 ? 2 : reach >= 0.3 ? 1 : 0)
 
-/** Seconds a cut-free move takes between two coverage framings. */
-const MOVE_S = 0.4
+/** Seconds a cut-free move takes between two coverage framings (fork, main-thread: exported for coverage-clear.ts). */
+export const MOVE_S = 0.4
 const MIN_GAP = 0.05
 
 export function fightCoverage(

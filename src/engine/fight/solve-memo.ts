@@ -22,10 +22,15 @@ export type FightSolveArgs = Parameters<typeof solveFight>
 const SOLVES = new Map<string, FightSolution>()
 const KEPT = 16
 
-/** Everything a solve reads, as one string (no props and an empty prop list solve alike). */
+/**
+ * Everything a solve reads, as one string (no props and an empty prop list solve alike). Fork (main-thread): not the
+ * fight's camera coverage, which the solver never reads: a coverage mode re-solved the whole fight.
+ */
 export function fightSolveKey(...[fight, fighters, shot, opts = {}]: FightSolveArgs): string {
   const props = opts.obstacles && opts.obstacles.length > 0 ? opts.obstacles : []
-  return JSON.stringify([fight, fighters, { duration: shot.duration, fps: shot.fps }, props, !!opts.paths, mocapVersion(), mocapClipVersion()])
+  const solved: Partial<typeof fight> = { ...fight }
+  delete solved.coverage
+  return JSON.stringify([solved, fighters, { duration: shot.duration, fps: shot.fps }, props, !!opts.paths, mocapVersion(), mocapClipVersion()])
 }
 
 /** A copy of the solution remembered under `key`, if there is one. */

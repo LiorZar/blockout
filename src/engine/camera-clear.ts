@@ -27,8 +27,8 @@ import { ASPECT_RATIOS, horizontalFov, verticalFov } from './camera'
 import type { CameraMarkSpec } from './camera-moves'
 import { ShotEvaluator } from './evaluate'
 import { headingOf } from './path'
-import { solveShot, turnXZ, type ShotSpec, type ShotSubject, type ShotView } from './shot'
-import { personDims, poseEffectors, toWorld } from './skeleton'
+import { solveShot, subjectPose, turnXZ, type ShotSpec, type ShotSubject, type ShotView } from './shot'
+import { toWorld } from './skeleton'
 import type { AspectId, CameraMark, EntityState, Scene, SensorId, Shot, V3 } from './types'
 import { trackAim } from './track-aim'
 
@@ -71,11 +71,22 @@ export const MIN_CLEAR_SHARE = 0.9
 // Geometry
 // ---------------------------------------------------------------------------
 
+/** Fork (main-thread): each box's heading cosine and sine, worked out once (the cover check casts hundreds of rays a view). */
+const TRIG = new WeakMap<SetBox, { c: number; s: number }>()
+
+function trig(b: SetBox): { c: number; s: number } {
+  let t = TRIG.get(b)
+  if (!t) {
+    t = { c: Math.cos(b.heading), s: Math.sin(b.heading) }
+    TRIG.set(b, t)
+  }
+  return t
+}
+
 function local(b: SetBox, p: V3): V3 {
   const dx = p.x - b.x
   const dz = p.z - b.z
-  const c = Math.cos(b.heading)
-  const s = Math.sin(b.heading)
+  const { c, s } = trig(b)
   return { x: dx * c - dz * s, y: p.y, z: dx * s + dz * c }
 }
 
@@ -84,24 +95,35 @@ function inBox(b: SetBox, p: V3, m: number): boolean {
   return Math.abs(l.x) < b.hx + m && Math.abs(l.z) < b.hz + m && l.y > b.y0 - m && l.y < b.y1 + m
 }
 
+/** The segment a→b meets the box (slabs x, y, z in turn). Fork (main-thread): the same arithmetic, nothing allocated. */
 function segmentHitsBox(box: SetBox, a: V3, b: V3): boolean {
-  const la = local(box, a)
-  const lb = local(box, b)
+  const { c, s } = trig(box)
+  const adx = a.x - box.x
+  const adz = a.z - box.z
+  const bdx = b.x - box.x
+  const bdz = b.z - box.z
+  const ax = adx * c - adz * s
+  const az = adx * s + adz * c
+  const bx = bdx * c - bdz * s
+  const bz = bdx * s + bdz * c
   let t0 = 0
   let t1 = 1
-  const slabs: [number, number, number, number][] = [
-    [la.x, lb.x - la.x, -box.hx, box.hx],
-    [la.y, lb.y - la.y, box.y0, box.y1],
-    [la.z, lb.z - la.z, -box.hz, box.hz]
-  ]
-  for (const [p, d, lo, hi] of slabs) {
+  for (let k = 0; k < 3; k++) {
+    const p = k === 0 ? ax : k === 1 ? a.y : az
+    const d = k === 0 ? bx - ax : k === 1 ? b.y - a.y : bz - az
+    const lo = k === 0 ? -box.hx : k === 1 ? box.y0 : -box.hz
+    const hi = k === 0 ? box.hx : k === 1 ? box.y1 : box.hz
     if (Math.abs(d) < 1e-12) {
       if (p < lo || p > hi) return false
       continue
     }
     let e0 = (lo - p) / d
     let e1 = (hi - p) / d
-    if (e0 > e1) [e0, e1] = [e1, e0]
+    if (e0 > e1) {
+      const e = e0
+      e0 = e1
+      e1 = e
+    }
     t0 = Math.max(t0, e0)
     t1 = Math.min(t1, e1)
     if (t0 > t1) return false
@@ -142,8 +164,7 @@ export function castWorld(subjects: ShotSubject[], moving: ReadonlySet<string>, 
   for (const s of subjects) {
     const name = nameOf(s.id)
     if (isPerson(s)) {
-      const dims = personDims(s.assetId, s.params)
-      const fx = poseEffectors(dims, s.joints, s.clip)
+      const { dims, fx } = subjectPose(s) // fork (main-thread): posed once per subject
       const w = (p: V3): V3 => toWorld(p, s.position, s.heading, s.scale)
       const pelvis = w(fx.pelvis)
       const chest = w(fx.chest)
@@ -191,7 +212,7 @@ const targetCache = new WeakMap<ShotSubject, { p: V3; w: number }[]>()
 
 function targetsOf(s: ShotSubject): { p: V3; w: number }[] {
   if (isPerson(s)) {
-    const fx = poseEffectors(personDims(s.assetId, s.params), s.joints, s.clip)
+    const { fx } = subjectPose(s) // fork (main-thread)
     const w = (p: V3): V3 => toWorld(p, s.position, s.heading, s.scale)
     return [
       { p: w(fx.head), w: 0.4 },
@@ -244,8 +265,7 @@ function coverPoints(s: ShotSubject): { pts: V3[]; pad: number; mid: V3 } {
   if (hit) return hit
   let out: { pts: V3[]; pad: number; mid: V3 }
   if (isPerson(s)) {
-    const dims = personDims(s.assetId, s.params)
-    const fx = poseEffectors(dims, s.joints, s.clip)
+    const { dims, fx } = subjectPose(s) // fork (main-thread)
     const w = (p: V3): V3 => toWorld(p, s.position, s.heading, s.scale)
     out = { pts: Object.values(fx).map(w), pad: dims.bodyW * 0.5 * s.scale, mid: w(fx.chest) }
   }
@@ -562,22 +582,45 @@ export const nameOfEntity = (scene: Scene): ((id: string) => string) => {
 }
 
 /** Subjects and occluders of a shot at time t (cached). Fork (shot-clear): exported for move-clear.ts. */
-export function sampler(scene: Scene, shot: Shot, boxes: SetBox[]): (t: number) => Sample {
-  const ev = new ShotEvaluator(scene, shot)
-  const take = scene.blocking.find((b) => b.id === shot.blockingTakeId) ?? scene.blocking[0]
-  const moving = new Set((take?.tracks ?? []).filter((tr) => tr.marks.length > 0).map((tr) => tr.entityId))
-  const nameOf = nameOfEntity(scene)
+export function sampler(scene: Scene, shot: Shot, boxes: SetBox[], samples: SampleStore = sampleStore(scene, shot, boxes)): (t: number) => Sample {
   const cache = new Map<number, Sample>()
   return (t) => {
     const key = Math.round(t * 1000)
     let s = cache.get(key)
     if (!s) {
-      const subjects = shotSubjects(scene, ev.evaluate(Math.min(Math.max(t, 0), shot.duration)).entities)
-      const cast = castWorld(subjects, moving, nameOf)
-      s = { t, subjects, world: { boxes: [...boxes, ...cast.boxes], bodies: cast.bodies } }
+      s = samples.at(t)
       cache.set(key, s)
     }
     return s
+  }
+}
+
+/**
+ * Fork (main-thread): a shot's samples by exact time, for several searches over the same scene, shot and set
+ * (a fight coverage's framings, an over-the-shoulder beat and its two-shot); each search's sampler keeps its own
+ * millisecond lookup on top, so each sees what it saw alone. The scene and shot must not change while it is used.
+ */
+export interface SampleStore {
+  at(t: number): Sample
+}
+
+export function sampleStore(scene: Scene, shot: Shot, boxes: SetBox[]): SampleStore {
+  const ev = new ShotEvaluator(scene, shot)
+  const take = scene.blocking.find((b) => b.id === shot.blockingTakeId) ?? scene.blocking[0]
+  const moving = new Set((take?.tracks ?? []).filter((tr) => tr.marks.length > 0).map((tr) => tr.entityId))
+  const nameOf = nameOfEntity(scene)
+  const byTime = new Map<number, Sample>()
+  return {
+    at: (t) => {
+      let s = byTime.get(t)
+      if (!s) {
+        const subjects = shotSubjects(scene, ev.evaluateEntities(Math.min(Math.max(t, 0), shot.duration))) // fork (main-thread): no camera
+        const cast = castWorld(subjects, moving, nameOf)
+        s = { t, subjects, world: { boxes: [...boxes, ...cast.boxes], bodies: cast.bodies } }
+        byTime.set(t, s)
+      }
+      return s
+    }
   }
 }
 
@@ -628,6 +671,23 @@ export function chooseOverFrames(checkAt: (t: number, v: ViewVariant) => ViewChe
 }
 
 const OPEN: ViewCheck = { inside: null, visible: 1, blocker: null }
+
+/**
+ * Fork (main-thread): a view check made once per time and variant. chooseOverFrames re-runs chooseView over a
+ * growing set of samples and every frame of the span, asking the same checks again.
+ */
+function checkedOnce(checkAt: (t: number, v: ViewVariant) => ViewCheck): (t: number, v: ViewVariant) => ViewCheck {
+  const done = new Map<string, ViewCheck>()
+  return (t, v) => {
+    const key = `${t} ${v.turnDeg} ${v.raise} ${v.closer}`
+    let c = done.get(key)
+    if (!c) {
+      c = checkAt(t, v)
+      done.set(key, c)
+    }
+    return c
+  }
+}
 
 export interface ViewOutcome {
   /** What was blocked and how the camera gave way (only when it moved). */
@@ -695,7 +755,8 @@ export function clearShotWords(
   spec: ShotSpec,
   span: [number, number],
   focalLength: number,
-  boxes: SetBox[]
+  boxes: SetBox[],
+  samples?: SampleStore
 ): { spec: ShotSpec } & ViewOutcome {
   const base: ShotSpec = { ...spec }
   delete base.view
@@ -704,7 +765,7 @@ export function clearShotWords(
   const overhead = base.angle === 'overhead'
   const line = (base.side ?? (base.subjectIds.length > 1 ? 'line' : 'frontRight')) === 'line'
   const variants = viewVariants({ lens, turns: !ots && !overhead, raise: !overhead, closer: !ots, maxTurnDeg: line ? 60 : 180 })
-  const at = sampler(scene, shot, boxes)
+  const at = sampler(scene, shot, boxes, samples)
   const t1 = Math.max(span[0], span[1])
   const ignore = new Set([...base.subjectIds, ...(base.over ? [base.over.entityId] : [])])
   const setup = { sensorId: shot.camera.sensorId, aspect: shot.aspect, focalLength }
@@ -721,7 +782,7 @@ export function clearShotWords(
       return OPEN
     }
   }
-  const choice = chooseOverFrames(checkAt, spanTimes(span[0], t1), frameTimes(span[0], t1, shot.fps || 24), variants)
+  const choice = chooseOverFrames(checkedOnce(checkAt), spanTimes(span[0], t1), frameTimes(span[0], t1, shot.fps || 24), variants)
   if (choice.clear && isZeroVariant(choice.variant)) return { spec: base }
   const v = choice.variant
   const view: ShotView = {
@@ -757,7 +818,7 @@ export function clearFixedPose(
     return framed.length === 0 ? OPEN : checkView(cam, framed, s.world, ignore, frame)
   }
   const variants = viewVariants({ lens: pose.focalLength, maxTurnDeg: opts.maxTurnDeg })
-  const choice = chooseOverFrames(checkAt, spanTimes(0, shot.duration), frameTimes(0, shot.duration, shot.fps || 24), variants)
+  const choice = chooseOverFrames(checkedOnce(checkAt), spanTimes(0, shot.duration), frameTimes(0, shot.duration, shot.fps || 24), variants)
   return {
     position: variantPosition(pose.position, pose.look, choice.variant),
     focalLength: pose.focalLength * choice.variant.closer,
@@ -793,7 +854,7 @@ const FOLLOW_VISIBLE = 1
  */
 export function crowdedBy(subjects: ShotSubject[], subjectId: string, cam: V3, look: V3, lens: number, shot: Shot, nameOf: (id: string) => string): string | null {
   const dist = (p: V3): number => Math.hypot(p.x - cam.x, p.y - cam.y, p.z - cam.z)
-  const chestOf = (s: ShotSubject): V3 => toWorld(poseEffectors(personDims(s.assetId, s.params), s.joints, s.clip).chest, s.position, s.heading, s.scale)
+  const chestOf = (s: ShotSubject): V3 => toWorld(subjectPose(s).fx.chest, s.position, s.heading, s.scale)
   const subject = subjects.find((s) => s.id === subjectId)
   const front = subject && isPerson(subject) ? dist(chestOf(subject)) : dist(look)
   const { pan, tilt } = aimAngles(cam, look)
@@ -804,8 +865,7 @@ export function crowdedBy(subjects: ShotSubject[], subjectId: string, cam: V3, l
   const up = { x: Math.sin(pan) * Math.sin(tilt), y: Math.cos(tilt), z: Math.cos(pan) * Math.sin(tilt) }
   for (const s of subjects) {
     if (s.id === subjectId || !isPerson(s)) continue
-    const dims = personDims(s.assetId, s.params)
-    const fx = poseEffectors(dims, s.joints, s.clip)
+    const { dims, fx } = subjectPose(s)
     const pts = Object.values(fx).map((p) => toWorld(p, s.position, s.heading, s.scale))
     const pad = dims.bodyW * 0.5 * s.scale
     if (Math.min(...pts.map(dist)) - pad < FOLLOW_CAST_CLEAR) return `right behind ${nameOf(s.id)}`

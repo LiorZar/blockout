@@ -83,6 +83,19 @@ describe('remembered fight solves', { timeout: 30_000 }, () => {
     solveFightMemo(fight('B jab to head -> hit'), [input(0), input(1)], timing, { obstacles: [] })
     expect(solves.n).toBe(n)
   })
+
+  // Fork (main-thread): the solver never reads a fight's camera coverage, so a coverage mode re-solves nothing.
+  it("a fight's coverage is not a solve input", async () => {
+    const plain = solveFightMemo(fight('A hook to head -> hit'), [input(0), input(1)], timing)
+    const n = solves.n
+    for (const coverage of ['master', 'punch-in', 'over-shoulder', 'follow'] as const) {
+      const covered = solveFightMemo({ ...fight('A hook to head -> hit'), coverage }, [input(0), input(1)], timing)
+      expect(JSON.stringify(covered)).toBe(JSON.stringify(plain))
+    }
+    expect(solves.n).toBe(n)
+    const { solveFight } = await import('@engine/fight/solve')
+    expect(JSON.stringify(solveFight({ ...fight('A hook to head -> hit'), coverage: 'follow' }, [input(0), input(1)], timing))).toBe(JSON.stringify(plain))
+  })
 })
 
 describe('the prompt of a scene with a fight', { timeout: 30_000 }, () => {

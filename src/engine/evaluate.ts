@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts) solved from the lens asked for, lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off; see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts) solved from the lens asked for, lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off, the entity states alone (evaluateEntities); see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -333,6 +333,14 @@ export class ShotEvaluator {
     applyHolds(this.scene.entities, entities, { time, states: this.holderAt })
 
     return { time, camera: this.evaluateCamera(time, entities), entities }
+  }
+
+  /** Fork (main-thread): evaluate(t)'s entity states without the camera's (camera-clear.ts samples the cast every frame). */
+  evaluateEntities(t: number): EntityState[] {
+    const time = Math.min(Math.max(0, t), this.shot.duration)
+    const entities = this.trackStates(time)
+    applyHolds(this.scene.entities, entities, { time, states: this.holderAt })
+    return entities
   }
 
   /**

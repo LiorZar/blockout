@@ -5,7 +5,8 @@
  * X Bot combos fight while the page records its long tasks and frames, and
  * the fight the worker solved is the fight the main thread solves; MCP
  * set_shot re-solves it the same way, and the Deliver prompt's own solve runs
- * in the worker. The bar is the solve's: every main-thread task until the
+ * in the worker; fork (main-thread): MCP fight_coverage's framings are worked
+ * out there too, the same as here. The bar is the solve's: every main-thread task until the
  * fight is committed (the render's frames go on meanwhile); the commit and
  * the first frames of the new fight (its marks overlay, a shader's first
  * use) are logged. Skipped without the library (it is never in the repo).
@@ -66,6 +67,16 @@ async function stagedFight(): Promise<string> {
       fight: { ...fight, id: null, fighterIds: fight.fighterIds.map(label) },
       duration: st.shot().duration
     })
+  })
+}
+
+/** Fork (main-thread): the shot camera's marks, entity ids as their labels (each staging makes its own ids). */
+async function cameraMarks(): Promise<string> {
+  return page.evaluate(() => {
+    const st = (window as unknown as { __blockout: { store: { getState(): { scene(): { entities: { id: string; name: string; label?: { text: string } }[] }; shot(): { camera: { marks: { id: string }[] } } } } } }).__blockout.store.getState()
+    let out = JSON.stringify(st.shot().camera.marks.map(({ id: _id, ...m }) => m))
+    for (const e of st.scene().entities) out = out.split(e.id).join(e.label?.text ?? e.name)
+    return out
   })
 }
 
@@ -147,6 +158,7 @@ test.afterAll(async () => {
 
 test.describe('bot fight solves off the main thread', () => {
   let worker = ''
+  let workerCover = ''
 
   test('MCP stages a bot combos fight with the app live: no main-thread task over 100 ms while it solves', async () => {
     test.setTimeout(180_000)
@@ -164,6 +176,22 @@ test.describe('bot fight solves off the main thread', () => {
     expect(longest, 'the longest main-thread task while the fight solves').toBeLessThanOrEqual(LONG_TASK)
     expect(gap, 'the longest wait for a frame while the fight solves').toBeLessThanOrEqual(FRAME_GAP)
     worker = await stagedFight()
+  })
+
+  // Fork (main-thread): a coverage's framings are worked out in the worker too.
+  test('MCP fight_coverage works the framings out in the worker with the app live: no main-thread task over 100 ms', async () => {
+    test.setTimeout(180_000)
+    const fightId = await page.evaluate(() => (window as unknown as { __blockout: { store: { getState(): { scene(): { fights?: { id: string }[] } } } } }).__blockout.store.getState().scene().fights!.at(-1)!.id)
+    const t0 = await watch()
+    const covered = await rpc<{ cameraMarks: number }>('fight_coverage', { fightId, mode: 'punch-in', side: 'right' })
+    expect(covered.ok, covered.error).toBe(true)
+    expect(covered.data!.cameraMarks).toBeGreaterThan(1)
+    await page.waitForTimeout(500)
+    const { longest, gap } = await solvePhase('fight_coverage', t0)
+    expect(logs.filter((l) => l.startsWith('[fight]')), 'the worker says nothing went wrong').toEqual([])
+    expect(longest, 'the longest main-thread task while the coverage is worked out').toBeLessThanOrEqual(LONG_TASK)
+    expect(gap, 'the longest wait for a frame then').toBeLessThanOrEqual(FRAME_GAP)
+    workerCover = await cameraMarks()
   })
 
   test('the fight the worker solved is the fight the main thread solves', async () => {
@@ -184,6 +212,13 @@ test.describe('bot fight solves off the main thread', () => {
     const there = JSON.parse(worker) as { fight: { name: string } }
     here.fight.name = there.fight.name
     expect(JSON.stringify(here)).toBe(JSON.stringify(there))
+    // Fork (main-thread): and the coverage the worker worked out is the coverage worked out here.
+    expect(workerCover).not.toBe('')
+    await page.evaluate(() => {
+      const st = (window as unknown as { __blockout: { store: { getState(): { scene(): { fights?: { id: string }[] }; coverFight(id: string, mode: string, side: string): unknown } } } }).__blockout.store.getState()
+      st.coverFight(st.scene().fights!.at(-1)!.id, 'punch-in', 'right')
+    })
+    expect(await cameraMarks()).toBe(workerCover)
   })
 
   test("MCP set_shot re-solves the shot's bot fight with the app live", async () => {

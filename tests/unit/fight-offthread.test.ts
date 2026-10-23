@@ -22,8 +22,22 @@ vi.mock('@engine/fight/solve', async (importOriginal) => {
   }
 })
 
+/** Fork (main-thread): coverage worked out on the main thread (through the module), and the real one for the stand-in. */
+const covers = vi.hoisted(() => ({ n: 0, real: null as null | ((...args: unknown[]) => unknown) }))
+vi.mock('@engine/fight/coverage-clear', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@engine/fight/coverage-clear')>()
+  covers.real = real.clearCoverage as (...args: unknown[]) => unknown
+  return {
+    ...real,
+    clearCoverage: (...args: Parameters<typeof real.clearCoverage>) => {
+      covers.n++
+      return real.clearCoverage(...args)
+    }
+  }
+})
+
 const { refightShot, routineFightStaged, stageFightOffThread, updateFightOffThread, useStore } = await import('@renderer/store')
-const { offThread, readSoon, setFightSolver } = await import('@renderer/fight-offthread')
+const { offThread, readSoon, setCoverageWorker, setFightSolver } = await import('@renderer/fight-offthread')
 const { generatePrompt } = await import('@engine/prompt')
 const { getProfile } = await import('@engine/profiles')
 
@@ -263,3 +277,61 @@ describe('reads that solve fights, off the main thread', { timeout: 60_000 }, ()
   })
 })
 
+
+describe('a fight coverage off the main thread (fork, main-thread)', { timeout: 60_000 }, () => {
+  const input = { beats: beatsOf('A jab to head -> hit\nB hook to head -> block'), at: { x: 0, z: -2, heading: 0 }, assets: [MALE, FEMALE] as [string, string] }
+  const there = { n: 0 }
+  /** The shot camera's marks, entity ids as labels (each staging makes its own ids). */
+  const camera = (): string => {
+    let out = JSON.stringify(st().shot()!.camera.marks.map(({ id: _id, ...m }) => m))
+    for (const e of scene().entities) out = out.split(e.id).join(e.label?.text ?? e.name)
+    return out
+  }
+
+  beforeEach(() => {
+    there.n = 0
+    setCoverageWorker(async (args) => {
+      there.n++
+      await new Promise((r) => setTimeout(r, 1))
+      return covers.real!(...args) as Awaited<ReturnType<Parameters<typeof setCoverageWorker>[0] & object>>
+    })
+  })
+
+  afterEach(() => setCoverageWorker(null))
+
+  it('fight_coverage works the framings out in the worker and re-solves nothing, as the main thread covers it', async () => {
+    const { fightId } = st().stageFight(input)
+    const here = covers.n
+    const n = solves.n
+    const r = await offThread(() => st().coverFight(fightId, 'punch-in', 'right'))
+    expect(covers.n).toBe(here)
+    expect(there.n).toBe(1)
+    expect(solves.n).toBe(n)
+    expect(remote.n).toBe(0)
+    const off = camera()
+    setCoverageWorker(null)
+    fresh()
+    const again = st().stageFight(input)
+    const mine = st().coverFight(again.fightId, 'punch-in', 'right')
+    expect(covers.n).toBe(here + 1)
+    expect(mine).toEqual(r)
+    expect(camera()).toBe(off)
+  })
+
+  it('a bot fight staged with coverage works its coverage out in the worker too', async () => {
+    const here = covers.n
+    await stageFightOffThread({ ...input, coverage: 'master' })
+    expect(covers.n).toBe(here)
+    expect(there.n).toBe(1)
+    expect(st().shot()!.camera.marks.length).toBeGreaterThan(0)
+  })
+
+  it('a stand-in solver alone leaves the coverage to the main thread, as before', async () => {
+    setCoverageWorker(null)
+    const { fightId } = st().stageFight(input)
+    const here = covers.n
+    await offThread(() => st().coverFight(fightId, 'master', 'left'))
+    expect(covers.n).toBe(here + 1)
+    expect(there.n).toBe(0)
+  })
+})
