@@ -29,8 +29,9 @@
  * clips by target and the side they land on; staggers, knockdowns and KOs
  * the hit and fall clips on the physics' knockback root and timing. Between
  * beats a bot holds the fight idle. A move with no clip plays its
- * keyframes, crossfaded from and back to the idle. Every other body fights
- * exactly as before.
+ * keyframes: over the idle for a bare-handed bot on a move that stands
+ * still on its legs (fork, bot-slides: overIdle), else crossfaded from and
+ * back to the idle. Every other body fights exactly as before.
  *
  * PURE and deterministic: no DOM / three.js / Electron, no randomness.
  */
@@ -295,8 +296,11 @@ const GUARD_REUSE_DOT = 0.9995
 type XZ = { x: number; z: number }
 type Joints = Record<string, number>
 
-/** A motion key a fight plays: a keyframe, or (mocap bots) a clip mark with its root travel in the fighter's frame (m). */
-type FightKey = MotionPreset['keyframes'][number] & { clip?: MarkClip; travel?: XZ }
+/**
+ * A motion key a fight plays: a keyframe, or (mocap bots) a clip mark with its root travel in the fighter's frame (m); `onIdle` (fork,
+ * bot-slides; overIdle): its joints an overlay on the fighter's idle, which plays on shot time.
+ */
+type FightKey = MotionPreset['keyframes'][number] & { clip?: MarkClip; travel?: XZ; onIdle?: boolean }
 /** What a fighter plays for a beat: keyframes, or a bot's clip runs as keys. */
 interface FightMotion {
   id: string
@@ -308,6 +312,8 @@ interface FightMotion {
 const stateOf = (c: MarkClip | undefined): ClipState | undefined => (c ? (c.mirror ? { id: c.id, t: c.at, mirror: true } : { id: c.id, t: c.at }) : undefined)
 /** A clip state as a mark clip. */
 const markOf = (c: ClipState | undefined): MarkClip | undefined => (c ? (c.mirror ? { id: c.id, at: c.t, mirror: true } : { id: c.id, at: c.t }) : undefined)
+/** A key's clip played at shot time `t` (fork, bot-slides: a key over the idle plays the idle at `t`). */
+const keyClip = (kf: FightKey, t: number): MarkClip | undefined => (kf.onIdle && kf.clip ? { ...kf.clip, at: t } : kf.clip)
 
 const BY_ID = new Map(MOTION_PRESETS.map((m) => [m.id, m]))
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v))
@@ -1487,6 +1493,95 @@ function clipStrike(f: Fighter, beat: FightBeat, move: string, gun: HeldWeapon |
   return { motion: { id: `mocap:${blows.map((b) => b.clip).join('+')}`, duration, keyframes: keys }, impacts, clips: blows.map((b) => b.clip) }
 }
 
+/** A striking leg's keyframe channels count on a key over the idle where they lift its foot (ankle and toe) this far (m). */
+const OVER_IDLE_LIFT = 0.1
+/**
+ * Off the floor and back onto it a kicking foot goes straight up or down:
+ * its thigh forward OVER_IDLE_THIGH (rad) and its knee bent twice that, on a
+ * key OVER_IDLE_STEP into the way off and as far from the end of the way back.
+ */
+const OVER_IDLE_THIGH = 0.5
+const OVER_IDLE_STEP = 0.3
+/** The legs a move stands on change no more than this from its first key (rad) for it to play over the idle. */
+const OVER_IDLE_STANCE = 0.25
+const legOf = (side: 'L' | 'R'): string[] => [`hip${side}X`, `hip${side}Z`, `knee${side}`]
+/** The legs a move strikes with (a kick's foot, a knee). */
+const strikingLegs = (impacts: StrikeImpact[]): ('L' | 'R')[] => (['L', 'R'] as const).filter((side) => impacts.some((imp) => /^(foot|knee)/.test(imp.effector) && imp.effector.endsWith(side)))
+
+/**
+ * Mocap bots (fork, bot-slides): whether a move with no clip plays over the
+ * idle (overIdle): the legs it stands on hold, within OVER_IDLE_STANCE of its
+ * first key on every key. A move that crouches or lunges on them (the sweep,
+ * the shoves and tackles) keeps its own legs, crossfaded as before.
+ */
+function playsOverIdle(m: FightMotion, impacts: StrikeImpact[]): boolean {
+  const first = m.keyframes[0]!.joints
+  const stand = (['L', 'R'] as const).filter((side) => !strikingLegs(impacts).includes(side)).flatMap(legOf)
+  return m.keyframes.every((kf) => stand.every((k) => Math.abs((kf.joints[k] ?? 0) - (first[k] ?? 0)) <= OVER_IDLE_STANCE))
+}
+
+/**
+ * Mocap bots (fork, bot-slides): a bare-handed move with no clip that stands
+ * still on its legs (playsOverIdle), played over the fighter's idle on shot
+ * time: its keys carry the idle and their joints are an overlay, the move's
+ * change from its first key (its guard), so the bot keeps the idle's stance
+ * instead of crossfading into the keyframe rig's feet-together stance and
+ * back. The legs stay the idle's
+ * (its planted feet), but a striking leg on the keys where its channels
+ * lift its foot OVER_IDLE_LIFT off the floor (a kick's chamber and
+ * extension), lifted off and set down straight: the pivot foot stays where
+ * the idle plants it, and the kicking foot leaves its spot and comes back to
+ * it without skimming the floor.
+ */
+function overIdle(f: Fighter, m: FightMotion, impacts: StrikeImpact[]): FightMotion {
+  const first = m.keyframes[0]!.joints
+  const striking = strikingLegs(impacts)
+  const idle: ClipState = { id: f.idle!, t: 0 }
+  const lifted = (['L', 'R'] as const).map(() => [] as boolean[])
+  const keys = m.keyframes.map((kf, j): FightKey => {
+    const joints: Joints = {}
+    for (const k of new Set([...Object.keys(first), ...Object.keys(kf.joints)])) {
+      const v = (kf.joints[k] ?? 0) - (first[k] ?? 0)
+      if (Math.abs(v) > 1e-9) joints[k] = v
+    }
+    ;(['L', 'R'] as const).forEach((side, q) => {
+      const leg = legOf(side)
+      if (striking.includes(side)) {
+        // Its ankle and toe both lifted (a shin swung back alone tips the toe into the floor).
+        const foot = [BONE_INDEX[side === 'L' ? 'LeftFoot' : 'RightFoot'], BONE_INDEX[side === 'L' ? 'LeftToeBase' : 'RightToeBase']]
+        const up = botPose(f.dims.mocap!, joints, idle)
+        const down = botPose(f.dims.mocap!, Object.fromEntries(Object.entries(joints).filter(([k]) => !leg.includes(k))), idle)
+        lifted[q]![j] = Math.min(...foot.map((b) => up.P[b]!.y - down.P[b]!.y)) >= OVER_IDLE_LIFT
+      }
+      if (!lifted[q]![j]) for (const k of leg) delete joints[k]
+    })
+    return { ...kf, joints, clip: { id: f.idle!, at: kf.t }, onIdle: true }
+  })
+  // A key `u` of the way from a to b, the kicking legs (`up`) straight over their spots.
+  const between = (a: FightKey, b: FightKey, u: number, up: ('L' | 'R')[]): FightKey => {
+    const t = a.t + (b.t - a.t) * u
+    const joints: Joints = {}
+    for (const k of new Set([...Object.keys(a.joints), ...Object.keys(b.joints)])) joints[k] = (a.joints[k] ?? 0) + ((b.joints[k] ?? 0) - (a.joints[k] ?? 0)) * u
+    for (const side of up) {
+      for (const k of legOf(side)) delete joints[k]
+      joints[`hip${side}X`] = -OVER_IDLE_THIGH
+      joints[`knee${side}`] = 2 * OVER_IDLE_THIGH
+    }
+    const lerp = (x: number | undefined, y: number | undefined): number => (x ?? 0) + ((y ?? 0) - (x ?? 0)) * u
+    const move = a.move || b.move ? { forward: lerp(a.move?.forward, b.move?.forward), up: lerp(a.move?.up, b.move?.up) } : undefined
+    return { t, joints, ...(move ? { move } : {}), clip: { id: f.idle!, at: t }, onIdle: true }
+  }
+  const keyframes: FightKey[] = []
+  keys.forEach((kf, j) => {
+    const off = (['L', 'R'] as const).filter((_, q) => j > 0 && !lifted[q]![j - 1] && lifted[q]![j])
+    const on = (['L', 'R'] as const).filter((_, q) => j > 0 && lifted[q]![j - 1] && !lifted[q]![j])
+    if (off.length > 0) keyframes.push(between(keys[j - 1]!, kf, OVER_IDLE_STEP, off))
+    if (on.length > 0) keyframes.push(between(keys[j - 1]!, kf, 1 - OVER_IDLE_STEP, on))
+    keyframes.push(kf)
+  })
+  return { ...m, keyframes }
+}
+
 /** Mocap bots (fork): how far a fall clip carries the body behind its root (m), from `from` on. */
 function fallReachClip(f: Fighter, pick: ClipPick, from: number): number {
   const c = mocapClip(pick.id)!
@@ -1553,12 +1648,13 @@ export function solveFight(
     const keyed = preset0 && mirror ? mirroredMove(preset0) : preset0
     // Mocap bots (fork, clip-moves.ts): the move's clips when the library has them, else its keyframes (retargeted).
     const strike = atk.idle && (!shotBeat || gun) ? clipStrike(atk, beat, move, gun, raw.map((imp) => imp.speed)) : null
-    const preset: FightMotion | undefined = strike?.motion ?? keyed
     const impacts: StrikeImpact[] = strike
       ? strike.impacts
       : !keyed
         ? []
         : raw.map((imp) => ({ ...imp, effector: strikeEffector(atk, mirror ? MIRROR_EFFECTOR[imp.effector] : imp.effector) }))
+    // Fork (bot-slides): a bare-handed bot plays a move with no clip over its idle where the move stands still on its legs (overIdle).
+    const preset: FightMotion | undefined = strike?.motion ?? (keyed && atk.idle && !shotBeat && atk.held.length === 0 && playsOverIdle(keyed, impacts) ? overIdle(atk, keyed, impacts) : keyed)
     if (!preset || impacts.length === 0) {
       warnings.push(shotBeat ? `${label} dropped: ${beat.attacker === 0 ? 'A' : 'B'} has no gun or bow in hand` : `${label} dropped: ${beat.move} is not a strike`)
       continue
@@ -1579,6 +1675,16 @@ export function solveFight(
     const power = clamp(beat.power ?? 0.7, 0.2, 1)
     const clinch = CLINCH_MOVES.has(beat.move)
     const kIdx = impacts.map((imp) => preset.keyframes.findIndex((kf) => Math.abs(kf.t - imp.t) < 1e-9))
+    // Fork (bot-slides): a key over the idle (overIdle) sits on the idle's own root travel from `from` to `at` (its feet stay planted).
+    const idleTravel = (kf: FightKey, at: number, from: number, heading: number): XZ => {
+      const c = kf.onIdle && kf.clip ? mocapClip(kf.clip.id) : undefined
+      if (!c || c.inPlace || !atk.dims.mocap) return { x: 0, z: 0 }
+      const k = clipScale(atk.dims.mocap, c.hipH) * atk.scale
+      const a = clipRoot(c, from)
+      const b = clipRoot(c, at)
+      const w = toWorld({ x: (b.x - a.x) * k, y: 0, z: (b.z - a.z) * k }, { x: 0, y: 0, z: 0 }, heading, 1)
+      return { x: w.x, z: w.z }
+    }
     const last = impacts[impacts.length - 1]!
     // Mocap bots (fork): the side of the defender each blow lands on (its reaction and defense go away from it).
     const sides = def.idle ? impacts.map((imp) => arrivalSide(atk, preset, imp)) : []
@@ -1869,9 +1975,9 @@ export function solveFight(
       for (let i = 0; i < impacts.length; i++) {
         const imp = impacts[i]!
         const kf = preset.keyframes[kIdx[i]!]!
-        const kClip = stateOf(kf.clip)
         const o = outcomes[i]!
         const T = times[i]!
+        const kClip = stateOf(keyClip(kf, T))
         const dState = defAt(T)
         const dPos: V3 = { x: dState.pos.x, y: dState.y, z: dState.pos.z }
         const avoided = o === 'slip' || o === 'duck' || o === 'miss'
@@ -2056,7 +2162,8 @@ export function solveFight(
             const ja = posed(ka, overlay(b - 1))
             const jb = posed(kb, overlay(b))
             const aj = Object.fromEntries([...new Set([...Object.keys(ja), ...Object.keys(jb)])].map((q) => [q, (ja[q] ?? 0) + ((jb[q] ?? 0) - (ja[q] ?? 0)) * u]))
-            const clip: MarkClip | undefined = ka.clip && kb.clip && ka.clip.id === kb.clip.id ? { ...kb.clip, at: ka.clip.at + (kb.clip.at - ka.clip.at) * u } : u < 0.5 ? ka.clip : kb.clip
+            // (Fork, bot-slides: keys over the idle play it on shot time.)
+            const clip: MarkClip | undefined = ka.onIdle ? keyClip(ka, T + tau - kf.t) : ka.clip && kb.clip && ka.clip.id === kb.clip.id ? { ...kb.clip, at: ka.clip.at + (kb.clip.at - ka.clip.at) * u } : u < 0.5 ? ka.clip : kb.clip
             // The root along the clip's travel, or the keyframe move's forward step.
             let off: XZ
             if (ka.travel && kb.travel && kf.travel) {
@@ -2065,7 +2172,7 @@ export function solveFight(
             }
             else {
               const fa = ka.move?.forward ?? 0
-              off = add({ x: 0, z: 0 }, fwdOf(r.heading), (fa + ((kb.move?.forward ?? 0) - fa) * u - (kf.move?.forward ?? 0)) * atk.k)
+              off = add(idleTravel(ka, T + tau - kf.t, T, r.heading), fwdOf(r.heading), (fa + ((kb.move?.forward ?? 0) - fa) * u - (kf.move?.forward ?? 0)) * atk.k)
             }
             const ac = stateOf(clip)
             samples.push({ t: T + tau - kf.t, aj, ac, root: { x: r.root.x + off.x, y: ac ? r.rootY : groundY(atk.floor, aj), z: r.root.z + off.z }, heading: r.heading, st: defAt(T + tau - kf.t) })
@@ -2232,7 +2339,7 @@ export function solveFight(
           const w = toWorld({ x: kf.travel.x - p.travel.x, y: 0, z: kf.travel.z - p.travel.z }, { x: p.root.x, y: 0, z: p.root.z }, p.heading, 1)
           pos = { x: w.x, z: w.z }
         }
-        else pos = add(p.base, fwdOf(p.heading), (kf.move?.forward ?? 0) * atk.k)
+        else pos = add(add(p.base, fwdOf(p.heading), (kf.move?.forward ?? 0) * atk.k), idleTravel(kf, startT + warp(kf.t), times[owner(j)]!, p.heading))
         // Outside the clinch, never closer than MIN_SEPARATION.
         if (!clinch) {
           const dPos = defAt(startT + warp(preset.keyframes[j]!.t)).pos
@@ -2298,10 +2405,10 @@ export function solveFight(
         // Mocap bots (fork): a knee's shin and foot stay out of the defender's legs (kneeTuck) on its clip's keys.
         const e = impacts[i]!.effector
         const dst = p.defAt(t)
-        const tuck = strike ? kneeTuck(atk, e, joints, stateOf(kf.clip), { x: pos.x, y: groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), z: pos.z }, pl.heading, def, dst.joints, dst.clip, { x: dst.pos.x, y: dst.y, z: dst.pos.z }, hd) : 0
+        const tuck = strike ? kneeTuck(atk, e, joints, stateOf(keyClip(kf, t)), { x: pos.x, y: groundY(atk.floor, joints, p.kfLift(j), stateOf(keyClip(kf, t))), z: pos.z }, pl.heading, def, dst.joints, dst.clip, { x: dst.pos.x, y: dst.y, z: dst.pos.z }, hd) : 0
         if (tuck > 0) joints = withOffsets(joints, { [e]: tuck })
         // ... and (clips and keyframes) its other leg out of the defender's legs (legSplay; an impact's is placed with it).
-        if (!kIdx.includes(j)) joints = withOffsets(joints, legSplay(atk, e, joints, stateOf(kf.clip), { x: pos.x, y: groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), z: pos.z }, pl.heading, def, dst.joints, dst.clip, { x: dst.pos.x, y: dst.y, z: dst.pos.z }, hd))
+        if (!kIdx.includes(j)) joints = withOffsets(joints, legSplay(atk, e, joints, stateOf(keyClip(kf, t)), { x: pos.x, y: groundY(atk.floor, joints, p.kfLift(j), stateOf(keyClip(kf, t))), z: pos.z }, pl.heading, def, dst.joints, dst.clip, { x: dst.pos.x, y: dst.y, z: dst.pos.z }, hd))
       }
       let gait: GaitId = 'stand'
       // Fork (qa-fixes): a bot's step-in from a clip into a clip is a posed crossfade, its feet stepping (mocap/footwork.ts).
@@ -2331,7 +2438,7 @@ export function solveFight(
           }
         }
       }
-      addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), gait, joints, pl.heading, kf.clip, !!atk.idle && (gait !== 'walk' || posedIn))
+      addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j), stateOf(keyClip(kf, t))), gait, joints, pl.heading, keyClip(kf, t), !!atk.idle && (gait !== 'walk' || posedIn))
     }
     const atkEnd = p.startT + preset.duration
     atk.spot = p.kfRoot(kfs.length - 1)
@@ -2342,7 +2449,7 @@ export function solveFight(
     const effectorAt = (i: number): V3 => {
       const kf = kfs[kIdx[i]!]!
       const joints = withOffsets(kf.joints, p.place[i]!.pitch)
-      return effectorWorld(atk, joints, p.place[i]!.root, p.place[i]!.rootY + p.place[i]!.lift, p.place[i]!.heading, impacts[i]!.effector, 'strike', stateOf(kf.clip))
+      return effectorWorld(atk, joints, p.place[i]!.root, p.place[i]!.rootY + p.place[i]!.lift, p.place[i]!.heading, impacts[i]!.effector, 'strike', stateOf(keyClip(kf, p.times[i]!)))
     }
     const headClear = (i: number, extra: XZ): number => {
       const st = p.defAt(p.times[i]!)
@@ -3341,14 +3448,19 @@ function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, 
   }
   const worst = (p: number, both: boolean): number => Math.max(...over.map((o) => excess(o, p, both)))
   // Eased only where that (the attacker giving way too, if need be) keeps every frame within its bar; else all of it at once, as before.
-  if (worst(SEP_MAX, false) > 0 && worst(SEP_MAX, true) > 0) rate = Infinity
+  let alone = worst(SEP_MAX, false)
+  let held = alone > 0 ? worst(SEP_MAX, true) : alone
+  if (alone > 0 && held > 0) {
+    rate = Infinity
+    alone = worst(SEP_MAX, false)
+    held = alone > 0 ? worst(SEP_MAX, true) : alone
+  }
   // Unpushed, as the frames were found.
   const start = Math.max(...over.map((o) => o.d)) - SEP_TOL
   let both = false
-  let most = worst(SEP_MAX, false)
+  let most = alone
   if (most > 0) {
     // The attacker carrying on into the defender (a kick stepping through, a tackle): its own travel after the blow is held back too.
-    const held = worst(SEP_MAX, true)
     if (held < most - SEP_RES) {
       both = true
       marksAt(atk, (o) => o.sa)

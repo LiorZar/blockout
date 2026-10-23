@@ -51,7 +51,10 @@ on bots, seeds 7 / 3 / 21, both endings).
    chamber and the kick). The pivot foot stays where the idle plants it through the
    spin, the kicking foot leaves from its spot and comes back to it. (Instead of the
    brief's "step the other foot in": with the idle's stance kept there is no stance
-   change to step.)
+   change to step.) Only a move whose standing legs hold (within 0.25 rad of its first key)
+   plays over the idle: the spinning back kick and backfist, the teep. The sweep, the shoves
+   and the tackles crouch or lunge on their legs; over the idle the sweep stood up and the
+   tackle drove 8 cm into the defender (`mocap-fights-real`), so they keep the crossfade.
 4. **T3**: decided per case after the slide probe on each (below, in Results).
 
 ## Tasks and targets
@@ -82,3 +85,16 @@ on bots, seeds 7 / 3 / 21, both endings).
   `mocap-fights-real` (7 scripts × 2 orders, `real.probe.ts`): kicks3 near its first impact 0.18 /
   1.97 cm as HEAD (the at-once fallback). `fight-separate-ease.test.ts` fails on d916477 (8.9 cm on
   the frame after the blow).
+- **T2** (run3 on f99e96a + T2, `.maestro/bot-slides/fight-run3-t2f.txt`; `real-{t1,t2c}-all.txt`):
+  KIRA 6.0–8.0 s, slide runs over 5 cm with the hips still, d916477 → T2: 5 (17–53 cm) → 0; the
+  pivot toe travels 2.5 cm over the 1.5 s move; contact 0 cm on the beat, 0.21 cm max; overlap
+  within ±2 frames of every impact ≤ 2.03 cm, as T1. The first cut played every clipless move over
+  the idle: `mocap-fights-real` failed on grapples (tackle 8.08 cm into the defender at 5.3 s, HEAD
+  1.15) and the sweep stood up, so call 3 got its stance rule; then `mocap-fights-real` +
+  footwork + fights-solve on the snapshot: `Test Files 3 passed (3)`, 27 tests. Real-library
+  probe, T1 → T2: the teep near its impact 2.46 / 2.56 → 0.17 / 0.41 cm; hips snaps gone at Male
+  kicks2 B 17.125 and Female kicks A 5.333; new: Female (A) punches 13.833 A 9.0 / B 9.4 cm, Y
+  Bot's spinning-backfist KO stands 8 cm closer over the idle (0.98 m apart, 1.06 on T1), and the
+  frame after it the bodies overlap past a landed hit's 1 cm bar, so `separate()` pushes both
+  9.3 cm at once (T1's fallback, as kicks3 on HEAD); Male grapples 2 more frames at 3.0–3.1 cm
+  off the impacts (15.04–15.08). Left as a residual.

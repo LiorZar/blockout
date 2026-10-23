@@ -283,7 +283,8 @@ function stepLegs(legs: readonly TrackLeg[], entity: Entity): Map<TrackLeg, Step
       close()
       continue
     }
-    if (w < NO_TRAVEL) {
+    // Fork (bot-slides): nor do marks that hold the body where it stands (a clip's own drift under them, an idle's sway, is no step).
+    if (w < NO_TRAVEL || (Math.hypot(dm.x, dm.z) < NO_TRAVEL && Math.abs(da) < 1e-6)) {
       close()
       continue
     }

@@ -1311,6 +1311,28 @@ Changes in this fork (2026):
   4.9 / 2.4 cm, BRUNO 4.50 s 11.0 / 9.1 → 6.3 / 4.1 cm; contact 0.21 cm and the overlap within two
   frames of every impact (≤ 2.03 cm, QA's bar 3 cm) unchanged. Test:
   `tests/unit/fight-separate-ease.test.ts` (new, skinned fixture bots; fails on d916477).
+- A bot's keyframe move plays over its fight idle (bot-slides T2; `src/engine/fight/solve.ts`,
+  `src/engine/mocap/clip-marks.ts`): a strike the library has no clip for (the spinning back kick,
+  the spinning backfist) crossfaded a bot from its idle's staggered stance into the keyframe rig's
+  feet-together first pose and back, and the standing leg followed the keyframes' small hip and
+  knee turns, so both feet slid 17–53 cm with the hips still. Now a bare-handed bot plays such a
+  move over its idle on shot time (`overIdle`) when the legs it stands on hold within 0.25 rad of
+  its first key (`playsOverIdle`: the spinning kick and backfist, the teep; the sweep, the shoves
+  and the tackles crouch or lunge on theirs and keep their crossfaded keyframes): the keys carry
+  the idle and the move's change from its first key as an overlay, on the idle's own root travel,
+  so the stance stays; the legs keep the idle's planted feet but a kicking leg on the keys that
+  lift its foot 10 cm off the floor, lifted off and set down straight (a key with the thigh
+  forward and the knee bent twice that, a third into the way off and from the end of the way
+  back). A footwork window no longer runs on over marks that hold the body still (an idle's sway
+  under them is no step). QA's run3 fight, KIRA 6.0–8.0 s (`.maestro/bot-slides/fight-run3-*.txt`),
+  d916477 → now: foot-slide runs over 5 cm 5 (17–53 cm, hips still) → 0; the pivot toe travels
+  2.5 cm over the 1.5 s move; contact 0 cm. On the real library (`mocap-fights-real`'s scripts)
+  the teep's overlap at its impact drops from 2.5 to 0.2–0.4 cm. One push left: Y Bot's spinning
+  backfist KO on X Bot lands from 8 cm closer, so on the frame after it both bodies are pushed 9 cm
+  apart at once (the push's fallback, `separate()`). Tests: `tests/unit/mocap-footwork.test.ts`
+  and `tests/unit/mocap-fights-solve.test.ts` (their keyframe-move cases now ask for the move over
+  the idle, the pivot foot still and the kicking foot back on its spot, and a sweep and a tackle
+  still crossfaded; the first two fail on d916477).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

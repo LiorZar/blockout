@@ -204,21 +204,38 @@ describe("the Fight Director's bots step", () => {
     expect(travelled).toBeGreaterThan(0)
   })
 
-  it('a keyframe move steps in on the idle, then crossfades into its first pose where it stands', () => {
-    const parsed = parseFightScript('A spinning-backfist to head -> hit power 0.5', ['A', 'B'])
+  it('a keyframe move steps in on the idle and plays over it (bot-slides): no stance crossfade, the pivot foot planted, the kicking foot back on its spot', () => {
+    const parsed = parseFightScript('A spinning-back-kick to body -> hit power 0.5', ['A', 'B'])
     if (!('beats' in parsed)) throw new Error(parsed.error)
     const fight = { id: 'f', name: 'f', fighterIds: ['a', 'b'], beats: parsed.beats, startT: 0.4, origin: { x: 0, z: 0, heading: 0 }, beatGap: 0.35, exaggeration: 1.5 } as unknown as FightDoc
     const sol = solveFight(fight, [MALE, FEMALE].map((assetId, q) => ({ entityId: q ? 'b' : 'a', assetId, scale: 1, start: { x: q ? 0.8 : -0.8, y: 0, z: 0 } })) as never, { duration: 8, fps: 24 })
+    expect(sol.report.beats[0]!.plays).toBe('spinning-back-kick')
     const marks = sol.tracks[0]
-    const first = marks.findIndex((mk) => !mk.clip)
-    const [idle, kf] = [marks[first - 1]!, marks[first]!]
-    expect(idle.clip?.id).toBe('fightIdle')
-    expect(Math.hypot(kf.position.x - idle.position.x, kf.position.z - idle.position.z)).toBeLessThan(1e-9)
-    expect(kf.gait).toBe('stand')
-    expect(kf.posedMove).toBe(true)
-    // The step-in itself: the idle moving under its feet.
-    const before = marks[first - 2]!
-    expect(before.clip?.id).toBe('fightIdle')
-    expect(Math.hypot(idle.position.x - before.position.x, idle.position.z - before.position.z)).toBeGreaterThan(0.05)
+    // Every mark plays the idle on shot time: the move is its overlay.
+    for (const mk of marks) expect(mk.clip, `t ${mk.time.toFixed(3)}`).toEqual({ id: 'fightIdle', at: mk.time })
+    // The step-in: the idle moving under its feet, then the move where it stands.
+    const t0 = sol.report.beats[0]!.startT
+    const first = marks.findIndex((mk) => Math.abs(mk.time - t0) < 1e-6)
+    const [before, kf] = [marks[first - 1]!, marks[first]!]
+    expect(Math.hypot(kf.position.x - before.position.x, kf.position.z - before.position.z)).toBeGreaterThan(0.05)
+    const end = marks.findIndex((mk, k) => k > first && mk.time > t0 + 1.3 - 1e-6)
+    for (let k = first; k <= end; k++) expect(Math.hypot(marks[k]!.position.x - kf.position.x, marks[k]!.position.z - kf.position.z)).toBeLessThan(1e-9)
+    // From its first key to its last the pivot (left) foot doesn't move; the kicking (right) foot ends where it started and never slides.
+    const scene = {
+      id: 's',
+      name: 's',
+      number: 1,
+      environment: { lighting: 'day', sunAzimuth: 0, sunElevation: 1, fog: 0 },
+      entities: ['a', 'b'].map((id, q) => ({ id, assetId: q ? FEMALE : MALE, name: id, transform: { position: { x: 0, y: 0, z: 0 }, rotationY: 0, scale: 1 } })),
+      blocking: [{ id: 'take', name: 't', tracks: [{ entityId: 'a', marks: marks.map((mk, k) => ({ ...mk, id: `a${k}` })) }] }],
+      shots: []
+    } as unknown as Scene
+    const ev = new ShotEvaluator(scene, { id: 'shot', name: 's', duration: 8, fps: 24, aspect: '16:9', blockingTakeId: 'take', camera: { sensorId: 'super35', rig: 'sticks', rigIntensity: 0, seed: 1, marks: [] } } as unknown as Shot)
+    const t1 = marks[end]!.time
+    const at = (t: number, q: 0 | 1): V3 => foot(ev.evaluate(t).entities.find((e) => e.entityId === 'a')!, q).ankle
+    for (let t = t0; t <= t1 + 1e-9; t += 1 / 24) expect(Math.hypot(at(t, 0).x - at(t0, 0).x, at(t, 0).z - at(t0, 0).z), `pivot t ${t.toFixed(3)}`).toBeLessThan(0.01)
+    expect(Math.hypot(at(t1, 1).x - at(t0, 1).x, at(t1, 1).z - at(t0, 1).z)).toBeLessThan(0.01)
+    const { slide } = slides(ev, t0, t1)
+    for (const s of slide) expect(s).toBeLessThan(0.05)
   })
 })

@@ -158,18 +158,28 @@ describe('the Fight Director on mocap bots', { timeout: 30_000 }, () => {
     expect(end.clip?.id).toBe('koBack')
   })
 
-  it('a move with no clip plays its keyframes on the bot, crossfaded from the idle', () => {
+  it('a move with no clip plays its keyframes on the bot over its idle (bot-slides: no crossfade into the keyframe stance)', () => {
     const { sol, ev } = solve('A spinning-backfist to head -> hit power 0.5')
     const beat = sol.report.beats[0]!
     expect(beat.plays).toBe('spinning-backfist')
     expect(beat.contactErrorM[0]).toBeLessThan(0.001)
-    const marks = sol.tracks[0]
-    const first = marks.findIndex((m) => !m.clip)
-    expect(marks[first - 1]!.clip?.id).toBe('fightIdle')
-    const mid = (marks[first - 1]!.time + marks[first]!.time) / 2
-    const w = ev.evaluate(mid).entities.find((e) => e.entityId === 'a')!.clip?.w
-    expect(w).toBeGreaterThan(0)
-    expect(w).toBeLessThan(1)
+    // Every mark plays the idle on shot time, the move's keyframes its overlay: no crossfade weight anywhere in the beat.
+    for (const m of sol.tracks[0]) expect(m.clip, `t ${m.time.toFixed(3)}`).toEqual({ id: 'fightIdle', at: m.time })
+    for (let t = beat.startT; t <= beat.startT + 1; t += 1 / 24) expect(ev.evaluate(t).entities.find((e) => e.entityId === 'a')!.clip?.w).toBeUndefined()
+  })
+
+  it('a move with no clip that crouches or lunges on its legs (a sweep, a tackle) plays its keyframes, crossfaded from the idle', () => {
+    for (const script of ['A sweep to legs -> hit power 0.5', 'A tackle to body -> hit power 0.5']) {
+      const { sol, ev } = solve(script)
+      const marks = sol.tracks[0]
+      const first = marks.findIndex((m) => !m.clip)
+      expect(first, script).toBeGreaterThan(0)
+      expect(marks[first - 1]!.clip?.id, script).toBe('fightIdle')
+      const mid = (marks[first - 1]!.time + marks[first]!.time) / 2
+      const w = ev.evaluate(mid).entities.find((e) => e.entityId === 'a')!.clip?.w
+      expect(w, script).toBeGreaterThan(0)
+      expect(w, script).toBeLessThan(1)
+    }
   })
 
   it('a landed blow gets through a guard held in front of the face: the arm in its way drops, then comes back', () => {
