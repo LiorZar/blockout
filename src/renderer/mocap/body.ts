@@ -120,6 +120,176 @@ function bonesSphere(mesh: THREE.SkinnedMesh, reach: Float64Array): void {
   sphere.radius = Math.max(...at.map((p) => Math.hypot(p.x - c.x, p.y - c.y, p.z - c.z) + p.r))
 }
 
+/** Fork (main-thread): each bone's skinning matrix (bone world × bone inverse), 16 numbers a bone. */
+let BONE_M = new Float64Array(0)
+/** Fork (main-thread): per bone, whether its matrix's last row is exactly (0, 0, 0, 1): its divisor is then exactly 1. */
+let BONE_AFFINE = new Uint8Array(0)
+const BONE_TMP = new THREE.Matrix4()
+
+type Distinct = { index: THREE.BufferAttribute; weight: THREE.BufferAttribute; versions: string; at: Uint32Array }
+const DISTINCT = new WeakMap<THREE.BufferAttribute, Distinct>()
+
+/**
+ * Fork (main-thread): one vertex of each distinct (position, skinIndex, skinWeight), compared bit for bit, kept per
+ * skin. An FBX skin comes unindexed, each point repeated per face (Y Bot: 166k vertices, 28k distinct); the same
+ * inputs skin to the same point, so a box over these is the box over all of them.
+ */
+function distinctVertices(pos: THREE.BufferAttribute, index: THREE.BufferAttribute, weight: THREE.BufferAttribute): Uint32Array {
+  const versions = `${pos.version} ${index.version} ${weight.version}`
+  const hit = DISTINCT.get(pos)
+  if (hit && hit.index === index && hit.weight === weight && hit.versions === versions) return hit.at
+  const n = pos.count
+  let at = new Uint32Array(n).map((_, i) => i)
+  if (pos.array instanceof Float32Array && weight.array instanceof Float32Array) {
+    const P = new Uint32Array(pos.array.buffer, pos.array.byteOffset, n * 3)
+    const W = new Uint32Array(weight.array.buffer, weight.array.byteOffset, n * 4)
+    const I = index.array
+    const same = (i: number, j: number): boolean => {
+      for (let k = 0; k < 3; k++) if (P[i * 3 + k] !== P[j * 3 + k]) return false
+      for (let k = 0; k < 4; k++) if (I[i * 4 + k] !== I[j * 4 + k] || W[i * 4 + k] !== W[j * 4 + k]) return false
+      return true
+    }
+    let size = 1
+    while (size < n * 2) size *= 2
+    const table = new Int32Array(size).fill(-1)
+    let m = 0
+    for (let i = 0; i < n; i++) {
+      let h = 0x811c9dc5
+      for (let k = 0; k < 3; k++) h = Math.imul(h ^ P[i * 3 + k]!, 0x01000193)
+      for (let k = 0; k < 4; k++) h = Math.imul(Math.imul(h ^ I[i * 4 + k]!, 0x01000193) ^ W[i * 4 + k]!, 0x01000193)
+      let s = (h ^ (h >>> 15)) & (size - 1)
+      for (;;) {
+        const j = table[s]!
+        if (j < 0) {
+          table[s] = i
+          at[m++] = i
+          break
+        }
+        if (same(i, j)) break
+        s = (s + 1) & (size - 1)
+      }
+    }
+    at = at.slice(0, m)
+  }
+  DISTINCT.set(pos, { index, weight, versions, at })
+  return at
+}
+
+/**
+ * Fork (main-thread): a skin's distinct vertices (distinctVertices) packed for its box: each one's bind-space
+ * position (Vector3.applyMatrix4(bindMatrix), as three writes it, worked out once) and its nonzero weights in order
+ * (each bone's offset in BONE_M and the weight). Kept per mesh while its bind matrix and distinct vertices hold.
+ */
+type Packed = { at: Uint32Array; bind: number[]; xyz: Float64Array; start: Uint32Array; bone: Uint32Array; weight: Float64Array }
+const PACKED = new WeakMap<THREE.SkinnedMesh, Packed>()
+
+function packed(mesh: THREE.SkinnedMesh, pos: THREE.BufferAttribute, index: THREE.BufferAttribute, weight: THREE.BufferAttribute): Packed {
+  const at = distinctVertices(pos, index, weight)
+  const B = mesh.bindMatrix.elements
+  const hit = PACKED.get(mesh)
+  if (hit && hit.at === at && hit.bind.every((v, k) => v === B[k])) return hit
+  const P = pos.array
+  const I = index.array
+  const W = weight.array
+  const xyz = new Float64Array(at.length * 3)
+  const start = new Uint32Array(at.length + 1)
+  const bone: number[] = []
+  const wt: number[] = []
+  for (let n = 0; n < at.length; n++) {
+    const i = at[n]!
+    const x = P[i * 3]!
+    const y = P[i * 3 + 1]!
+    const z = P[i * 3 + 2]!
+    const w = 1 / (B[3]! * x + B[7]! * y + B[11]! * z + B[15]!)
+    xyz[n * 3] = (B[0]! * x + B[4]! * y + B[8]! * z + B[12]!) * w
+    xyz[n * 3 + 1] = (B[1]! * x + B[5]! * y + B[9]! * z + B[13]!) * w
+    xyz[n * 3 + 2] = (B[2]! * x + B[6]! * y + B[10]! * z + B[14]!) * w
+    for (let k = 0; k < 4; k++) {
+      const s = W[i * 4 + k]!
+      if (s === 0) continue
+      bone.push(I[i * 4 + k]! * 16)
+      wt.push(s)
+    }
+    start[n + 1] = bone.length
+  }
+  const out = { at, bind: [...B], xyz, start, bone: Uint32Array.from(bone), weight: Float64Array.from(wt) }
+  PACKED.set(mesh, out)
+  return out
+}
+
+/**
+ * Fork (main-thread): a posed bot skin's bounding box, worked out as three's SkinnedMesh.computeBoundingBox does it
+ * (the same arithmetic in the same order: the same box) without its per-vertex costs: each bone's skinning matrix is
+ * multiplied once, not once per vertex and weight, each distinct vertex is skinned once (distinctVertices), from its
+ * bind-space position worked out once and its nonzero weights packed (packed). A selected bot's selection box asks
+ * for it every frame (the bot clears it each frame, setBones); the export's depth range and the top-down fit read it
+ * too. Anything else (morphs, interleaved or normalized attributes) takes three's own.
+ */
+function skinnedBox(mesh: THREE.SkinnedMesh): void {
+  const g = mesh.geometry
+  const pos = g.getAttribute('position')
+  const index = g.getAttribute('skinIndex')
+  const weight = g.getAttribute('skinWeight')
+  const plain = (a: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | undefined, size: number): a is THREE.BufferAttribute =>
+    !!a && !(a as THREE.InterleavedBufferAttribute).isInterleavedBufferAttribute && !a.normalized && a.itemSize === size
+  if (!plain(pos, 3) || !plain(index, 4) || !plain(weight, 4) || (g.morphAttributes.position && mesh.morphTargetInfluences)) {
+    THREE.SkinnedMesh.prototype.computeBoundingBox.call(mesh)
+    return
+  }
+  const bones = mesh.skeleton.bones
+  if (BONE_M.length < bones.length * 16) {
+    BONE_M = new Float64Array(bones.length * 16)
+    BONE_AFFINE = new Uint8Array(bones.length)
+  }
+  const M = BONE_M
+  const A = BONE_AFFINE
+  for (let b = 0; b < bones.length; b++) {
+    BONE_TMP.multiplyMatrices(bones[b]!.matrixWorld, mesh.skeleton.boneInverses[b]!)
+    M.set(BONE_TMP.elements, b * 16)
+    A[b] = M[b * 16 + 3] === 0 && M[b * 16 + 7] === 0 && M[b * 16 + 11] === 0 && M[b * 16 + 15] === 1 ? 1 : 0
+  }
+  const BI = mesh.bindMatrixInverse.elements
+  const biAffine = BI[3] === 0 && BI[7] === 0 && BI[11] === 0 && BI[15] === 1
+  const { xyz, start, bone, weight: S } = packed(mesh, pos, index, weight)
+  const n = start.length - 1
+  let x0 = Infinity
+  let y0 = Infinity
+  let z0 = Infinity
+  let x1 = -Infinity
+  let y1 = -Infinity
+  let z1 = -Infinity
+  for (let v = 0; v < n; v++) {
+    const bx = xyz[v * 3]!
+    const by = xyz[v * 3 + 1]!
+    const bz = xyz[v * 3 + 2]!
+    let vx = 0
+    let vy = 0
+    let vz = 0
+    for (let j = start[v]!; j < start[v + 1]!; j++) {
+      const o = bone[j]!
+      const s = S[j]!
+      // An affine bone's divisor, 0·x + 0·y + 0·z + 1, is exactly 1 for any finite point: three divides by it anyway.
+      const w = A[o >> 4] ? 1 : 1 / (M[o + 3]! * bx + M[o + 7]! * by + M[o + 11]! * bz + M[o + 15]!)
+      vx += (M[o]! * bx + M[o + 4]! * by + M[o + 8]! * bz + M[o + 12]!) * w * s
+      vy += (M[o + 1]! * bx + M[o + 5]! * by + M[o + 9]! * bz + M[o + 13]!) * w * s
+      vz += (M[o + 2]! * bx + M[o + 6]! * by + M[o + 10]! * bz + M[o + 14]!) * w * s
+    }
+    const w = biAffine ? 1 : 1 / (BI[3]! * vx + BI[7]! * vy + BI[11]! * vz + BI[15]!)
+    const px = (BI[0]! * vx + BI[4]! * vy + BI[8]! * vz + BI[12]!) * w
+    const py = (BI[1]! * vx + BI[5]! * vy + BI[9]! * vz + BI[13]!) * w
+    const pz = (BI[2]! * vx + BI[6]! * vy + BI[10]! * vz + BI[14]!) * w
+    x0 = Math.min(x0, px)
+    y0 = Math.min(y0, py)
+    z0 = Math.min(z0, pz)
+    x1 = Math.max(x1, px)
+    y1 = Math.max(y1, py)
+    z1 = Math.max(z1, pz)
+  }
+  const box = (mesh.boundingBox ??= new THREE.Box3())
+  box.min.set(x0, y0, z0)
+  box.max.set(x1, y1, z1)
+}
+
 /**
  * held-weapons: what a bot shows, for its held weapons' hold rule (`hold.ts`): the pose (arms steadied
  * on a travelling gait), whether it plays a mark clip, the keyframe rig or a gait's loop, and the clip
@@ -209,6 +379,8 @@ export function buildMocapPerson(
     // Fork (fight-speed): its sphere from the bones (bonesSphere), not every vertex skinned on the CPU.
     const reach = boneReach(mesh)
     if (reach) mesh.computeBoundingSphere = (): void => bonesSphere(mesh, reach)
+    // Fork (main-thread): its box, three's own, without three's per-vertex matrix products (skinnedBox).
+    mesh.computeBoundingBox = (): void => skinnedBox(mesh)
   })
   group.updateMatrixWorld(true)
   const hipsParentInv = new THREE.Matrix4().copy(root.matrixWorld).invert().multiply(core[0]!.parent!.matrixWorld).invert()

@@ -64,13 +64,79 @@ describe("a bot's bounds", () => {
     }
   })
 
-  it('its box is still the skin’s own (the export measures it)', () => {
+  // Fork (main-thread): worked out without three's per-vertex matrix products, to the same numbers.
+  it('its box is still the skin’s own, to the bit (the export measures it)', () => {
+    const poses: AnimInput[] = [
+      STAND,
+      { ...STAND, clip: { id: 'raise', t: 0.9 } },
+      { ...STAND, overrides: { hipRX: -1.6, kneeR: 0.2, shoulderLX: -1.2, torsoX: 0.4 } },
+      { ...STAND, clip: { id: 'raise', t: 0.5, mirror: true }, overrides: { torsoZ: 0.5, headY: 0.6 } }
+    ]
+    for (const id of [MALE, FEMALE]) {
+      const b = buildAsset(id)
+      b.group.position.set(2, 0, -3)
+      b.group.rotation.y = 0.7
+      b.group.scale.setScalar(1.1)
+      for (const input of poses) {
+        b.animate!(input)
+        b.group.updateMatrixWorld(true)
+        for (const mesh of skins(b.group)) {
+          expect(mesh.computeBoundingBox).not.toBe(THREE.SkinnedMesh.prototype.computeBoundingBox)
+          expect(mesh.boundingBox, 'cleared each frame').toBe(null)
+          mesh.computeBoundingBox()
+          const fast = mesh.boundingBox!.clone()
+          THREE.SkinnedMesh.prototype.computeBoundingBox.call(mesh)
+          expect([...fast.min.toArray(), ...fast.max.toArray()]).toEqual([...mesh.boundingBox!.min.toArray(), ...mesh.boundingBox!.max.toArray()])
+          expect(fast.isEmpty()).toBe(false)
+        }
+      }
+      // And as the export reads it: the world box of the whole bot.
+      const world = new THREE.Box3().setFromObject(b.group)
+      expect(world.isEmpty()).toBe(false)
+    }
+  })
+
+  // Fork (main-thread): FBX skins repeat each point per face; each distinct point is skinned once.
+  it('a skin whose points repeat has the same box; a point on other bones is not a repeat', () => {
     const b = buildAsset(MALE)
-    b.animate!({ ...STAND, clip: { id: 'raise', t: 0.9 } })
-    b.group.updateMatrixWorld(true)
+    b.group.position.set(2, 0, -3)
+    b.group.rotation.y = 0.7
     for (const mesh of skins(b.group)) {
-      expect(mesh.computeBoundingBox).toBe(THREE.SkinnedMesh.prototype.computeBoundingBox)
-      expect(mesh.computeBoundingSphere).not.toBe(THREE.SkinnedMesh.prototype.computeBoundingSphere)
+      const g = mesh.geometry
+      const P = g.getAttribute('position').array
+      const I = g.getAttribute('skinIndex').array
+      const W = g.getAttribute('skinWeight').array
+      const n = P.length / 3
+      const bones = mesh.skeleton.bones.length
+      const pos: number[] = []
+      const idx: number[] = []
+      const wgt: number[] = []
+      // Each point's twin on the next bone first, then every point three times over.
+      for (let i = 0; i < n; i++) {
+        pos.push(P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!)
+        idx.push((I[i * 4]! + 1) % bones, 0, 0, 0)
+        wgt.push(1, 0, 0, 0)
+      }
+      for (const i of [...Array(n).keys(), ...Array(n).keys(), ...[...Array(n).keys()].reverse()]) {
+        pos.push(P[i * 3]!, P[i * 3 + 1]!, P[i * 3 + 2]!)
+        idx.push(I[i * 4]!, I[i * 4 + 1]!, I[i * 4 + 2]!, I[i * 4 + 3]!)
+        wgt.push(W[i * 4]!, W[i * 4 + 1]!, W[i * 4 + 2]!, W[i * 4 + 3]!)
+      }
+      const rep = new THREE.BufferGeometry()
+      rep.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+      rep.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(idx, 4))
+      rep.setAttribute('skinWeight', new THREE.Float32BufferAttribute(wgt, 4))
+      mesh.geometry = rep
+    }
+    for (const input of [STAND, { ...STAND, clip: { id: 'raise', t: 0.9 } }, { ...STAND, overrides: { hipRX: -1.6, kneeR: 0.2, shoulderLX: -1.2 } }]) {
+      b.animate!(input)
+      b.group.updateMatrixWorld(true)
+      for (const mesh of skins(b.group)) {
+        mesh.computeBoundingBox()
+        const fast = mesh.boundingBox!.clone()
+        THREE.SkinnedMesh.prototype.computeBoundingBox.call(mesh)
+        expect([...fast.min.toArray(), ...fast.max.toArray()]).toEqual([...mesh.boundingBox!.min.toArray(), ...mesh.boundingBox!.max.toArray()])
+      }
     }
   })
 })

@@ -39,6 +39,10 @@ call's camera marks dumped; `diag.spec.ts` drives a snapshot's built app). Every
 6. **Profiles are lined up on a marker.** The diag's `p0` came from a CDP round trip after `Profiler.start` (off by
    120–280 ms under load, which put the commit's work in the wrong task); a named 3 ms busy loop at a known page time
    now lines them up (`prof-align.mjs`).
+7. **T3: the box stays three's, to the bit; only its costs go.** The export's depth range and the top-down fit read
+   `computeBoundingBox`, so no approximate hull: the same arithmetic in the same order over each distinct vertex
+   (FBX repeats each point per face), bind-space positions and nonzero weights packed once per skin, and an affine
+   bone's divide by exactly 1 skipped (x·1 is x). Checked against three's own on the real bots and the fixture.
 
 ## Tasks and targets
 
@@ -100,3 +104,21 @@ call's camera marks dumped; `diag.spec.ts` drives a snapshot's built app). Every
     T1's (8d1a3b01…, fa74c7ab…); the gate on `dceef2d` + T2 (`t2g-heavy.log`; t2f's hit a load timeout in
     `fight-coverage.test.ts`, 22 passed alone). The fight-worker e2e assertion on the commit frames comes with T3
     (T2 alone doesn't meet it: 144 + 89 ms in t2f's run).
+- **T3** (Stage, 4 bots playing, the two fighters selected vs none; `diag.spec.ts` `select`, medians, ms):
+  - Before (HEAD with T1, `t1e`, load 26–57 %): 30.3 vs 11.8 (pre-T1 32.3 vs 16.3). The selected bot's box: three's
+    `computeBoundingBox` skinning 166k (Y Bot) vertices a frame, and 20 + 28 ms of a staging's commit (`t2d`).
+  - Per bot and frame (`box.probe.ts`, a walking Y Bot / X Bot, frames 10–299, both skins): three's 17.3–23.0; the
+    distinct vertices alone 1.23–1.74; packed with the affine divide skipped 0.71–0.99. Every sampled box equal to
+    three's to the bit (`out/box-three-b1.json` vs `box-tree-b1.json`).
+  - After (`t3e`, `t3f`, four runs, load 32–93 %): 13.0 / 13.1 / 13.5 / 10.5 vs none 11.25 / 11.25 / 11.9 / 8.45:
+    +1.75 / +1.85 / +1.6 / +2.05 (target 2: three runs under, one 0.05 over); a prop selected (gizmo, box, tint, no
+    skin) 10.7 / 11.1 / 12.2 / 8.4.
+  - Checks: `tests/unit/bot-bounds.test.ts` (the box to the bit against three's over four poses and two bots; a skin
+    whose points repeat, and a point on other bones not taken for a repeat: a position-only dedupe fails it). On
+    `dceef2d` + T2 + T3 (= `7fbc7c5` + T3, `t3g-heavy.log`, load 52–99 %): gate `Test Files 108 passed (108)`, smoke
+    `6 passed`, an export of a covered bot fight equal to T1's (8d1a3b01…, fa74c7ab…); the fork e2e set 85 passed,
+    1 failed: `mocap-bots.spec.ts:315`'s double export (a clip run). The known ANGLE flake (BACKLOG, export-look T4;
+    street-kit saw `:379` fail once): in the failed pair frame 1 differs in 1 pixel by 1 level, and the H.264
+    encoder's later frames drift from it (frame 30: 19.5k pixels ≤ 44 levels); the metadata are equal, and a box
+    is three's to the bit on every call, so it can't tell two exports apart. The whole `mocap-bots.spec.ts` after:
+    T3 2/2 passed (13 passed each), HEAD without T3 3/3; with the first two runs, T3 3/5.

@@ -9,7 +9,8 @@
  * out there too, the same as here. The bar is the solve's: every main-thread task until the
  * fight is committed (the render's frames go on meanwhile); the commit and
  * the first frames of the new fight (its marks overlay, a shader's first
- * use) are logged. Skipped without the library (it is never in the repo).
+ * use) are logged, and since main-thread T2 a staging's are held to the same
+ * bar. Skipped without the library (it is never in the repo).
  */
 
 import { _electron as electron, test, expect, type ElectronApplication, type Page } from '@playwright/test'
@@ -26,6 +27,8 @@ const COMBOS = 'A double-jab-body-shot to body -> hit, hit, hit\nB boxing-combo 
 /** The longest main-thread task allowed while a fight solves (ms), and the longest wait for a frame then. */
 const LONG_TASK = 100
 const FRAME_GAP = 250
+/** Fork (main-thread): the longest a staging's commit and first frames may take here (the target, 100 ms, is measured on a quiet machine; this run shares it). */
+const COMMIT_TASK = 150
 
 let app: ElectronApplication
 let page: Page
@@ -110,7 +113,7 @@ async function watch(): Promise<number> {
 }
 
 /** Stop recording; until the commit (the solve): the longest task and frame gap, logged with the commit's and first frames' tasks. */
-async function solvePhase(what: string, t0: number): Promise<{ longest: number; gap: number }> {
+async function solvePhase(what: string, t0: number): Promise<{ longest: number; gap: number; firstFrames: number }> {
   const rec = await page.evaluate(() => {
     const r = (window as unknown as { __fw: { long: { start: number; ms: number }[]; frames: number[]; done: boolean; commit: number } }).__fw
     r.done = true
@@ -125,7 +128,7 @@ async function solvePhase(what: string, t0: number): Promise<{ longest: number; 
   const longest = Math.max(0, ...solving.map((x) => x.ms))
   const gap = Math.max(0, ...gaps)
   console.log(`[fight-worker] ${what}: committed after ${(rec.commit - t0).toFixed(0)} ms: ${frames.length} frames, worst gap ${gap.toFixed(0)} ms, longest task ${longest.toFixed(0)} ms (${solving.length} over 50 ms); commit and first frames: ${list(after)}`)
-  return { longest, gap }
+  return { longest, gap, firstFrames: Math.max(0, ...after.map((x) => x.ms)) }
 }
 
 test.describe.configure({ mode: 'serial' })
@@ -171,10 +174,12 @@ test.describe('bot fight solves off the main thread', () => {
     expect(staged.ok, staged.error).toBe(true)
     expect(staged.data!.report.beats).toHaveLength(5)
     await page.waitForTimeout(500)
-    const { longest, gap } = await solvePhase('stage_fight', t0)
+    const { longest, gap, firstFrames } = await solvePhase('stage_fight', t0)
     expect(logs.filter((l) => l.startsWith('[fight]')), 'the worker says nothing went wrong').toEqual([])
     expect(longest, 'the longest main-thread task while the fight solves').toBeLessThanOrEqual(LONG_TASK)
     expect(gap, 'the longest wait for a frame while the fight solves').toBeLessThanOrEqual(FRAME_GAP)
+    // Fork (main-thread T2): and its commit (the marks overlay) and first frames (the overlay's shaders).
+    expect(firstFrames, 'the longest main-thread task from the commit through the first frames').toBeLessThanOrEqual(COMMIT_TASK)
     worker = await stagedFight()
   })
 

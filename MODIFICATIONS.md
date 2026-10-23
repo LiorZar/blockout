@@ -1572,6 +1572,21 @@ Changes in this fork (2026):
   Editor chrome only: the fight solves (30 dumps) byte-equal, an export of a covered bot fight equal.
   Tests: `tests/unit/overlay-cache.test.ts` (new).
 
+- A selected bot's box (main-thread T3; `src/renderer/mocap/body.ts`, `tests/e2e/fight-worker.spec.ts`): the selection
+  box (`BoxHelper`) asks a selected bot's skins for their box every frame, and three's `SkinnedMesh.computeBoundingBox`
+  skins every vertex on the CPU (a matrix product per vertex and weight): Stage with 4 bots, 30.3 ms a frame with the
+  two fighters selected against 11.8 ms with none (HEAD with T1), and 20 + 28 ms of a staging's commit. A bot skin's
+  `computeBoundingBox` is now `skinnedBox`: the same arithmetic in the same order, so the same box to the bit (the
+  export's depth range reads it), without the per-vertex costs: each bone's skinning matrix multiplied once a call,
+  each distinct (position, skinIndex, skinWeight) skinned once (an FBX skin repeats each point per face: Y Bot 166k
+  vertices, 28k distinct), its bind-space position worked out once and its nonzero weights packed, and the divide by
+  an affine bone's last row (exactly 1) skipped. A posed Y Bot or X Bot (`.maestro/main-thread/box.probe.ts`): three's
+  17–23 ms a frame → 0.7–1.0 ms, the boxes equal to three's to the bit. Built app (`diag.spec.ts`, load 36–93 %): the
+  fighters selected 13.5 / 10.5 ms against 11.9 / 8.45 ms with none (+1.6 / +2.05 ms; a prop selected 12.2 / 8.4 ms).
+  With main-thread T2, a staging's commit and first frame stay under 100 ms; the fight-worker e2e now holds them to
+  150 ms (a loaded run). Tests: `tests/unit/bot-bounds.test.ts` (the box against three's, and a skin whose points
+  repeat), e2e `fight-worker.spec.ts`.
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.
