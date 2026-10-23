@@ -1385,6 +1385,17 @@ Changes in this fork (2026):
   controlled number field can't wait for the worker). Tests: `tests/unit/fight-offthread.test.ts`
   (reads, MCP `set_shot` → `get_fight`), `tests/e2e/fight-worker.spec.ts` (`set_shot`, the
   Deliver prompt).
+- A bot's bounding sphere from its bones (fight-speed T4; `src/renderer/mocap/body.ts`): a bot
+  clears its skinned meshes' bounds every frame (so the export's depth range and top-down fit
+  measure the posed body), and three's draw sort then measured the sphere again by skinning every
+  vertex on the CPU, 8–9 ms a mesh, two meshes a bot, every frame. Now each skinned mesh's sphere
+  comes from its bones: every skin influence moves its vertex rigidly with its bone, so the vertex
+  lies within that bone's reach (the furthest skin it moves, measured once per skin at bind) of
+  its joint, and the sphere around those balls holds the whole posed skin (larger than the skin's
+  own, never smaller; the bot is never culled, it only orders the draw and starts a pick). The box
+  stays the skin's own (exports measure it). Real library: every vertex inside on 34 clips × 4
+  times, radius ≤ 1.17 / 1.33 × the skin's, 0.02–0.04 ms a call. Test:
+  `tests/unit/bot-bounds.test.ts` (new).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

@@ -53,6 +53,73 @@ const TRAVEL_GAITS = new Set<GaitId>(['walk', 'jog', 'run'])
 
 const q = (o: THREE.Object3D): Quat => [o.quaternion.x, o.quaternion.y, o.quaternion.z, o.quaternion.w]
 
+/** Fork (fight-speed): per skin (geometry), each bone's reach: the furthest skin it moves from its joint, in the bone's own frame at bind; null when the weights don't sum to 1. */
+const REACH = new WeakMap<THREE.BufferGeometry, Float64Array | null>()
+
+function boneReach(mesh: THREE.SkinnedMesh): Float64Array | null {
+  const known = REACH.get(mesh.geometry)
+  if (known !== undefined) return known
+  const pos = mesh.geometry.getAttribute('position')
+  const index = mesh.geometry.getAttribute('skinIndex')
+  const weight = mesh.geometry.getAttribute('skinWeight')
+  let reach: Float64Array | null = new Float64Array(mesh.skeleton.bones.length)
+  const v = new THREE.Vector3()
+  const u = new THREE.Vector3()
+  for (let i = 0; i < pos.count && reach; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(mesh.bindMatrix)
+    let sum = 0
+    for (let k = 0; k < 4; k++) {
+      const w = weight.getComponent(i, k)
+      if (w === 0) continue
+      sum += w
+      const b = index.getComponent(i, k)
+      reach[b] = Math.max(reach[b]!, u.copy(v).applyMatrix4(mesh.skeleton.boneInverses[b]!).length())
+    }
+    if (Math.abs(sum - 1) > 1e-3) reach = null
+  }
+  REACH.set(mesh.geometry, reach)
+  return reach
+}
+
+const SPHERE_M = new THREE.Matrix4()
+const SPHERE_P = new THREE.Vector3()
+
+/**
+ * Fork (fight-speed): a posed bot skin's bounding sphere from its bones, not its vertices. three sorts by it every
+ * frame and the bot clears it every frame (setBones): skinning every vertex on the CPU cost tens of ms a bot a frame.
+ * Each skin influence moves its vertex rigidly with its bone, so it lies within that bone's reach (scaled as the bone
+ * is) of its joint, and the skinned vertex (weights summing to 1) in the hull of those balls: the sphere around them
+ * holds the whole posed skin. It is larger than the skin's own, never smaller (it only orders the draw and starts a
+ * pick; the bot is never culled).
+ */
+function bonesSphere(mesh: THREE.SkinnedMesh, reach: Float64Array): void {
+  const bones = mesh.skeleton.bones
+  // Each moving bone's joint (skin space) and reach, and the box around those balls.
+  const at: { x: number; y: number; z: number; r: number }[] = []
+  const lo = { x: Infinity, y: Infinity, z: Infinity }
+  const hi = { x: -Infinity, y: -Infinity, z: -Infinity }
+  for (let b = 0; b < bones.length; b++) {
+    if (!(reach[b]! > 0)) continue
+    SPHERE_M.multiplyMatrices(mesh.bindMatrixInverse, bones[b]!.matrixWorld)
+    const { x, y, z } = SPHERE_P.setFromMatrixPosition(SPHERE_M)
+    const r = reach[b]! * SPHERE_M.getMaxScaleOnAxis()
+    at.push({ x, y, z, r })
+    lo.x = Math.min(lo.x, x - r)
+    lo.y = Math.min(lo.y, y - r)
+    lo.z = Math.min(lo.z, z - r)
+    hi.x = Math.max(hi.x, x + r)
+    hi.y = Math.max(hi.y, y + r)
+    hi.z = Math.max(hi.z, z + r)
+  }
+  const sphere = (mesh.boundingSphere ??= new THREE.Sphere())
+  if (at.length === 0) {
+    sphere.makeEmpty()
+    return
+  }
+  const c = sphere.center.set((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, (lo.z + hi.z) / 2)
+  sphere.radius = Math.max(...at.map((p) => Math.hypot(p.x - c.x, p.y - c.y, p.z - c.z) + p.r))
+}
+
 /**
  * held-weapons: what a bot shows, for its held weapons' hold rule (`hold.ts`): the pose (arms steadied
  * on a travelling gait), whether it plays a mark clip, the keyframe rig or a gait's loop, and the clip
@@ -139,6 +206,9 @@ export function buildMocapPerson(
     mesh.receiveShadow = true
     // The bind-pose bounds don't hold a posed body.
     mesh.frustumCulled = false
+    // Fork (fight-speed): its sphere from the bones (bonesSphere), not every vertex skinned on the CPU.
+    const reach = boneReach(mesh)
+    if (reach) mesh.computeBoundingSphere = (): void => bonesSphere(mesh, reach)
   })
   group.updateMatrixWorld(true)
   const hipsParentInv = new THREE.Matrix4().copy(root.matrixWorld).invert().multiply(core[0]!.parent!.matrixWorld).invert()

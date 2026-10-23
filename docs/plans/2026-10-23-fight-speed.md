@@ -110,3 +110,22 @@ each on fresh inputs, already cached where it repeats.
   vertex on the CPU (`mocap/body.ts` clears them each frame so measures are of the pose;
   three's depth sort then recomputes the sphere; a selected bot's box helper the box):
   ~70 ms a frame with four bots here. Reported to crd2.
+- **T4 a bot's sphere from its bones** (`.maestro/fight-speed/t4-summary.txt`,
+  `depth-summary.txt`, `stale-summary.txt`; snapshots of a2aee2b before and + `body.ts` and
+  the test after, the lock): typecheck, lint clean; `bot-bounds` (new), `mocap-clip-render`,
+  `mocap-fights-render`: `Test Files 3 passed (3)`; build; e2e `mocap-bots` (double exports
+  byte-identical) + `fight-worker`: `16 passed`. Frame medians before → after (two runs
+  each): Deliver, 2 bots 40.4 / 39.9 → 4.2 / 4.2 ms; Stage, 4 bots 84.8 / 82.6 → 10.2 / 10.4
+  ms, the fighters selected 101.7 / 101.0 → 28.7 / 28.9 ms; Deliver, 4 bots 78.4 / 75.2 → 4.2
+  / 4.2 ms. MCP `stage_fight` now draws 619 frames while it solves (worst gap 57 ms), set_shot
+  132 (worst gap 45 ms). Real library: every vertex inside the sphere on 34 clips × 4 times,
+  radius ≤ 1.17 / 1.33 × the skin's, 0.02–0.04 ms against 7.9–9.1 ms a call. Export frames
+  equal before and after: clean and depth at t = 0.5 / 2 / 4 / 6 / 8, the depth with each
+  frame's own range and with a pinned one, 4 runs (2 a build) byte-equal. The first check's
+  depth mismatch was the run, not T4: the build before differed from itself (pre1 vs pre2)
+  because `measureDepthRange` measures a moving bot against the last render's
+  `bindMatrixInverse` (`Box3.setFromObject` updates world matrices, a skinned mesh's bind
+  inverse only on `updateMatrixWorld`). Both builds: t = 0.5's range is 11.08..13.09 after a
+  frame at 8, 11.49..13.48 after one at 0.5, and an export's shot-wide depth range follows
+  the playhead (11.09..14.43 at 2, 10.94..14.10 at 8). Not fixed (it changes export output):
+  reported to crd2.
