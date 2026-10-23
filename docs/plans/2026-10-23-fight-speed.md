@@ -141,3 +141,14 @@ each on fresh inputs, already cached where it repeats.
   typecheck, lint clean; build; all of `mocap-bots` with the test's first version: `13 passed`
   (the walking, clip run and fight double exports byte-identical); the final test alone: `1
   passed`.
+- **Done** (`.maestro/fight-speed/final-summary.txt`, snapshot of HEAD 66d2025 + T5 as staged,
+  the lock): typecheck, lint clean; `Test Files 99 passed (99)`, `Tests 1697 passed (1697)`;
+  `mocap-fights-real`, `mocap-fights-solve`, `mocap-footwork`: `Test Files 3 passed (3)`, 27
+  tests; smoke `6 passed`; fork e2e set + `fight-worker` (`--workers=1`): `88 passed`. MCP
+  `stage_fight` of the combos fight on bots: base one 10,186 ms task and a 10.5 s frame gap,
+  now committed after 11.2 s with 603 frames drawn, worst gap 58 ms, no task over 50 ms;
+  `set_shot` re-solving it: 128 frames, worst gap 43 ms. Solve times unchanged (T1's 29 dumps
+  byte-equal to base; 1.2–3.1 s warm, now in the worker). `BACKLOG.md` item DONE; left there:
+  the staged fight's commit frame (mark meshes, a shader's first use, ~210 ms), a selected bot's
+  box helper, the Timeline / Inspector duration and fps edits on the main thread, a ~0.5 s task
+  on the switch to Deliver.
