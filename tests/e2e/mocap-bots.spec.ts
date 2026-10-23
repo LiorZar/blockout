@@ -9,7 +9,8 @@
  * one, and a bot fight exports byte-identically twice. mocap-backlog
  * (docs/plans/2026-10-22-mocap-backlog.md): spawn_sequence casts the bots
  * through its bodies; mocap-followup (docs/plans/2026-10-22-mocap-followup.md):
- * spawn_choreography does too. Skipped without the
+ * spawn_choreography does too; fight-speed (docs/plans/2026-10-23-fight-speed.md):
+ * a bot fight exports the same depth from any playhead. Skipped without the
  * library (it is never in the repo); nothing from it is written into the
  * repo.
  */
@@ -394,5 +395,27 @@ test.describe('mocap bots', () => {
       expect(md5(a!), suffix).toBe(md5(b!))
       expect(readFileSync(a!).equals(readFileSync(b!)), `${suffix} bytes`).toBe(true)
     }
+  })
+
+  test('a bot fight exports the same depth from any playhead, with or without the clean pass before it', async () => {
+    test.setTimeout(300_000)
+    // fight-speed: the depth range measures each frame's pose, not a moving bot where the last render left it (the
+    // playhead's frame on a depth-only export, the clean pass's last frame after it).
+    expect((await rpc('new_scene', { name: 'Bot fight playheads' })).ok).toBe(true)
+    expect((await rpc('set_shot', { duration: 10 })).ok).toBe(true)
+    const script = 'A double-jab-body-shot to body -> hit, hit, hit\nB boxing-combo to head -> slip, hit power 0.8\nA jab-hook-cross to head -> parry, hit power 0.8\nB elbow to head -> hit power 0.8\nA knee to body -> hit power 0.8'
+    const staged = await rpc('stage_fight', { script, assets: ['person.mocapMale', 'person.mocapFemale'], x: 0, z: -6 })
+    expect(staged.ok, staged.error).toBe(true)
+    const depths: Buffer[] = []
+    for (const [playhead, clean] of [[2, false], [8, false], [2, true]] as const) {
+      await page.evaluate((t) => (window as unknown as { __blockout: { store: { getState(): { setTime(t: number): void } } } }).__blockout.store.getState().setTime(t), playhead)
+      await page.waitForTimeout(500)
+      const res = await rpc<{ packagePath: string }>('export_shot', { passes: { clean, depth: true, normal: false } })
+      expect(res.ok, res.error).toBe(true)
+      const pkg = res.data!.packagePath
+      depths.push(readFileSync(join(pkg, readdirSync(pkg).find((f) => f.endsWith('_depth.mp4'))!)))
+    }
+    expect(depths[1]!.equals(depths[0]!), 'depth only, playhead 8 vs 2').toBe(true)
+    expect(depths[2]!.equals(depths[0]!), 'after the clean pass vs depth only').toBe(true)
   })
 })

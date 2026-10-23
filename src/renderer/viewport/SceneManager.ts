@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports, a night fill on the cast) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports, a night fill on the cast, a depth range measured on the frame's own matrices) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -2502,6 +2502,10 @@ export class SceneManager {
 
   /** Camera-to-scene distance range at the CURRENT applied time. */
   private measureDepthRange(): { near: number; far: number } {
+    // Fork (fight-speed): the world matrices first. Box3.setFromObject updates an object's matrixWorld but not a
+    // skinned mesh's bindMatrixInverse (updateMatrixWorld does), so a moving bot was measured where the last render
+    // left it: an export's depth range followed the playhead.
+    this.scene.updateMatrixWorld()
     const camPos = this.shotCam.position
     let minD = Infinity
     let maxD = 0

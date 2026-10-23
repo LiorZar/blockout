@@ -129,3 +129,15 @@ each on fresh inputs, already cached where it repeats.
   frame at 8, 11.49..13.48 after one at 0.5, and an export's shot-wide depth range follows
   the playhead (11.09..14.43 at 2, 10.94..14.10 at 8). Not fixed (it changes export output):
   reported to crd2.
+- **T5 the depth range from the frame's own pose** (crd2's task; `.maestro/fight-speed/t5-summary.txt`,
+  `t5b-summary.txt`; snapshots of a2aee2b + T4 + the test without the fix (`t5r`) and with it
+  (`t5a`), the lock): `measureDepthRange` updates the scene's world matrices first. The new
+  e2e (the combos fight on bots, 10 s: depth-only exports from playhead 2 and 8, then the depth
+  after the clean pass) fails without the fix (`depth only, playhead 8 vs 2`: 0108d418…,
+  4f267335…, 32baa6bb…, three files) and passes with it (all three b2307075…, the same in two
+  launches). A clean + depth export first left the playhead out (the clean pass renders before
+  the range is measured), which is why the first version of the test passed without the fix.
+  Clean pass unchanged: the reference mp4 907b0f37… before and after. With the fix:
+  typecheck, lint clean; build; all of `mocap-bots` with the test's first version: `13 passed`
+  (the walking, clip run and fight double exports byte-identical); the final test alone: `1
+  passed`.

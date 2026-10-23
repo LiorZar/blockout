@@ -1396,6 +1396,17 @@ Changes in this fork (2026):
   stays the skin's own (exports measure it). Real library: every vertex inside on 34 clips × 4
   times, radius ≤ 1.17 / 1.33 × the skin's, 0.02–0.04 ms a call. Test:
   `tests/unit/bot-bounds.test.ts` (new).
+- An export's depth range from each frame's own pose (fight-speed T5;
+  `src/renderer/viewport/SceneManager.ts`): `measureDepthRange` measured a moving bot where the
+  last render left it (`Box3.setFromObject` updates an object's world matrix, a skinned mesh's
+  bind inverse only moves on `updateMatrixWorld`), so a depth pass's shot-wide range hung on what
+  rendered before it: the playhead's frame on a depth-only export, the clean pass's last frame
+  after one. It now updates the scene's world matrices before it measures. This changes depth
+  output on purpose wherever a bot moves (a bot fight's depth mp4 is a new file); the clean pass
+  is unchanged (the same bytes) and the normal pass never measures. A combos fight on bots, 10 s:
+  depth-only exports from playhead 2 and 8 and the depth after the clean pass were 3 different
+  files, now byte-identical. Test: `tests/e2e/mocap-bots.spec.ts` (a bot fight exports the same
+  depth from any playhead, with or without the clean pass before it).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
