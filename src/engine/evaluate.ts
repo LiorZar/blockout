@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt); see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts); see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -20,6 +20,7 @@ import { RigNoise } from './rigs'
 import { solveShot, type ShotSpec, type ShotSubject, type SolvedShot } from './shot'
 import { evaluateShotTrack, shotTrackSegment } from './shot-track'
 import { applyHolds } from './weapons'
+import { trackAim } from './track-aim'
 import type {
   ActorMark,
   CameraMark,
@@ -551,10 +552,11 @@ export class ShotEvaluator {
       const subject = entities.find((e) => e.entityId === cam.trackEntityId)
       const docEntity = this.scene.entities.find((e) => e.id === cam.trackEntityId)
       if (subject && docEntity) {
-        const aimUp = entityHeight(docEntity.assetId, docEntity.transform.scale, docEntity.params) * 0.8
-        const dx = subject.position.x - position.x
-        const dy = subject.position.y + aimUp - position.y
-        const dz = subject.position.z - position.z
+        // Fork (set-routines): a person low on the ground is aimed at, not the air above them (track-aim.ts).
+        const aim = trackAim(docEntity, subject)
+        const dx = aim.x - position.x
+        const dy = aim.y - position.y
+        const dz = aim.z - position.z
         const flat = Math.hypot(dx, dz)
         if (flat > 1e-4 || Math.abs(dy) > 1e-4) {
           pan = headingOf({ x: dx, y: 0, z: dz })

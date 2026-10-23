@@ -1217,6 +1217,23 @@ Changes in this fork (2026):
   before and after. Root steps ≤ 0.25 m a frame (qa-fixes' bar 0.45 m).
   Tests: `tests/unit/routine-set.test.ts` (new, synthetic sets: 12 of 13 fail on edf6dc0's
   routines), `tests/unit/routine-set-store.test.ts` (new, the real kits through the store).
+- A chase's follow cameras keep the other cast out of the lens, and a tracking camera keeps a
+  fallen person in frame (set-routines T2; `src/engine/track-aim.ts` new,
+  `src/engine/camera-clear.ts`, `src/engine/evaluate.ts`): people-follow moves let other cast
+  come 0.5 m from the lens, so on QA's chase a follow-behind camera sat among the pursuers, their
+  heads filling up to the whole frame over the runner; and the aim lock looked 0.8 of a subject's
+  height over its root, so the caught runner fell out of the bottom of the lead-the-subject frame.
+  A follow move now keeps other cast 2.5 m from the lens and anyone between the lens and the
+  subject under 10 % of the frame (cast beside or beyond the subject is the scene); its path is
+  checked every frame; a move blocked most of the time takes one steady offset for every mark
+  when one stays clear (QA's follow-behind becomes a side track, swung 90°) instead of dodging
+  mark by mark. The aim lock eases onto the middle of a person's posed body once its head drops
+  below the standing aim point; standing people and everything else are aimed as before. QA's
+  chase (Downtown, seed 7, bots), frames of 192, edf6dc0 → now: follow-behind, cast < 2.5 m from
+  the lens 179 → 0, cast in front of the runner over 10 % of the frame 174 → 0 (largest 97.6 % →
+  0), over the runner's head or chest 133 → 0, camera ≤ 0.18 m and 1.9° a frame;
+  lead-the-subject, runner's hips and head in frame 0.94 → 1.00, in the last 0.5 s 0/12 → 12/12.
+  Test: `tests/unit/follow-cast.test.ts` (new; 3 of 3 fail on edf6dc0).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

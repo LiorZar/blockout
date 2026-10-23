@@ -77,3 +77,8 @@ helper and a small hook; upstream tests stay as they are.
   Nightclub chases 3–4 / all → 0 / 0 (a lap of the floor); the Alley's 6 dancers 10–11 / 0–116
   → 0 / 0 (turned 90°); root steps ≤ 0.25 m a frame. `routine-set.test.ts` 12 of 13 fail on
   edf6dc0's routines, 13 / 13 pass.
+- **T2** (bots, QA's Downtown chase seed 7; `.maestro/set-routines/framing-*.txt`), edf6dc0 → tree:
+  follow-behind, other cast < 2.5 m from the lens 179 → 0 of 192 frames, cast in front of the runner
+  over 10 % of the frame 174 → 0, over the runner's head or chest 133 → 0, camera ≤ 0.18 m and 1.9° a
+  frame (one steady 90° offset); lead-the-subject, the caught runner's hips and head in frame in the
+  last 0.5 s 0/12 → 12/12. `follow-cast.test.ts` 3 of 3 fail on edf6dc0, 3 / 3 pass.

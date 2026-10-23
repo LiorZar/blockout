@@ -18,12 +18,14 @@
  */
 
 import { assetSpec, entityHeight } from './assets'
+import { horizontalFov, verticalFov } from './camera'
 import type { CameraMarkSpec } from './camera-moves'
 import { ShotEvaluator } from './evaluate'
 import { headingOf } from './path'
 import { solveShot, turnXZ, type ShotSpec, type ShotSubject, type ShotView } from './shot'
 import { personDims, poseEffectors, toWorld } from './skeleton'
 import type { CameraMark, EntityState, Scene, Shot, V3 } from './types'
+import { trackAim } from './track-aim'
 
 /** A piece of the set: an oriented floor box (heading as `object.rotation.y`) from y0 to y1. */
 export interface SetBox {
@@ -511,11 +513,67 @@ export function clearFixedPose(
 /** Seconds between path checks of a follow move. */
 const PATH_STEP = 1 / 8
 const MAX_INSERTS = 24
-/** A follow camera keeps this far from its subject's aim point (m) and this far beyond other people's bodies. */
+/** Fork (set-routines): a follow move whose asked path is clear less than this share of the time tries one steady offset first. */
+const STEADY_BELOW = 0.75
+/** A follow camera keeps this far from its subject's aim point (m). */
 const FOLLOW_MIN_DIST = 1.5
-const FOLLOW_BODY_CLEAR = 0.5
+/**
+ * Fork (set-routines): other cast keeps this far from a follow camera's lens
+ * (m), and anyone between the lens and the subject fills at most this share
+ * of the frame (a chase's pursuers filled a third to a half of a
+ * follow-behind frame). Cast beyond the subject is the scene.
+ */
+const FOLLOW_CAST_CLEAR = 2.5
+const FOLLOW_CAST_SHARE = 0.1
 /** A follow camera sees its subject whole: head, chest and pelvis. */
 const FOLLOW_VISIBLE = 1
+
+/**
+ * Fork (set-routines): the first other person a follow camera at `cam`,
+ * aimed at `look` on a `lens` mm lens, has too near (within
+ * FOLLOW_CAST_CLEAR) or, in front of the subject, too big (over
+ * FOLLOW_CAST_SHARE of the frame, the posed body's projected box).
+ */
+export function crowdedBy(subjects: ShotSubject[], subjectId: string, cam: V3, look: V3, lens: number, shot: Shot, nameOf: (id: string) => string): string | null {
+  const dist = (p: V3): number => Math.hypot(p.x - cam.x, p.y - cam.y, p.z - cam.z)
+  const chestOf = (s: ShotSubject): V3 => toWorld(poseEffectors(personDims(s.assetId, s.params), s.joints, s.clip).chest, s.position, s.heading, s.scale)
+  const subject = subjects.find((s) => s.id === subjectId)
+  const front = subject && isPerson(subject) ? dist(chestOf(subject)) : dist(look)
+  const { pan, tilt } = aimAngles(cam, look)
+  const tanH = Math.tan(horizontalFov(shot.camera.sensorId, lens) / 2)
+  const tanV = Math.tan(verticalFov(shot.camera.sensorId, lens, shot.aspect) / 2)
+  const fwd = { x: -Math.sin(pan) * Math.cos(tilt), y: Math.sin(tilt), z: -Math.cos(pan) * Math.cos(tilt) }
+  const right = { x: Math.cos(pan), y: 0, z: -Math.sin(pan) }
+  const up = { x: Math.sin(pan) * Math.sin(tilt), y: Math.cos(tilt), z: Math.cos(pan) * Math.sin(tilt) }
+  for (const s of subjects) {
+    if (s.id === subjectId || !isPerson(s)) continue
+    const dims = personDims(s.assetId, s.params)
+    const fx = poseEffectors(dims, s.joints, s.clip)
+    const pts = Object.values(fx).map((p) => toWorld(p, s.position, s.heading, s.scale))
+    const pad = dims.bodyW * 0.5 * s.scale
+    if (Math.min(...pts.map(dist)) - pad < FOLLOW_CAST_CLEAR) return `right behind ${nameOf(s.id)}`
+    // Only cast nearer the lens than the subject (by half a metre) is held to the share: beside or beyond it is the scene.
+    if (dist(toWorld(fx.chest, s.position, s.heading, s.scale)) >= front - 0.5) continue
+    let x0 = Infinity
+    let x1 = -Infinity
+    let y0 = Infinity
+    let y1 = -Infinity
+    for (const p of pts) {
+      const d = { x: p.x - cam.x, y: p.y - cam.y, z: p.z - cam.z }
+      const z = d.x * fwd.x + d.y * fwd.y + d.z * fwd.z
+      if (z <= 0.05) continue
+      const x = (d.x * right.x + d.z * right.z) / (z * tanH)
+      const y = (d.x * up.x + d.y * up.y + d.z * up.z) / (z * tanV)
+      x0 = Math.min(x0, x - pad / (z * tanH))
+      x1 = Math.max(x1, x + pad / (z * tanH))
+      y0 = Math.min(y0, y - pad / (z * tanV))
+      y1 = Math.max(y1, y + pad / (z * tanV))
+    }
+    const share = (Math.max(0, Math.min(1, x1) - Math.max(-1, x0)) * Math.max(0, Math.min(1, y1) - Math.max(-1, y0))) / 4
+    if (share > FOLLOW_CAST_SHARE) return `with ${nameOf(s.id)} filling the frame`
+  }
+  return null
+}
 
 function aimAngles(from: V3, to: V3): { pan: number; tilt: number } {
   const dx = to.x - from.x
@@ -547,24 +605,24 @@ export function clearFollowMove(
   const subjectAt = (t: number): ShotSubject | undefined => at(t).subjects.find((s) => s.id === subjectId)
   const lookAt = (t: number): V3 => {
     const s = subjectAt(t)
-    return s ? { x: s.position.x, y: s.position.y + height * 0.8, z: s.position.z } : { x: 0, y: height * 0.8, z: 0 }
+    return s ? trackAim(entity, s) : { x: 0, y: height * 0.8, z: 0 } // fork (set-routines): where the tracking camera aims
   }
   const nameOf = nameOfEntity(scene)
   const name = nameOf(subjectId)
-  const check = (t: number, cam: V3): ViewCheck => {
+  const check = (t: number, cam: V3, lens: number): ViewCheck => {
     const s = subjectAt(t)
     if (!s) return OPEN
     const c = checkView(cam, [s], at(t).world, ignore)
     if (c.inside) return c
     const look = lookAt(t)
     if (Math.hypot(cam.x - look.x, cam.y - look.y, cam.z - look.z) < FOLLOW_MIN_DIST) return { ...c, inside: `too close to ${name}` }
-    const crowd = at(t).world.bodies.find((b) => b.entityId !== subjectId && Math.hypot(cam.x - b.x, cam.y - b.y, cam.z - b.z) < b.r + FOLLOW_BODY_CLEAR)
-    return crowd ? { ...c, inside: `right behind ${crowd.name}` } : c
+    const crowd = crowdedBy(at(t).subjects, subjectId, cam, look, lens, shot, nameOf) // fork (set-routines)
+    return crowd ? { ...c, inside: crowd } : c
   }
-  const pathOf = (marks: CameraMarkSpec[]): ((t: number) => V3) => {
+  const pathOf = (marks: CameraMarkSpec[]): ((t: number) => { position: V3; focalLength: number }) => {
     const camMarks: CameraMark[] = marks.map((m, i) => ({ id: `clear${i}`, ...m, position: { ...m.position } }))
     const ev = new ShotEvaluator(scene, { ...shot, camera: { ...shot.camera, marks: camMarks, trackEntityId: subjectId } })
-    return (t) => ev.evaluate(t).camera.position
+    return (t) => ev.evaluate(t).camera
   }
   const variants = viewVariants({ lens: specs[0]!.focalLength })
   const place = (template: CameraMarkSpec, t: number, base: V3, v: ViewVariant): CameraMarkSpec => {
@@ -575,15 +633,34 @@ export function clearFollowMove(
   let firstMove: ViewChoice | null = null
   let prev: ViewVariant | undefined
   const chosen: { mark: CameraMarkSpec; variant: ViewVariant }[] = []
-  for (const m of [...specs].sort((a, b) => a.time - b.time)) {
-    const look = lookAt(m.time)
-    const choice = chooseView((v) => [check(m.time, variantPosition(m.position, look, v))], variants, prev, FOLLOW_VISIBLE)
-    if (!isZeroVariant(choice.variant)) firstMove ??= choice
-    prev = choice.variant
-    chosen.push({ mark: isZeroVariant(choice.variant) ? m : place(m, m.time, m.position, choice.variant), variant: choice.variant })
+  const sorted = [...specs].sort((a, b) => a.time - b.time)
+  // Fork (set-routines): what blocks most of the move (a chase's pursuers behind its runner) gets one steady offset for the
+  // whole move, swung, raised or both, when one keeps every check clear: a camera that dodges mark by mark lurches.
+  const coarse: number[] = []
+  for (let t = 0; t < shot.duration - 1e-9; t += PATH_STEP) coarse.push(t)
+  coarse.push(shot.duration)
+  const clearShare = (marks: CameraMarkSpec[]): number => {
+    const p = pathOf(marks)
+    return coarse.filter((t) => clearCheck(check(t, p(t).position, p(t).focalLength), FOLLOW_VISIBLE)).length / coarse.length
   }
+  if (clearShare(sorted) < STEADY_BELOW) {
+    const steady = variants.filter((v) => v.closer === 1 && !isZeroVariant(v)).find((v) => clearShare(sorted.map((m) => place(m, m.time, m.position, v))) === 1)
+    if (steady) {
+      firstMove = { variant: steady, clear: true, share: 1, blocker: chooseView((v) => [check(sorted[0]!.time, variantPosition(sorted[0]!.position, lookAt(sorted[0]!.time), v), sorted[0]!.focalLength)], [{ turnDeg: 0, raise: 0, closer: 1 }]).blocker }
+      for (const m of sorted) chosen.push({ mark: place(m, m.time, m.position, steady), variant: steady })
+    }
+  }
+  if (chosen.length === 0)
+    for (const m of sorted) {
+      const look = lookAt(m.time)
+      const choice = chooseView((v) => [check(m.time, variantPosition(m.position, look, v), m.focalLength * v.closer)], variants, prev, FOLLOW_VISIBLE)
+      if (!isZeroVariant(choice.variant)) firstMove ??= choice
+      prev = choice.variant
+      chosen.push({ mark: isZeroVariant(choice.variant) ? m : place(m, m.time, m.position, choice.variant), variant: choice.variant })
+    }
   const grid: number[] = []
-  for (let t = 0; t < shot.duration - 1e-9; t += PATH_STEP) grid.push(t)
+  // Fork (set-routines): every frame, so cast that crosses in front between two checks is caught too.
+  for (let t = 0; t < shot.duration - 1e-9; t += Math.min(PATH_STEP, 1 / (shot.fps || 24))) grid.push(t)
   grid.push(shot.duration)
   // An added mark's starting point: between its neighbours in the subject's frame, swinging round it.
   const between = (t: number, a: CameraMarkSpec, b: CameraMarkSpec): { position: V3; focalLength: number } => {
@@ -606,13 +683,14 @@ export function clearFollowMove(
   let added = 0
   for (let i = 0; i < MAX_INSERTS; i++) {
     const path = pathOf(chosen.map((c) => c.mark))
-    const bad = grid.find((t) => !clearCheck(check(t, path(t)), FOLLOW_VISIBLE) && !chosen.some((c) => Math.abs(c.mark.time - t) < 0.06))
+    // Fork (set-routines): a mark may go on any frame without one (the path checks every frame).
+    const bad = grid.find((t) => !clearCheck(check(t, path(t).position, path(t).focalLength), FOLLOW_VISIBLE) && !chosen.some((c) => Math.abs(c.mark.time - t) < Math.min(0.06, 0.5 / (shot.fps || 24))))
     if (bad === undefined) break
     const before = [...chosen].reverse().find((c) => c.mark.time < bad)
     const after = chosen.find((c) => c.mark.time > bad)
-    const start = before && after ? between(bad, before.mark, after.mark) : { position: asked(bad), focalLength: (before ?? after)!.mark.focalLength }
+    const start = before && after ? between(bad, before.mark, after.mark) : { position: asked(bad).position, focalLength: (before ?? after)!.mark.focalLength }
     const look = lookAt(bad)
-    const choice = chooseView((v) => [check(bad, variantPosition(start.position, look, v))], variants, undefined, FOLLOW_VISIBLE)
+    const choice = chooseView((v) => [check(bad, variantPosition(start.position, look, v), start.focalLength * v.closer)], variants, undefined, FOLLOW_VISIBLE)
     if (!isZeroVariant(choice.variant)) firstMove ??= choice
     const template = before?.mark ?? after!.mark
     const mark = place({ ...template, focalLength: start.focalLength, easeIn: 0, easeOut: 0, hold: 0, roll: 0 }, bad, start.position, choice.variant)
@@ -622,7 +700,7 @@ export function clearFollowMove(
   }
   const marks = chosen.map((c) => c.mark)
   const path = pathOf(marks)
-  const share = grid.filter((t) => clearCheck(check(t, path(t)), FOLLOW_VISIBLE)).length / grid.length
+  const share = grid.filter((t) => clearCheck(check(t, path(t).position, path(t).focalLength), FOLLOW_VISIBLE)).length / grid.length
   const moved = chosen.filter((c) => !isZeroVariant(c.variant)).length
   const out: { marks: CameraMarkSpec[]; moved: number; added: number; share: number } & ViewOutcome = { marks, moved, added, share }
   if (moved > 0) {
