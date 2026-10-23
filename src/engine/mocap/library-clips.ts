@@ -335,8 +335,11 @@ function sitRun(body: Body, pos: V3, heading: number, startT: number, endT: numb
 }
 
 /** A motion's name for prompts and lists: its preset's, or the clip's own. */
+/** Fork (qa-fixes): the motion a clip shared by several presets is named by (the library's trip is a trip and fall). */
+const CLIP_NAMES: Record<string, string> = { trip: 'trip-and-fall-flat' }
+
 export function clipMotionName(clipId: string): MotionPreset | undefined {
-  const preset = Object.entries(PRESET_CLIPS).find(([, s]) => s.clip === clipId)?.[0]
+  const preset = CLIP_NAMES[clipId] ?? Object.entries(PRESET_CLIPS).find(([, s]) => s.clip === clipId)?.[0]
   return (preset && MOTION_PRESETS.find((p) => p.id === preset)) || clipMotionPreset(CLIP_MOTION_PREFIX + clipId)
 }
 

@@ -1155,6 +1155,19 @@ Changes in this fork (2026):
   viewport keeps them. Test: `tests/e2e/export-editor-only.spec.ts` (new; a camera inside a
   cone, clean and depth: 172,794 pixel values differed from the frame without the cones
   before, none after).
+- The prompt's action words for stunts, falls and chases (qa-fixes, mocap-qa bug 7;
+  `src/engine/prompt-scene.ts`, `src/engine/mocap/library-clips.ts`): stunts and falls read
+  "does a knocked down", "does a vault obstacle"; they now say what the body does ("is knocked
+  down", "vaults an obstacle", "trips and falls flat", "skids to a stop", "lunges into a
+  tackle"; a table with the plural for several subjects). A bot's trip clip is named as the
+  trip and fall it is. A move runs on through a change of pace (jog, run), a pause of up to
+  0.75 s and the motions played on the way, as long as it keeps its direction, named by the
+  gait that covers most of it; a motion's own posed travel is the motion's phrase, not a
+  move. Pursuers in a line all chase the runner in front ("COP 1 and COP 2 chase RUNNER";
+  the second used to chase the first), each named once, and the same subject doing the same
+  again says it once. QA's chase (seed 7, caught, bots) went from 16 sentences with "RUNNER
+  does a knocked down" and runs back and forth to 8, every cast member in the action. Test:
+  `tests/unit/prompt-words.test.ts` (new; all 5 fail on 7d9e5c1's sources).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

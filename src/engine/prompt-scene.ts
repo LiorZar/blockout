@@ -241,6 +241,8 @@ interface ActionEvent {
   entity?: Entity
   name: string
   phrase: string
+  /** Fork (qa-fixes): the phrase for several subjects, when `pluralPhrase` can't make it. */
+  many?: string
 }
 
 /** A fighter for the solver, with the weapons in its hands — as the store's `fighterInput`. */
@@ -434,11 +436,53 @@ function recognizeMotions(marks: ActorMark[]): { t: number; preset: MotionPreset
   return found
 }
 
-function motionPhrase(preset: MotionPreset): string {
+/**
+ * Fork (qa-fixes): stunts, falls and the like as what the body does, for
+ * one subject and several ("does a knocked down" read as nonsense).
+ */
+const MOTION_VERBS: Record<string, [string, string]> = {
+  'knocked-down': ['is knocked down', 'are knocked down'],
+  'knockdown-fall': ['is knocked down', 'are knocked down'],
+  'ko-collapse': ['is knocked out', 'are knocked out'],
+  'tackle-lunge': ['lunges into a tackle', 'lunge into a tackle'],
+  'hands-on-hips': ['stands with hands on hips', 'stand with hands on hips'],
+  'dive-dodge': ['dives aside', 'dive aside'],
+  'hit-reaction-head': ['takes a blow to the head', 'take a blow to the head'],
+  'hit-reaction-body': ['takes a blow to the body', 'take a blow to the body'],
+  'stumble-back-fall': ['stumbles back and falls', 'stumble back and fall'],
+  'roll-dodge': ['rolls aside', 'roll aside'],
+  'dazed-wobble': ['wobbles, dazed', 'wobble, dazed'],
+  'fall-backwards': ['falls backwards', 'fall backwards'],
+  'freefall-flail': ['flails in free fall', 'flail in free fall'],
+  crawl: ['crawls', 'crawl'],
+  jump: ['jumps', 'jump'],
+  'dive-roll': ['dives into a roll', 'dive into a roll'],
+  'stumble-trip': ['stumbles', 'stumble'],
+  'trip-and-fall-flat': ['trips and falls flat', 'trip and fall flat'],
+  'thrown-backward': ['is thrown backward', 'are thrown backward'],
+  'blown-back-explosion': ['is blown back by a blast', 'are blown back by a blast'],
+  'dragged-by-feet': ['is dragged by the feet', 'are dragged by the feet'],
+  'hang-from-ledge': ['hangs from a ledge', 'hang from a ledge'],
+  'climb-up-ledge': ['climbs up a ledge', 'climb up a ledge'],
+  'vault-obstacle': ['vaults an obstacle', 'vault an obstacle'],
+  'slide-feet-first': ['slides in feet first', 'slide in feet first'],
+  'slide-under': ['slides under an obstacle', 'slide under an obstacle'],
+  'leap-gap': ['leaps a gap', 'leap a gap'],
+  'hard-landing-crouch': ['lands hard in a crouch', 'land hard in a crouch'],
+  'stagger-explosion-shield': ['staggers from a blast behind a shield', 'stagger from a blast behind shields'],
+  'crawl-fast-military': ['crawls fast on the belly', 'crawl fast on their bellies'],
+  'wall-press-peek': ['presses to a wall and peeks', 'press to a wall and peek'],
+  'sprint-skid-stop': ['skids to a stop', 'skid to a stop'],
+  'ledge-shimmy': ['shimmies along a ledge', 'shimmy along a ledge']
+}
+
+function motionPhrase(preset: MotionPreset): { phrase: string; many?: string } {
+  const verbs = MOTION_VERBS[preset.id]
+  if (verbs) return { phrase: verbs[0], many: verbs[1] }
   const words = motionWords(preset.name)
-  if (preset.category === 'dance') return `dances the ${words}`
-  if (preset.category === 'fight' && strikeImpacts(preset.id).length > 0) return `throws ${article(words)} ${words}`
-  return `does ${article(words)} ${words}`
+  if (preset.category === 'dance') return { phrase: `dances the ${words}` }
+  if (preset.category === 'fight' && strikeImpacts(preset.id).length > 0) return { phrase: `throws ${article(words)} ${words}` }
+  return { phrase: `does ${article(words)} ${words}` }
 }
 
 /* ------------------------------ travel + chases ---------------------------- */
@@ -451,6 +495,8 @@ interface Segment {
   to: V3
   gait: GaitId
   vehicle: boolean
+  /** Fork (qa-fixes): where it is at the ends of its legs (a move through several legs isn't straight). */
+  path: { t: number; x: number; z: number }[]
 }
 
 function travelVerb(e: Entity, gait: GaitId): string {
@@ -480,36 +526,75 @@ function screenDirection(dx: number, dz: number, pan: number): string {
 
 const MIN_TRAVEL = 0.75
 
+/** Fork (qa-fixes): legs this short are no travel (m); a pause this long (s) or less, or a turn under ~37°, doesn't end a move. */
+const LEG_MIN = 0.05
+const MERGE_GAP = 0.75
+const MERGE_COS = 0.8
+
+/** Gaits one move runs through: a jog and a run; a motion's own legs (stand, gesture, fall) join any move. */
+const FAST = new Set<GaitId>(['jog', 'run'])
+const ANY = new Set<GaitId>(['stand', 'gesture', 'fall'])
+
+/**
+ * An entity's moves: its legs (fork, qa-fixes: through a change of pace, a
+ * short slowdown or a motion played on the way, as long as it keeps its
+ * direction), named by the gait that covers most of the way.
+ */
 function segmentsOf(e: Entity, marks: ActorMark[], duration: number): Segment[] {
-  const out: Segment[] = []
+  const out: (Segment & { by: Map<GaitId, number>; own: boolean })[] = []
   const vehicle = assetSpec(e.assetId).category === 'vehicles'
+  const joins = (a: GaitId, b: GaitId): boolean => a === b || ANY.has(a) || ANY.has(b) || (FAST.has(a) && FAST.has(b))
   for (let i = 1; i < marks.length; i++) {
     const p = marks[i - 1]!
     const c = marks[i]!
     const t0 = p.time + p.hold
     if (t0 >= duration) break
-    if (Math.hypot(c.position.x - p.position.x, c.position.z - p.position.z) < MIN_TRAVEL) continue
+    const dx = c.position.x - p.position.x
+    const dz = c.position.z - p.position.z
+    const d = Math.hypot(dx, dz)
+    if (d < LEG_MIN) continue
     const last = out[out.length - 1]
     const gait = vehicle ? 'run' : c.gait
-    if (last && last.gait === gait && Math.abs(last.t1 - t0) < 1e-6) {
-      last.t1 = c.time
-      last.to = c.position
-      continue
+    // A motion's own travel (its posed keyframes): the motion's phrase says it.
+    const own = !vehicle && ANY.has(gait) && !!c.posedMove
+    if (last && t0 - last.t1 <= MERGE_GAP + 1e-6 && [...last.by.keys()].every((g) => joins(g, gait))) {
+      const lx = last.to.x - last.from.x
+      const lz = last.to.z - last.from.z
+      const ll = Math.hypot(lx, lz)
+      if (ll < 1e-9 || (lx * dx + lz * dz) / (ll * d) > MERGE_COS) {
+        last.t1 = c.time
+        last.to = c.position
+        last.path.push({ t: c.time, x: c.position.x, z: c.position.z })
+        last.by.set(gait, (last.by.get(gait) ?? 0) + d)
+        last.own &&= own
+        continue
+      }
     }
-    out.push({ e, t0, t1: c.time, from: p.position, to: c.position, gait, vehicle })
+    out.push({ e, t0, t1: c.time, from: p.position, to: c.position, gait, vehicle, by: new Map([[gait, d]]), own, path: [{ t: t0, x: p.position.x, z: p.position.z }, { t: c.time, x: c.position.x, z: c.position.z }] })
   }
   return out
+    .filter((s) => !s.own && Math.hypot(s.to.x - s.from.x, s.to.z - s.from.z) >= MIN_TRAVEL)
+    .map(({ by, own: _, ...s }) => {
+      const moving = [...by].filter(([g]) => !ANY.has(g))
+      const main = (moving.length > 0 ? moving : [...by]).sort((a, b) => b[1] - a[1])[0]![0]
+      return { ...s, gait: main }
+    })
 }
 
 function at(s: Segment, t: number): { x: number; z: number } {
-  const f = s.t1 > s.t0 ? Math.min(1, Math.max(0, (t - s.t0) / (s.t1 - s.t0))) : 1
-  return { x: s.from.x + (s.to.x - s.from.x) * f, z: s.from.z + (s.to.z - s.from.z) * f }
+  const p = s.path
+  const k = p.findIndex((q) => q.t >= t)
+  if (k <= 0) return k === 0 ? { x: p[0]!.x, z: p[0]!.z } : { x: p[p.length - 1]!.x, z: p[p.length - 1]!.z }
+  const a = p[k - 1]!
+  const b = p[k]!
+  const f = b.t > a.t ? (t - a.t) / (b.t - a.t) : 1
+  return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f }
 }
 
 /**
  * Leader → followers: running the same way on the leader's path (within a
  * stride or two of it), overlapping in time, behind it. Each follower chases
- * its nearest leader.
+ * the one at the front of its line.
  */
 function chases(segs: Segment[]): Map<Segment, Segment[]> {
   const pairs: { leader: Segment; follower: Segment; gap: number }[] = []
@@ -538,13 +623,24 @@ function chases(segs: Segment[]): Map<Segment, Segment[]> {
       pairs.push({ leader, follower, gap: Math.abs(along) })
     }
   }
-  const leads = new Map<Segment, Segment[]>()
-  const following = new Set<Segment>()
-  for (const { leader, follower } of pairs.sort((x, y) => x.gap - y.gap)) {
-    if (following.has(follower) || following.has(leader) || leads.has(follower)) continue
-    following.add(follower)
-    leads.set(leader, [...(leads.get(leader) ?? []), follower])
+  // Fork (qa-fixes): pursuers in a line (COP 2 behind COP 1 behind RUNNER) all chase the one in front.
+  const ahead = new Map<Segment, Segment>()
+  for (const { leader, follower } of pairs.sort((x, y) => x.gap - y.gap)) if (!ahead.has(follower)) ahead.set(follower, leader)
+  const head = (s: Segment): Segment => {
+    const seen = new Set<Segment>()
+    let h = s
+    while (ahead.has(h) && !seen.has(h)) {
+      seen.add(h)
+      h = ahead.get(h)!
+    }
+    return h
   }
+  const leads = new Map<Segment, Segment[]>()
+  for (const follower of ahead.keys()) {
+    const leader = head(follower)
+    if (leader !== follower) leads.set(leader, [...(leads.get(leader) ?? []), follower])
+  }
+  for (const followers of leads.values()) followers.sort((a, b) => segs.indexOf(a) - segs.indexOf(b))
   return leads
 }
 
@@ -557,7 +653,7 @@ function travelEvents(scene: Scene, shot: Shot, ev: ShotEvaluator, skip: Set<str
     if (!e || e.excludeFromExport || skip.has(e.id) || (e.heldBy && weaponSpec(e.assetId))) continue
     const marks = [...track.marks].sort((a, b) => a.time - b.time)
     for (const { t, preset } of recognizeMotions(marks)) {
-      if (t < shot.duration) events.push({ t, entity: e, name: nameOf(e), phrase: motionPhrase(preset) })
+      if (t < shot.duration) events.push({ t, entity: e, name: nameOf(e), ...motionPhrase(preset) })
     }
     segs.push(...segmentsOf(e, marks, shot.duration))
   }
@@ -569,7 +665,8 @@ function travelEvents(scene: Scene, shot: Shot, ev: ShotEvaluator, skip: Set<str
     const dir = screenDirection(s.to.x - s.from.x, s.to.z - s.from.z, panAt(s))
     const chasers = leads.get(s)
     if (chasers) {
-      const names = chasers.map((c) => nameOf(c.e))
+      // Fork (qa-fixes): a pursuer whose run breaks in two is named once.
+      const names = [...new Set(chasers.map((c) => c.e))].map((e) => nameOf(e))
       const who = names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names[0]!
       events.push({ t: Math.min(s.t0, ...chasers.map((c) => c.t0)), name: who, phrase: `${names.length > 1 ? 'chase' : 'chases'} ${nameOf(s.e)} ${dir}` })
     } else events.push({ t: s.t0, entity: s.e, name: nameOf(s.e), phrase: `${travelVerb(s.e, s.gait)} ${dir}` })
@@ -584,21 +681,25 @@ function actionLines(scene: Scene, shot: Shot, ev: ShotEvaluator): string[] {
     .sort((a, b) => a.e.t - b.e.t || a.k - b.k)
     .map(({ e }) => e)
   // The same move by several subjects within half a second is one sentence ("4 men and 4 women dance the robot").
-  const grouped: { t: number; phrase: string; name: string; members: Entity[] }[] = []
+  const grouped: { t: number; phrase: string; many?: string; name: string; members: Entity[] }[] = []
   for (const e of events) {
     const g = e.entity
       ? grouped.find((x) => x.members.length > 0 && x.phrase === e.phrase && Math.abs(x.t - e.t) <= 0.5 && !x.members.includes(e.entity!))
       : undefined
     if (g) g.members.push(e.entity!)
-    else grouped.push({ t: e.t, phrase: e.phrase, name: e.name, members: e.entity ? [e.entity] : [] })
+    else grouped.push({ t: e.t, phrase: e.phrase, many: e.many, name: e.name, members: e.entity ? [e.entity] : [] })
   }
   const lines: string[] = []
   let prev: Entity | undefined
+  let prevPhrase = ''
   for (const g of grouped) {
     const solo = g.members.length === 1 ? g.members[0] : undefined
+    // Fork (qa-fixes): the same subject doing the same again says it once.
+    if (solo && prev === solo && prevPhrase === g.phrase) continue
+    prevPhrase = g.phrase
     if (solo && prev === solo) {
       lines[lines.length - 1] = `${lines[lines.length - 1]!.slice(0, -1)}, then ${g.phrase}.`
-    } else if (g.members.length > 1) lines.push(`${capitalize(groupName(g.members))} ${pluralPhrase(g.phrase)}.`)
+    } else if (g.members.length > 1) lines.push(`${capitalize(groupName(g.members))} ${g.many ?? pluralPhrase(g.phrase)}.`)
     else lines.push(`${capitalize(g.name)} ${g.phrase}.`)
     prev = solo
   }
