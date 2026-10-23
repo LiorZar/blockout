@@ -30,6 +30,15 @@ call's camera marks dumped; `diag.spec.ts` drives a snapshot's built app). Every
    a coverage: the keys, the clones and the commit. The set's boxes are read on the main thread (they come off built
    geometry) and travel as data.
 4. Commit frame, BoxHelper, Deliver: decided from their own profiles (below), one fix each.
+5. **T2: share, don't rebuild, and spend the one-off costs while idle.** Marks share their tape per colour and number
+   per index (time labels per text and colour), made by the builders' own functions and cloned, so they look as
+   before. Programs: compiled (`compileAsync`) and taken into use (`getUniforms`, which links) in idle slices, once per
+   renderer and fog, for the overlay, the selection box and the gizmo: this app has no parallel shader compile, so
+   `compileAsync` alone only moved the stall. Loop warps: measured for both bots in idle slices once the library is in
+   (a pure cache, the same numbers). Exact speedups only (`contactLow` per-bone points).
+6. **Profiles are lined up on a marker.** The diag's `p0` came from a CDP round trip after `Profiler.start` (off by
+   120–280 ms under load, which put the commit's work in the wrong task); a named 3 ms busy loop at a known page time
+   now lines them up (`prof-align.mjs`).
 
 ## Tasks and targets
 
@@ -68,3 +77,26 @@ call's camera marks dumped; `diag.spec.ts` drives a snapshot's built app). Every
   An export of a bot fight with punch-in coverage: reference and depth mp4 equal to HEAD's (8d1a3b01…, fa74c7ab…).
   Typecheck, lint, `Test Files 103 passed (103)`; smoke `6 passed`; e2e mocap-bots + fight-camera + fight-worker
   `35 passed`.
+- **T2** (snapshots of `387a8b3` / `c945991` + the T2 files, the built app, `diag.spec.ts`; MCP `stage_fight` of the
+  combos fight, the commit task + the first frame's, ms):
+  - Before (HEAD with T1, `t1e`, load 26–57 %): 207 + 298; with coverage master 190 + 198. Aligned profiles of the
+    same work: the commit = `rebuildOverlay` (`markMesh` ×~800: canvases, materials), `applyTime`'s first evaluate
+    measuring the bots' loop warps (`measureWarp` 44–49 ms), the selected bots' boxes (three's skinning of every
+    vertex); the first frame = programs linked on first use (`getProgramInfoLog` 55–99 ms).
+  - T2 alone (`t2d`, load 42–66 %): 180 + 97 (+ 50); with coverage 154 + 124. What is left over 100 ms is the selection
+    box's per-vertex skinning in the commit (three's `computeBoundingBox`, 20 + 28 ms in one commit): T3.
+  - T2 + T3 (`t3d`, two runs, load 56–87 %): 89 + 59 and 86 + 63; with coverage 77 + 72 and 72 + 75. No program
+    linked at the staging (`new programs: none`, `getProgramInfoLog` gone from the frame), `applyTime` 49 → 5 ms.
+    Then 86–112 ms over four more runs (`t3e`, `t4a`, load 32–77 %): a session's first ~400 mark numbers are
+    canvases (`markMesh` 19–29 ms) in the commit. **My call:** past 24 new numbers in one task, the rest are made 48
+    an idle slice and join their marks (still shown) a moment later; an edit's few new numbers stay at once.
+  - T2 + T3 with that (`t3f`, two runs, load 36–93 %): 74 + 59 and 70 + 54. Fight-worker e2e (T3's assertion):
+    70 + 89. Still in the commit: the time labels of the selected lanes (`labelSprite`, 13–18 ms), the clones.
+  - `measureWarp`, the 18 clips on both bots (`warps.probe.ts`): 554 → 244 ms (load 33–42 % → 63–68 %), every warp
+    byte-equal.
+  - Checks: `tests/unit/overlay-cache.test.ts` (new: shared resources, numbers past 24 a task made idle, the warm-up
+    once per renderer and fog, each program taken into use); on `c945991` + T2 (`t2f-heavy.log`): the 30 solve dumps
+    byte-equal to base, smoke `6 passed`, the fork e2e set `89 passed`, an export of a covered bot fight equal to
+    T1's (8d1a3b01…, fa74c7ab…); the gate on `dceef2d` + T2 (`t2g-heavy.log`; t2f's hit a load timeout in
+    `fight-coverage.test.ts`, 22 passed alone). The fight-worker e2e assertion on the commit frames comes with T3
+    (T2 alone doesn't meet it: 144 + 89 ms in t2f's run).

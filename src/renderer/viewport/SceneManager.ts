@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports, a night fill on the cast, a depth range measured on the frame's own matrices) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports, a night fill on the cast, a depth range measured on the frame's own matrices, marks sharing their resources and the overlay's shaders compiled ahead) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -36,7 +36,8 @@ import { layCameraMove } from '../camera-move' // fork (street-kit)
 import type { Entity, EntityState, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
 import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
-import { buildAsset, markMesh, labelSprite, type AnimInput, type BuiltAsset } from './builders'
+import { buildAsset, labelSprite, type AnimInput, type BuiltAsset } from './builders'
+import { isShared, sharedLabelSprite, sharedMarkMesh, warmOverlay } from './overlay-cache' // fork (main-thread)
 import { heldWeaponMatrix, steadyArm } from './hold'
 import { canHoldWeapons, weaponSpec, type HeldWeapon } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
@@ -450,6 +451,8 @@ export class SceneManager {
 
     this.rebuildOverlay()
     this.applyEnvironment()
+    // Fork (main-thread): the overlay's and the selection's shaders compiled in the background, not on the frame a staged fight's marks first show.
+    warmOverlay(this.renderer, this.scene, this.freeCam, [this.selectionBox, this.transform.getHelper()])
     this.syncScans()
     this.applyTime(s.time)
     this.syncSelection()
@@ -675,15 +678,16 @@ export class SceneManager {
   private rebuildOverlay(): void {
     // This runs on every mutation — dispose or the mark sprites' canvas
     // textures and path geometries pile up on the GPU all session.
+    // Fork (main-thread): marks share their tape and number (overlay-cache.ts): those stay.
     for (const o of this.markObjects) {
       o.parent?.remove(o)
       o.traverse((child) => {
         if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
-          child.geometry.dispose()
+          if (!isShared(child.geometry)) child.geometry.dispose()
           const mats = Array.isArray(child.material) ? child.material : [child.material]
-          for (const m of mats) m.dispose()
+          for (const m of mats) if (!isShared(m)) m.dispose()
         }
-        if (child instanceof THREE.Sprite) {
+        if (child instanceof THREE.Sprite && !isShared(child.material)) {
           child.material.map?.dispose()
           child.material.dispose()
         }
@@ -701,7 +705,7 @@ export class SceneManager {
         const color = entity?.label?.color ?? '#f5a524'
         const sorted = [...track.marks].sort((a, b) => a.time - b.time)
         sorted.forEach((mark, i) => {
-          const m = markMesh(color, i + 1)
+          const m = sharedMarkMesh(color, i + 1)
           m.position.set(mark.position.x, mark.position.y + 0.01, mark.position.z)
           m.userData.markId = mark.id
           m.userData.entityId = track.entityId
@@ -712,7 +716,7 @@ export class SceneManager {
     }
     const sortedCam = [...shot.camera.marks].sort((a, b) => a.time - b.time)
     sortedCam.forEach((mark, i) => {
-      const m = markMesh('#7dd3fc', i + 1)
+      const m = sharedMarkMesh('#7dd3fc', i + 1)
       m.position.set(mark.position.x, mark.position.y + 0.01, mark.position.z)
       m.userData.markId = mark.id
       m.userData.entityId = 'camera'
@@ -766,7 +770,7 @@ export class SceneManager {
           const mats = Array.isArray(child.material) ? child.material : [child.material]
           for (const m of mats) m.dispose()
         }
-        if (child instanceof THREE.Sprite) {
+        if (child instanceof THREE.Sprite && !isShared(child.material)) {
           child.material.map?.dispose()
           child.material.dispose()
         }
@@ -815,7 +819,7 @@ export class SceneManager {
           .find((b) => b.id === this.shot!.blockingTakeId)
           ?.tracks.find((t) => t.entityId === laneId)?.marks ?? [])
     for (const mark of [...marks].sort((a, b) => a.time - b.time)) {
-      const sprite = labelSprite(`t=${mark.time.toFixed(1)}s`, isCam ? '#7dd3fc' : (path?.color ?? '#f5a524'))
+      const sprite = sharedLabelSprite(`t=${mark.time.toFixed(1)}s`, isCam ? '#7dd3fc' : (path?.color ?? '#f5a524')) // fork (main-thread)
       sprite.position.set(mark.position.x, mark.position.y + 0.55, mark.position.z)
       sprite.scale.multiplyScalar(0.8)
       this.pathsGroup.add(sprite)

@@ -1553,6 +1553,25 @@ Changes in this fork (2026):
   Tests: `tests/unit/coverage-memo.test.ts` (new), `fight-offthread.test.ts`, `fight-solve-memo.test.ts` (extended),
   e2e `fight-worker.spec.ts` (MCP `fight_coverage` in the worker, equal to the main thread's).
 
+- Staging commit frame (main-thread T2; `src/renderer/viewport/overlay-cache.ts` (new), `src/renderer/viewport/SceneManager.ts`,
+  `src/engine/mocap/gait-clips.ts`, `src/renderer/mocap/library.ts`): staging a bot fight cost its commit and first
+  frame 207 + 298 ms (HEAD with T1, MCP `stage_fight` of the combos fight; 190 + 198 ms with coverage master). Marks
+  share their resources: every mark's tape (two bars and their material) per colour and its number (texture and sprite
+  material) per index, a selected lane's time labels per text and colour, each made by the builders' own `markMesh` /
+  `labelSprite` once and cloned; a rebuild never disposes the shared ones. A number is a canvas the first time: past
+  24 new ones in one task (a staging's hundreds) they are made 48 an idle slice and join the marks still shown then.
+  `warmOverlay` compiles the overlay's programs and the selection box's and gizmo's (`compileAsync`, once per renderer and fog) and takes each into use one
+  per idle slice: without KHR_parallel_shader_compile three's link stalls the first frame that draws with a program
+  (88–99 ms at a staging). A bot's travelling loops are measured (`clipWarp`, cached) one per idle slice once the
+  library is in, so the commit's first evaluate measures none (`applyTime` 49 → 5 ms), and `measureWarp`'s floor
+  check scans each bone's own points (the 18 clips: 554 → 244 ms, the warps byte-equal). Built app, the same staging
+  (`.maestro/main-thread/diag.spec.ts`, load 42–87 %): with T2 alone 180 + 97 ms (154 + 124 with coverage), the rest
+  being the selected bots' boxes skinning every vertex in the commit (T3); with T3, 74 + 59 and 70 + 54 ms (with
+  coverage master 77 + 72 and 72 + 75, before the numbers' idle slices), no task over 100 ms from the call to the first
+  settled frame and no program linked then.
+  Editor chrome only: the fight solves (30 dumps) byte-equal, an export of a covered bot fight equal.
+  Tests: `tests/unit/overlay-cache.test.ts` (new).
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.

@@ -19,7 +19,7 @@ import type { GaitId } from '../types'
 import { clipPose, clipSample, mocapClip, mocapClipPose, mocapClipVersion, poseLowY, type MocapClip } from './clip'
 import type { MocapDims, MocapPose } from './fk'
 import { mocapVersion } from './registry'
-import { BONE_INDEX, type MocapBone } from './rig'
+import { BONE_INDEX, type MocapBone, type MocapPoint, type MocapRig } from './rig'
 
 /** The library loop of each gait (still, moving where they differ, and on a seat prop for the sit). */
 export const GAIT_CLIPS: Record<GaitId, { still: string; moving?: string; seated?: string }> = {
@@ -68,10 +68,21 @@ const CONTACTS: MocapBone[][] = [
   ['RightLeg']
 ]
 
+/** Fork (main-thread): a rig's points on a set of bones, in the rig's order (contactLow's scan without the other bones' points). */
+const ON_BONES = new WeakMap<MocapRig, Map<string, MocapPoint[]>>()
+
+function pointsOn(rig: MocapRig, bones: number[]): MocapPoint[] {
+  let by = ON_BONES.get(rig)
+  if (!by) ON_BONES.set(rig, (by = new Map()))
+  const key = bones.join(',')
+  let pts = by.get(key)
+  if (!pts) by.set(key, (pts = rig.points.filter((pt) => bones.includes(pt.bone))))
+  return pts
+}
+
 function contactLow(m: MocapDims, pose: MocapPose, bones: number[]): number {
   let low = Infinity
-  for (const pt of m.rig.points) {
-    if (!bones.includes(pt.bone)) continue
+  for (const pt of pointsOn(m.rig, bones)) {
     const P = pose.P[pt.bone]!
     const [x, y, z, w] = pose.G[pt.bone]!
     const o = pt.off

@@ -13,7 +13,8 @@
 import { useSyncExternalStore } from 'react'
 import * as THREE from 'three'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
-import { registerMocapClip } from '@engine/mocap/clip'
+import { mocapClip, mocapClipIds, registerMocapClip } from '@engine/mocap/clip'
+import { clipWarp } from '@engine/mocap/gait-clips'
 import { isMocapAsset, mocapLoadDone, mocapRig, registerMocapBody, trackMocapLoad } from '@engine/mocap/registry'
 import type { MocapManifest, MocapManifestClip } from '../../shared/mocap-library'
 import { relayMocap } from '../fight-offthread'
@@ -138,10 +139,29 @@ export function loadMocapLibrary(): Promise<void> {
     }
     console.log(`[mocap] library: ${manifest.characters.length} characters, ${manifest.clips.length} clips, ${ok} sampled`)
     notify()
+    warmClipWarps()
   })()
   // Fork (qa-fixes, mocap-qa bug 3): tools that cast or move bots wait for it (control/handler.ts, store.ts fightNotice).
   if (fresh) trackMocapLoad(loading)
   return loading
+}
+
+/**
+ * Fork (main-thread): each bot's in-place loops measured for travel (`clipWarp`, cached) one per idle slice once the
+ * library is in, so the first frame that plays one (a staged fight's commit) doesn't measure it. The same numbers,
+ * earlier.
+ */
+function warmClipWarps(): void {
+  if (typeof requestIdleCallback !== 'function') return
+  const jobs = [...TEMPLATES.keys()].flatMap((assetId) => mocapClipIds().map((id) => [assetId, mocapClip(id)!] as const)).filter(([, c]) => c.inPlace)
+  const step = (): void => {
+    const job = jobs.shift()
+    if (!job) return
+    const rig = mocapRig(job[0])
+    if (rig) clipWarp({ rig, k: 1 }, job[1], job[0])
+    requestIdleCallback(step)
+  }
+  requestIdleCallback(step)
 }
 
 /** Fork (qa-fixes): whether the library has finished loading (bodies and every clip), the bots loaded and the clips sampled. */
