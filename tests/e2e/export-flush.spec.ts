@@ -108,12 +108,28 @@ test('a GL flush after every draw never changes the top-down diagram', async () 
 
 test('a GL flush after every draw never changes a clean frame', async () => {
   const frame = 'window.__blockout.renderRawForTest(0.5, 640, 360)'
-  for (let i = 0; i < 3; i++) {
-    await page.evaluate(`void (window.__plainFrame = ${frame})`)
-    await flushAfterEveryDraw(true)
-    await page.evaluate(`void (window.__flushedFrame = ${frame})`)
-    await flushAfterEveryDraw(false)
-    const diffs = await page.evaluate('window.__plainFrame.filter((v, k) => v !== window.__flushedFrame[k]).length')
-    expect(diffs).toBe(0)
+  // Fork (export-look T4): on ANGLE / D3D11 the GPU's floats can move by one ulp from one moment to the
+  // next (while the page composites, and as the GPU warms up after an idle gap), flipping a value now and
+  // then (docs/plans/2026-10-23-export-look.md). A plain frame on each side of the flushed one tells
+  // whether the GPU held still across the comparison; only such a comparison counts, and it is exact.
+  await page.evaluate('window.__blockout_scene.suspendLive = true')
+  try {
+    for (let i = 0; i < 3; i++) {
+      let compared = false
+      for (let attempt = 0; attempt < 8 && !compared; attempt++) {
+        await page.evaluate(`void (window.__plainFrame = ${frame})`)
+        await flushAfterEveryDraw(true)
+        await page.evaluate(`void (window.__flushedFrame = ${frame})`)
+        await flushAfterEveryDraw(false)
+        await page.evaluate(`void (window.__plainAfter = ${frame})`)
+        if (!(await page.evaluate('window.__plainFrame.every((v, k) => v === window.__plainAfter[k])'))) continue
+        compared = true
+        const diffs = await page.evaluate('window.__plainFrame.filter((v, k) => v !== window.__flushedFrame[k]).length')
+        expect(diffs).toBe(0)
+      }
+      expect(compared, 'the GPU held still across one of 8 comparisons').toBe(true)
+    }
+  } finally {
+    await page.evaluate('window.__blockout_scene.suspendLive = false')
   }
 })

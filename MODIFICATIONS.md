@@ -1213,6 +1213,16 @@ Changes in this fork (2026):
   back from `list_export_profiles`; previs profiles (hosted models) no longer get a ComfyUI
   workflow. No generation was started. Test: `tests/unit/profiles-models.test.ts` (new; 9 of 10
   fail on e39ae56), `tests/e2e/export-look.spec.ts` (extended).
+- `export-flush.spec.ts` compares a frame only while the GPU holds still (export-look T4;
+  `tests/e2e/export-flush.spec.ts`, fork test): on ANGLE / D3D11 (RTX 3070 Ti) a render's floats
+  move by one ulp while the page composites and as the GPU warms up after an idle gap, so the
+  plain-vs-flushed comparison of one frame flipped a value now and then (the edf6dc0 build too,
+  more often with the ACES look). Each comparison now renders a plain frame on both sides of the
+  flushed one with the viewport stopped; when the two plain frames differ the GPU moved and the
+  comparison is retaken, and when they match the flushed frame must match exactly. Real spec
+  runs: 4 of 6 failed at HEAD, 5 of 6 with a 2.5 s settle instead, 0 of 8 bracketed. A quiet
+  export (settle, no progress repaint) made double exports differ more and was dropped; the
+  finding is a `BACKLOG.md` Issue.
 - Choreographer routines stay on the set (set-routines T1; `src/engine/routine-set.ts` and
   `src/renderer/routine-set.ts` new, `src/engine/chase-tracks.ts`, `src/engine/choreography.ts`,
   `src/renderer/store.ts`, `src/renderer/control/handler.ts`, `mcp/tools.json`): the chase ran its serpentine along

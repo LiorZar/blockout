@@ -45,3 +45,9 @@ Before/after numbers per task; `.maestro/export-look/SHEET.png` looked at; one f
 
 On this machine (ANGLE D3D11, RTX 3070 Ti), a render's float results move by 1 ulp while the page composites anything (the viewport, a CSS animation, a visible canvas), for ~2.2 s after it stops; idle, repeated renders are bit-stable. 8-bit output flips ±1 on a handful of pixels: about 2 values per 1080p frame with no tone mapping, about 9 with ACES. The edf6dc0 build's exports already differ between runs at the raw level (2 of 2 runs, the first ~1 s of some exports); with ACES the difference sometimes survives x264 (day street: 1 frame of 48, ≤ 3 levels, ~170 pixels). `.maestro/export-look/det*.mjs`.
 
+## T4: the export-flush flake (crd2's ruling: keep T1, log the finding, make the spec exact)
+
+- `export-flush.spec.ts:109` compares a plain and a flushed render of one frame taken a moment apart while the live viewport draws, so the finding above flips a value now and then (about 1 run in 3 on HEAD per crd2; my probe, 40 repeats: edf6dc0 0/40, HEAD 0/40 as the test does it, 2/40 with both renders in one task, 0/40 on a settled page). ACES raises the rate; the mechanism predates it.
+- Option (b), a quiet export (stop the viewport, wait 2.5 s, no progress repaint while rendering), made double exports worse: raw frames 0–25 differed between exports every time (stage and Deliver mode) and the mp4s in every frame. The first ~1 s of heavy rendering after an idle gap varies as well. Dropped.
+- A settled page (viewport stopped, 2.5 s wait) didn't fix the spec either: the real spec failed 5 of 6 runs with it, 4 of 6 at HEAD (the wait adds the warm-up transition).
+- Fix: the spec brackets each comparison with a plain frame on either side of the flushed one (viewport stopped). If the two plain frames differ, the GPU moved during the comparison and it is taken again (up to 8 times); if they match, the flushed frame must match exactly. 8 of 8 runs pass.
