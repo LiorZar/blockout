@@ -95,6 +95,17 @@ each on fresh inputs, already cached where it repeats.
   this setup). Left after the commit (not the solve): the new fight's scene (its marks
   overlay, `markMesh` 55 ms), a shader's first use (136 ms) and the bots' bounds (below):
   tasks of 210 / 313 ms on the first two frames.
+- **T3** (`.maestro/fight-speed/t3b-summary.txt`, snapshot of HEAD 9078996 + the T3 files
+  only, the lock): typecheck, lint clean; `fight-offthread` (12 tests: + a prompt read null
+  then the prompt with nothing solved here, a solve read twice asked once, a refused solve
+  solved here next, MCP `set_shot` → `get_fight` through the control handler with no solve
+  here), `fight-solve-memo`, `mocap-fights-store`, `fight-props-store`: `Test Files 4 passed
+  (4)`; build; e2e `fight-worker` + `mocap-bots`: `16 passed`. MCP `set_shot` re-solving the
+  combos fight: committed after 3.6 s, 56 frames, worst gap 82 ms, longest task 81 ms; the
+  Deliver prompt of a fight staged among props shows "Solving the fight…" first, then the
+  prompt. My call: the Timeline's and Inspector's duration / fps fields still re-solve on the
+  main thread (a controlled number field typed into can't wait for the worker; a two-step
+  edit is Lior's call).
 - **Found on the way**: every frame, each bot mesh's bounds are recomputed by skinning every
   vertex on the CPU (`mocap/body.ts` clears them each frame so measures are of the pose;
   three's depth sort then recomputes the sphere; a selected bot's box helper the box):

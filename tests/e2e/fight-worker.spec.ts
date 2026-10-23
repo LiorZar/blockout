@@ -3,11 +3,12 @@
  * docs/plans/2026-10-23-fight-speed.md): the built app reads the user's
  * local Mixamo library (as mocap-bots.spec.ts does), MCP stages a Y Bot vs
  * X Bot combos fight while the page records its long tasks and frames, and
- * the fight the worker solved is the fight the main thread solves. The bar
- * is the solve's: every main-thread task until the fight is committed (the
- * render's frames go on meanwhile); the commit and the first frames of the
- * new fight (its marks overlay, a shader's first use) are logged.
- * Skipped without the library (it is never in the repo).
+ * the fight the worker solved is the fight the main thread solves; MCP
+ * set_shot re-solves it the same way, and the Deliver prompt's own solve runs
+ * in the worker. The bar is the solve's: every main-thread task until the
+ * fight is committed (the render's frames go on meanwhile); the commit and
+ * the first frames of the new fight (its marks overlay, a shader's first
+ * use) are logged. Skipped without the library (it is never in the repo).
  */
 
 import { _electron as electron, test, expect, type ElectronApplication, type Page } from '@playwright/test'
@@ -68,6 +69,54 @@ async function stagedFight(): Promise<string> {
   })
 }
 
+type Rec = { long: { start: number; ms: number }[]; frames: number[]; done: boolean; commit: number }
+
+/** Start recording the page's long tasks and frames, and when the document next changes (the commit); its start time. */
+async function watch(): Promise<number> {
+  return page.evaluate(() => {
+    const w = window as unknown as {
+      __fw: { long: { start: number; ms: number }[]; frames: number[]; done: boolean; commit: number }
+      __blockout: { store: { getState(): { doc: unknown }; subscribe(fn: (s: { doc: unknown }) => void): () => void } }
+    }
+    const rec: (typeof w)['__fw'] = { long: [], frames: [], done: false, commit: 0 }
+    w.__fw = rec
+    const doc = w.__blockout.store.getState().doc
+    const off = w.__blockout.store.subscribe((st) => {
+      if (st.doc === doc) return
+      rec.commit = performance.now()
+      off()
+    })
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) rec.long.push({ start: e.startTime, ms: e.duration })
+    }).observe({ type: 'longtask' })
+    const frame = (): void => {
+      rec.frames.push(performance.now())
+      if (!rec.done) requestAnimationFrame(frame)
+    }
+    requestAnimationFrame(frame)
+    return performance.now()
+  })
+}
+
+/** Stop recording; until the commit (the solve): the longest task and frame gap, logged with the commit's and first frames' tasks. */
+async function solvePhase(what: string, t0: number): Promise<{ longest: number; gap: number }> {
+  const rec = await page.evaluate(() => {
+    const r = (window as unknown as { __fw: { long: { start: number; ms: number }[]; frames: number[]; done: boolean; commit: number } }).__fw
+    r.done = true
+    return r
+  })
+  expect(rec.commit, `${what}: committed`).toBeGreaterThan(t0)
+  const solving = rec.long.filter((x) => x.start >= t0 && x.start + x.ms <= rec.commit)
+  const after = rec.long.filter((x) => x.start + x.ms > rec.commit)
+  const frames = rec.frames.filter((f) => f >= t0 && f <= rec.commit)
+  const gaps = frames.map((f, k) => (k > 0 ? f - frames[k - 1]! : f - t0))
+  const list = (xs: Rec['long']): string => xs.map((x) => `${x.ms.toFixed(0)}@${(x.start - t0).toFixed(0)}`).join(' ') || 'none'
+  const longest = Math.max(0, ...solving.map((x) => x.ms))
+  const gap = Math.max(0, ...gaps)
+  console.log(`[fight-worker] ${what}: committed after ${(rec.commit - t0).toFixed(0)} ms: ${frames.length} frames, worst gap ${gap.toFixed(0)} ms, longest task ${longest.toFixed(0)} ms (${solving.length} over 50 ms); commit and first frames: ${list(after)}`)
+  return { longest, gap }
+}
+
 test.describe.configure({ mode: 'serial' })
 test.skip(!HAS_LIBRARY, 'no local Mixamo library')
 
@@ -105,50 +154,15 @@ test.describe('bot fight solves off the main thread', () => {
     // The bots drawn once first (their skinned meshes' shaders), away from the fight.
     for (const [k, assetId] of BOTS.entries()) expect((await rpc('add_entity', { assetId, x: 20 + k, z: 20 })).ok).toBe(true)
     await page.waitForTimeout(1500)
-    await page.evaluate(() => {
-      const w = window as unknown as {
-        __fw: { long: { start: number; ms: number }[]; frames: number[]; done: boolean; commit: number }
-        __blockout: { store: { getState(): { doc: unknown }; subscribe(fn: (s: { doc: unknown }) => void): () => void } }
-      }
-      const rec: (typeof w)['__fw'] = { long: [], frames: [], done: false, commit: 0 }
-      w.__fw = rec
-      // The fight's commit: the first change to the document from here.
-      const doc = w.__blockout.store.getState().doc
-      const off = w.__blockout.store.subscribe((st) => {
-        if (st.doc === doc) return
-        rec.commit = performance.now()
-        off()
-      })
-      new PerformanceObserver((list) => {
-        for (const e of list.getEntries()) rec.long.push({ start: e.startTime, ms: e.duration })
-      }).observe({ type: 'longtask' })
-      const frame = (): void => {
-        rec.frames.push(performance.now())
-        if (!rec.done) requestAnimationFrame(frame)
-      }
-      requestAnimationFrame(frame)
-    })
-    const t0 = await page.evaluate(() => performance.now())
+    const t0 = await watch()
     const staged = await rpc<{ fightId: string; report: { beats: unknown[] } }>('stage_fight', { script: COMBOS, assets: BOTS, x: 0, z: -6 })
     expect(staged.ok, staged.error).toBe(true)
     expect(staged.data!.report.beats).toHaveLength(5)
     await page.waitForTimeout(500)
-    const rec = await page.evaluate(() => {
-      const r = (window as unknown as { __fw: { long: { start: number; ms: number }[]; frames: number[]; done: boolean; commit: number } }).__fw
-      r.done = true
-      return { ...r, now: performance.now() }
-    })
-    expect(rec.commit, 'the fight was committed').toBeGreaterThan(t0)
-    // Until the commit: the solve. From it: the new fight's scene and first frames.
-    const solving = rec.long.filter((x) => x.start >= t0 && x.start + x.ms <= rec.commit)
-    const after = rec.long.filter((x) => x.start + x.ms > rec.commit)
-    const frames = rec.frames.filter((f) => f >= t0 && f <= rec.commit)
-    const gaps = frames.map((f, k) => (k > 0 ? f - frames[k - 1]! : f - t0))
-    const list = (xs: { start: number; ms: number }[]): string => xs.map((x) => `${x.ms.toFixed(0)}@${(x.start - t0).toFixed(0)}`).join(' ') || 'none'
-    console.log(`[fight-worker] committed after ${(rec.commit - t0).toFixed(0)} ms: ${frames.length} frames, worst gap ${Math.max(0, ...gaps).toFixed(0)} ms, longest task ${Math.max(0, ...solving.map((x) => x.ms)).toFixed(0)} ms (${solving.length} over 50 ms); commit and first frames: ${list(after)}`)
+    const { longest, gap } = await solvePhase('stage_fight', t0)
     expect(logs.filter((l) => l.startsWith('[fight]')), 'the worker says nothing went wrong').toEqual([])
-    expect(Math.max(0, ...solving.map((x) => x.ms)), 'the longest main-thread task while the fight solves').toBeLessThanOrEqual(LONG_TASK)
-    expect(Math.max(0, ...gaps), 'the longest wait for a frame while the fight solves').toBeLessThanOrEqual(FRAME_GAP)
+    expect(longest, 'the longest main-thread task while the fight solves').toBeLessThanOrEqual(LONG_TASK)
+    expect(gap, 'the longest wait for a frame while the fight solves').toBeLessThanOrEqual(FRAME_GAP)
     worker = await stagedFight()
   })
 
@@ -170,5 +184,48 @@ test.describe('bot fight solves off the main thread', () => {
     const there = JSON.parse(worker) as { fight: { name: string } }
     here.fight.name = there.fight.name
     expect(JSON.stringify(here)).toBe(JSON.stringify(there))
+  })
+
+  test("MCP set_shot re-solves the shot's bot fight with the app live", async () => {
+    test.setTimeout(180_000)
+    // The fight above on a shorter shot: solved again for it.
+    const t0 = await watch()
+    const set = await rpc<{ fights?: unknown[] }>('set_shot', { duration: 14 })
+    expect(set.ok, set.error).toBe(true)
+    expect(set.data!.fights).toHaveLength(1)
+    await page.waitForTimeout(300)
+    const { longest, gap } = await solvePhase('set_shot', t0)
+    expect(longest, 'the longest main-thread task while the fight re-solves').toBeLessThanOrEqual(LONG_TASK)
+    expect(gap, 'the longest wait for a frame while the fight re-solves').toBeLessThanOrEqual(FRAME_GAP)
+  })
+
+  test('the Deliver prompt of a fight staged among props solves in the worker, then reads it', async () => {
+    test.setTimeout(180_000)
+    expect((await rpc('new_scene', {})).ok).toBe(true)
+    expect((await rpc('set_shot', { duration: 15 })).ok).toBe(true)
+    // A prop: the store's solve has it, the prompt's doesn't, so the prompt solves its own.
+    expect((await rpc('add_entity', { assetId: 'prop.barrel', x: 6, z: -6 })).ok).toBe(true)
+    const staged = await rpc('stage_fight', { script: COMBOS, assets: BOTS, x: 0, z: -6 })
+    expect(staged.ok, staged.error).toBe(true)
+    const t0 = await watch()
+    // The prompt box says it is solving the fight (the solve went to the worker) before it shows the prompt.
+    await page.evaluate(() => {
+      const w = window as unknown as { __fwSolving: boolean; __blockout: { store: { getState(): { setMode(m: string): void } } } }
+      w.__fwSolving = false
+      new MutationObserver(() => {
+        if (document.querySelector('.prompt-box')?.textContent?.includes('Solving the fight')) w.__fwSolving = true
+      }).observe(document.body, { childList: true, subtree: true, characterData: true })
+      w.__blockout.store.getState().setMode('deliver')
+    })
+    await expect(page.locator('.prompt-box')).toContainText(/jab/i, { timeout: 120_000 })
+    const rec = await page.evaluate((from) => {
+      const w = window as unknown as { __fwSolving: boolean; __fw: { long: { start: number; ms: number }[]; done: boolean } }
+      w.__fw.done = true
+      return { solving: w.__fwSolving, long: w.__fw.long.filter((x) => x.start >= from).map((x) => x.ms) }
+    }, t0)
+    // (Those tasks are the Deliver view's: its scene rebuilt, a shader's first use, the bots' bounds every frame.)
+    console.log(`[fight-worker] Deliver prompt: tasks over 50 ms from the switch to the prompt ${rec.long.map((x) => x.toFixed(0)).join(' ') || 'none'}`)
+    expect(rec.solving, 'the prompt waited for the worker').toBe(true)
+    expect(logs.filter((l) => l.startsWith('[fight]')), 'the worker says nothing went wrong').toEqual([])
   })
 })

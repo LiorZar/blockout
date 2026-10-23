@@ -8,6 +8,7 @@
  */
 
 import { useStore, currentProjectJson, fightNotice, lastRoutineReport, refightShot, releaseHeldBy, routineFightStaged, slowFight, slowRoutine, solveInScene, stageFightOffThread, updateFightOffThread } from '../store'
+import { offThread } from '../fight-offthread'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { isMocapAsset, waitForMocap } from '@engine/mocap/registry'
 import { assetListed, mocapStatus } from '../mocap/library'
@@ -803,7 +804,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
       }
       const side = str(params, 'side')
       if (side !== undefined && side !== 'left' && side !== 'right') throw new Error('fight_coverage: side must be left or right.')
-      const r = s.coverFight(fightId, mode as NonNullable<FightDoc['coverage']>, side)
+      // Fork (fight-speed): a solve the memo doesn't have runs in the fight worker.
+      const r = await offThread(() => s.coverFight(fightId, mode as NonNullable<FightDoc['coverage']>, side))
       // Fork (fix-camera-set): framings moved off a blocked view, and those with no clear view.
       const st = useStore.getState()
       const views = st.shot()!.camera.marks.filter((m) => m.shot?.view).map((m) => ({ time: m.time, ...viewNote(st.scene()!, m.shot!, m.focalLength / (m.shot!.view!.closer ?? 1)) }))
@@ -812,7 +814,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
 
     case 'get_fight': {
       requireDoc()
-      return fightResult(str(params, 'fightId') ?? '')
+      // Fork (fight-speed): a solve the memo doesn't have (a project just opened) runs in the fight worker.
+      return await offThread(() => fightResult(str(params, 'fightId') ?? ''))
     }
 
     case 'delete_fight': {
@@ -852,7 +855,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
     case 'set_shot': {
       requireDoc()
       let fights: ReturnType<typeof refightShot> = []
-      s.mutate('agent: set shot', (doc) => {
+      // Fork (fight-speed): the shot's fights re-solve in the fight worker (offThread re-runs this edit once they have).
+      await offThread(() => s.mutate('agent: set shot', (doc) => {
         const scene = doc.scenes.find((sc) => sc.id === useStore.getState().sceneId)
         const shot = scene?.shots.find((sh) => sh.id === useStore.getState().shotId)
         if (!shot) return
@@ -869,7 +873,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         }
         // Fork (gap 2): the shot's fights follow its new fps / duration.
         if (scene && (duration !== undefined || fps !== undefined)) fights = refightShot(scene, shot)
-      })
+      }))
       return {
         ok: true,
         ...(fights.length > 0
@@ -1593,7 +1597,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
       return {
         packagePath: res.packagePath,
         relativePath: projectRelative(res.packagePath),
-        prompt: scene && shot ? generatePrompt(scene, shot, profile) : '',
+        prompt: scene && shot ? await offThread(() => generatePrompt(scene, shot, profile)) : '', // fork (fight-speed): its fights' solves off the main thread
         // Fork: limits the shot breaks for this model (empty when it fits).
         warnings: shot ? profileWarnings(profile, shot) : []
       }

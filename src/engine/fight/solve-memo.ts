@@ -44,11 +44,11 @@ export function rememberFightSolve(key: string, sol: FightSolution): void {
   SOLVES.set(key, structuredClone(sol))
 }
 
-/** While set, what a solve the memo doesn't have does instead of solving (renderer/fight-offthread.ts: stop, and solve it off the main thread). */
-let elsewhere: ((key: string, args: FightSolveArgs) => never) | null = null
+/** While set, where a solve the memo doesn't have goes first (renderer/fight-offthread.ts: stop, to solve it off the main thread). */
+let elsewhere: ((key: string, args: FightSolveArgs) => void) | null = null
 
-/** Run `run` with every solve the memo doesn't have handed to `miss` (which throws, stopping the run) instead of solved here. */
-export function solvingElsewhere<T>(miss: (key: string, args: FightSolveArgs) => never, run: () => T): T {
+/** Run `run` with every solve the memo doesn't have handed to `miss` first: it throws to stop the run (the solve happens elsewhere), or returns to have it solved here. */
+export function solvingElsewhere<T>(miss: (key: string, args: FightSolveArgs) => void, run: () => T): T {
   const was = elsewhere
   elsewhere = miss
   try {

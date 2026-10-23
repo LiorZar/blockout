@@ -36,6 +36,10 @@ const waiting = new Map<number, (sol: FightSolution | null) => void>()
 /** A stand-in for the worker (tests). */
 let stand: ((args: FightSolveArgs) => Promise<FightSolution | null>) | null = null
 let planning = false
+/** Solves asked of the worker and not answered yet, by memo key (one solve each, however many ask). */
+const inFlight = new Map<string, Promise<FightSolution | null>>()
+/** Solves the worker didn't answer (an error there): solved here from then on. */
+const refused = new Set<string>()
 /** Thrown to stop a planning run at a solve the memo doesn't have. */
 const STOP = new Error('fight solve off the main thread')
 
@@ -71,6 +75,7 @@ export function relayMocap(reg: MocapRegistration): void {
 /** Tests: solve with `fn` instead of the worker (null: the worker again). */
 export function setFightSolver(fn: ((args: FightSolveArgs) => Promise<FightSolution | null>) | null): void {
   stand = fn
+  refused.clear()
 }
 
 /** Whether a store action is running in planning mode (store.mutate commits nothing). */
@@ -78,39 +83,71 @@ export function planningRun(): boolean {
   return planning
 }
 
-/** One solve off the main thread; null when there is no worker to do it. */
-function solveThere(args: FightSolveArgs): Promise<FightSolution | null> {
-  if (stand) return stand(args)
-  const w = fightWorker()
-  if (!w) return Promise.resolve(null)
-  const id = ++asked
-  return new Promise((resolve) => {
-    waiting.set(id, resolve)
-    w.postMessage({ kind: 'solve', id, args } satisfies FightWorkerRequest)
+/** One solve off the main thread, remembered once it is in; null when there is no worker to do it. */
+function solveThere(key: string, args: FightSolveArgs): Promise<FightSolution | null> {
+  const known = inFlight.get(key)
+  if (known) return known
+  const w = stand ? null : fightWorker()
+  const asking: Promise<FightSolution | null> = stand
+    ? stand(args)
+    : w
+      ? new Promise((resolve) => {
+          const id = ++asked
+          waiting.set(id, resolve)
+          w.postMessage({ kind: 'solve', id, args } satisfies FightWorkerRequest)
+        })
+      : Promise.resolve(null)
+  const done = asking.then((sol) => {
+    inFlight.delete(key)
+    if (sol) rememberFightSolve(key, sol)
+    else refused.add(key)
+    return sol
   })
+  inFlight.set(key, done)
+  return done
+}
+
+/** Run `run` in planning mode: its solves the memo doesn't have, or its value when it has them all. */
+function plan<T>(run: () => T): { value: T; missed: [] } | { missed: { key: string; args: FightSolveArgs }[] } {
+  const missed: { key: string; args: FightSolveArgs }[] = []
+  planning = true
+  try {
+    const value = solvingElsewhere((key, args) => {
+      if (refused.has(key)) return
+      missed.push({ key, args: structuredClone(args) })
+      throw STOP
+    }, run)
+    if (missed.length === 0) return { value, missed: [] }
+  } catch (e) {
+    // The action's own error (a bad input): it throws again for real.
+    if (missed.length === 0) throw e
+  } finally {
+    planning = false
+  }
+  return { missed }
 }
 
 /** Run a store action that solves fights with its solves off the main thread: its result (or its error). */
 export async function offThread<T>(run: () => T): Promise<T> {
   if (!stand && !fightWorker()) return run()
   for (let round = 0; round < ROUNDS; round++) {
-    const missed: { key: string; args: FightSolveArgs }[] = []
-    planning = true
-    try {
-      solvingElsewhere((key, args) => {
-        missed.push({ key, args: structuredClone(args) })
-        throw STOP
-      }, run)
-    } catch (e) {
-      // The action's own error (a bad input): it throws again for real.
-      if (missed.length === 0) throw e
-    } finally {
-      planning = false
-    }
+    const { missed } = plan(run)
     if (missed.length === 0) break
-    const sols = await Promise.all(missed.map((m) => solveThere(m.args)))
+    const sols = await Promise.all(missed.map((m) => solveThere(m.key, m.args)))
     if (sols.some((s) => !s)) break
-    missed.forEach((m, k) => rememberFightSolve(m.key, sols[k]!))
   }
   return run()
+}
+
+/**
+ * A read that solves fights (a panel's live report, the prompt), for a render: its value when the memo has
+ * every solve it needs (or there is no worker: it solves here); else null, and `ready` once the worker has
+ * solved what it needs (read it again then).
+ */
+export function readSoon<T>(read: () => T, ready: () => void): T | null {
+  if (!stand && !fightWorker()) return read()
+  const p = plan(read)
+  if (p.missed.length === 0) return (p as { value: T }).value
+  void Promise.all(p.missed.map((m) => solveThere(m.key, m.args))).then(ready)
+  return null
 }

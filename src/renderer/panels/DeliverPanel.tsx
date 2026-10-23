@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's profile limit warnings in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's profile limit warnings and its fight solves off the main thread in 2026; see MODIFICATIONS.md.
 /**
  * Deliver mode: pick a generator profile, choose passes, export the
  * package, copy the generated prompt, and hand off to Blender/ComfyUI.
@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react'
 import { useStore } from '../store'
 import { BUILTIN_PROFILES, getProfile } from '@engine/profiles'
 import { generatePrompt } from '@engine/prompt'
+import { readSoon } from '../fight-offthread'
 import { profileWarnings } from '@engine/profile-limits'
 import {
   exportShot,
@@ -37,10 +38,13 @@ export function DeliverPanel(): JSX.Element {
   const [resolution, setResolution] = useState<ExportResolution>('auto')
 
   const profile = getProfile(profileId)
-  const prompt = useMemo(
-    () => (scene && shot ? generatePrompt(scene, shot, profile) : ''),
-    [scene, shot, profile]
+  // Fork (fight-speed): a fight's solve the prompt needs runs in the fight worker; the prompt once it is in.
+  const [solved, setSolved] = useState(0)
+  const ready = useMemo(
+    () => (scene && shot ? readSoon(() => generatePrompt(scene, shot, profile), () => setSolved((n) => n + 1)) : ''),
+    [scene, shot, profile, solved]
   )
+  const prompt = ready ?? 'Solving the fight for the prompt…'
 
   if (!scene || !shot) {
     return (
@@ -225,6 +229,7 @@ export function DeliverPanel(): JSX.Element {
       <button
         className="btn small"
         style={{ width: '100%', margin: '8px 0 18px' }}
+        disabled={ready === null}
         onClick={() => {
           void navigator.clipboard.writeText(prompt)
           toast('Prompt copied.', 'success')

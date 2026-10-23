@@ -23,7 +23,9 @@ vi.mock('@engine/fight/solve', async (importOriginal) => {
 })
 
 const { refightShot, routineFightStaged, stageFightOffThread, updateFightOffThread, useStore } = await import('@renderer/store')
-const { offThread, setFightSolver } = await import('@renderer/fight-offthread')
+const { offThread, readSoon, setFightSolver } = await import('@renderer/fight-offthread')
+const { generatePrompt } = await import('@engine/prompt')
+const { getProfile } = await import('@engine/profiles')
 
 const MALE = 'person.mocapMale'
 const FEMALE = 'person.mocapFemale'
@@ -178,3 +180,86 @@ describe('a bot fight off the main thread', { timeout: 60_000 }, () => {
     expect(solves.n).toBeGreaterThan(n)
   })
 })
+
+describe('reads that solve fights, off the main thread', { timeout: 60_000 }, () => {
+  const input = { beats: beatsOf('A jab to head -> hit\nB hook to head -> block'), at: { x: 0, z: -2, heading: 0 }, assets: [MALE, FEMALE] as [string, string] }
+  const profile = getProfile('seedance-2')
+  /** A staged fight whose prompt solve the memo doesn't have: a prop in the scene (the store's solve has it, the prompt's doesn't). */
+  const withProp = (): void => {
+    st().addEntity('prop.barrel', { x: 6, y: 0, z: 6 })
+    st().stageFight(input)
+  }
+  const prompt = (ready: () => void): string | null => readSoon(() => generatePrompt(scene(), st().shot()!, profile), ready)
+  const until = async (ok: () => boolean): Promise<void> => {
+    for (let k = 0; k < 500 && !ok(); k++) await new Promise((r) => setTimeout(r, 5))
+  }
+
+  it('a prompt reads null at first, then the prompt once the worker has solved; nothing solved here', async () => {
+    withProp()
+    const n = solves.n
+    let ready = 0
+    expect(prompt(() => ready++)).toBe(null)
+    await until(() => ready > 0)
+    expect(ready).toBe(1)
+    expect(prompt(() => ready++)).toMatch(/jab/)
+    expect(solves.n).toBe(n)
+    expect(remote.n).toBe(1)
+  })
+
+  it('a solve read twice before the worker answers is asked once', async () => {
+    withProp()
+    let ready = 0
+    expect(prompt(() => ready++)).toBe(null)
+    expect(prompt(() => ready++)).toBe(null)
+    await until(() => ready > 1)
+    expect(remote.n).toBe(1)
+    expect(prompt(() => ready++)).toMatch(/jab/)
+  })
+
+  it('a solve the worker refuses is solved here the next time it is read', async () => {
+    withProp()
+    setFightSolver(async () => {
+      remote.n++
+      return null
+    })
+    const n = solves.n
+    let ready = 0
+    expect(prompt(() => ready++)).toBe(null)
+    await until(() => ready > 0)
+    expect(prompt(() => ready++)).toMatch(/jab/)
+    expect(solves.n).toBe(n + 1)
+    expect(remote.n).toBe(1)
+  })
+
+  it("MCP set_shot re-solves the shot's bot fight in the worker; get_fight then reads it back", async () => {
+    let invoke: ((id: string, action: string, params: unknown) => void) | null = null
+    const answers = new Map<string, (r: { ok: boolean; data?: unknown; error?: string }) => void>()
+    vi.stubGlobal('window', { blockout: { onControlInvoke: (cb: typeof invoke) => ((invoke = cb), () => undefined), controlResult: (id: string, r: { ok: boolean }) => answers.get(id)?.(r) } })
+    const { registerControlHandler } = await import('@renderer/control/handler')
+    const off = registerControlHandler()
+    const rpc = (action: string, params: Record<string, unknown>): Promise<{ ok: boolean; data?: unknown; error?: string }> =>
+      new Promise((resolve) => {
+        const id = `${action}-${Math.random()}`
+        answers.set(id, resolve)
+        invoke!(id, action, params)
+      })
+    try {
+      const { fightId } = st().stageFight(input)
+      const n = solves.n
+      const set = await rpc('set_shot', { duration: 9 })
+      expect(set.ok, set.error).toBe(true)
+      expect(st().shot()!.duration).toBe(9)
+      expect((set.data as { fights?: unknown[] }).fights).toHaveLength(1)
+      expect(remote.n).toBeGreaterThan(0)
+      const asked = remote.n
+      const got = await rpc('get_fight', { fightId })
+      expect(got.ok, got.error).toBe(true)
+      expect(remote.n).toBe(asked)
+      expect(solves.n).toBe(n)
+    } finally {
+      off()
+      vi.unstubAllGlobals()
+    }
+  })
+})
+

@@ -1370,6 +1370,21 @@ Changes in this fork (2026):
   draws 210 frames while it solves (worst gap 89 ms, longest task 89 ms), and the fight equals
   the same staging solved on the main thread. Tests: `tests/unit/fight-offthread.test.ts`,
   `tests/e2e/fight-worker.spec.ts` (new).
+- Fight reads solve off the main thread too (fight-speed T3; `src/renderer/fight-offthread.ts`,
+  `src/engine/fight/solve-memo.ts`, `src/renderer/panels/FightDirector.tsx`,
+  `src/renderer/panels/DeliverPanel.tsx`, `src/renderer/export/exporter.ts`,
+  `src/renderer/control/handler.ts`): the Fight Director's live report (a project just opened)
+  and the Deliver panel's prompt (a fight staged among props: the prompt solves without them)
+  solved on the main thread while they rendered; now `readSoon` gives the memo's answer, or
+  starts the solve in the worker and renders again when it is in (the prompt box says it is
+  solving the fight meanwhile; Copy waits). MCP `set_shot` (the shot's fights re-solved),
+  `get_fight`, `fight_coverage`, `export_shot`'s prompt and the export's `prompt.txt` (now
+  generated once) solve through `offThread`. A solve asked again while the worker has it is
+  asked once; one the worker can't answer is solved on the main thread from then on. The
+  Timeline's and Inspector's duration and fps edits still re-solve on the main thread (a
+  controlled number field can't wait for the worker). Tests: `tests/unit/fight-offthread.test.ts`
+  (reads, MCP `set_shot` → `get_fight`), `tests/e2e/fight-worker.spec.ts` (`set_shot`, the
+  Deliver prompt).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

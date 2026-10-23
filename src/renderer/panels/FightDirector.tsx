@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from 'react'
 import { fightNotice, slowFight, solveInScene, stageFightOffThread, updateFightOffThread, useStore } from '../store'
+import { readSoon } from '../fight-offthread'
 import type { BeatReport } from '@engine/fight/solve'
 import { assetSpec } from '@engine/assets'
 import { WEAPON_SPECS } from '@engine/weapons'
@@ -94,11 +95,13 @@ export function FightDirector(): JSX.Element {
       : []
 
   // Live report for the staged fight (pure; re-solved when the scene changes, set props included).
+  // Fork (fight-speed): a solve the memo doesn't have (a project just opened) runs in the fight worker, the report once it is in.
+  const [solved, setSolved] = useState(0)
   const report = useMemo(() => {
     if (!fight || !scene || !shot) return null
     if (fight.fighterIds.some((id) => !scene.entities.some((e) => e.id === id))) return null
-    return solveInScene(scene, shot, fight).report
-  }, [fight, scene, shot])
+    return readSoon(() => solveInScene(scene, shot, fight).report, () => setSolved((n) => n + 1))
+  }, [fight, scene, shot, solved])
 
   if (!scene || !shot) return <></>
 

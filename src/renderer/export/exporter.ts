@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support, the fork's per-profile file-size cap, local-time export stamps, waiting for the mocap library and the viewport's look in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's per-profile file-size cap, local-time export stamps, waiting for the mocap library, the viewport's look and its prompt's fight solves off the main thread in 2026; see MODIFICATIONS.md.
 /**
  * The Deliver pipeline. Exports are deterministic: the timeline is stepped
  * at exactly the shot's fps and every frame is rendered from the same
@@ -20,6 +20,7 @@ import { applyViewLook } from '../viewport/look'
 import { buildComfyWorkflow } from './comfy'
 import { exportStamp } from './stamp'
 import { mocapReady } from '../mocap/library'
+import { offThread } from '../fight-offthread'
 
 /** 'auto' = the profile's native size; 720p/1080p pin the SHORT edge. */
 export type ExportResolution = 'auto' | '720p' | '1080p'
@@ -360,11 +361,13 @@ export async function exportShot(opts: ExportOptions): Promise<ExportResult> {
     )
 
     // --- Prompt, metadata, ComfyUI workflow
-    await window.blockout.exportWriteFile(`${pkg}/prompt.txt`, generatePrompt(scene, shot, profile) + '\n')
+    // Fork (fight-speed): the prompt's fights solve in the fight worker (a bot fight takes seconds).
+    const prompt = await offThread(() => generatePrompt(scene, shot, profile))
+    await window.blockout.exportWriteFile(`${pkg}/prompt.txt`, prompt + '\n')
     await window.blockout.exportWriteFile(`${pkg}/metadata.json`, buildMetadata(scene, shot, profile))
     // Fork (export-look): a previs profile feeds the clip itself to a hosted model, so no ComfyUI workflow.
     if (profile.promptStyle !== 'previs' && (profile.refModes.includes('depthVideo') || profile.id.startsWith('wan') || profile.id.startsWith('ltx'))) {
-      const workflow = buildComfyWorkflow(profile, shot, `${sanitize(shot.name)}_depth.mp4`, generatePrompt(scene, shot, profile))
+      const workflow = buildComfyWorkflow(profile, shot, `${sanitize(shot.name)}_depth.mp4`, prompt)
       await window.blockout.exportWriteFile(`${pkg}/comfyui-workflow.json`, workflow)
     }
     await window.blockout.exportWriteFile(
