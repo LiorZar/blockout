@@ -1174,6 +1174,20 @@ Changes in this fork (2026):
   QA's `update_fight` moved the fight's end to 20.85 s in an 18.5 s shot without a word. Both now
   warn "The fight ends at 20.9 s, after the shot's 18.5 s: set the shot to 21.5 s to see it
   all". Test: `tests/unit/fight-resolve.test.ts` (extended).
+- Exports take the viewport's look (export-look T1; `src/renderer/viewport/look.ts` new,
+  `src/renderer/viewport/SceneManager.ts`, `src/renderer/export/exporter.ts`,
+  `src/renderer/viewport/environment.ts`): the viewport tone-maps with ACES at exposure 1.45
+  and the export renderer applied none, so a clip came out flatter and darker than the editor
+  (a night scene lighter); only the physical sky was compensated, by a hand-written ACES in
+  its shader. Both renderers now take the look from `look.ts`, three applies it once per
+  material, the sky only scales its radiance (`exposeSky`, was `toneMapSky`), and
+  `renderFrameAt` renders the depth and normal passes with no tone mapping. Export frame
+  against the viewport's own frame of the same camera, time and size (Deliver mode, mean
+  luminance 0–255), before → after: day street 120.3 / 127.9 → 127.9 / 127.9, gym fight
+  57.6 / 62.5 → equal, nightclub 21.9 / 18.2 → equal, midday sky 165.9 / 174.9 → equal, night
+  street 28.3 / 23.6 → equal; worst 7×7 probe 39.2 → 0.1 levels; depth frames byte-identical
+  before and after (`.maestro/export-look/`). Test: `tests/e2e/export-look.spec.ts` (new; 3 of
+  3 fail on edf6dc0), `tests/unit/environment.test.ts` (extended).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

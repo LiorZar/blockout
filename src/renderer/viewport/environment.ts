@@ -202,47 +202,25 @@ export class StageEnvironment {
 
 /**
  * Scale for three's physical `Sky` radiance. Unscaled, a midday sky drives
- * ACES (viewport, exposure 1.45) to near white, and the export renderer has no
- * tone mapping at all, so it clipped to a white void there.
+ * ACES (exposure 1.45, `look.ts`) to near white.
  */
 export const SKY_EXPOSURE = 0.22
 
 /**
- * Scale the physical sky by `uSkyExposure`, and give it the viewport's ACES
- * curve when the renderer applies none (exports), so both show the same sky.
+ * Scale the physical sky by `uSkyExposure` ahead of the renderer's own tone
+ * mapping, which the viewport and the export renderer share (`look.ts`), so
+ * the sky is tone-mapped once and both show the same sky (fork, export-look:
+ * this used to add a hand-written ACES for exports, which had none).
  * Returns the exposure uniform.
  */
-export function toneMapSky(material: THREE.ShaderMaterial, sceneExposure: number): { value: number } {
+export function exposeSky(material: THREE.ShaderMaterial): { value: number } {
   const exposure = { value: SKY_EXPOSURE }
   material.uniforms.uSkyExposure = exposure
-  const k = sceneExposure.toFixed(2)
   material.onBeforeCompile = (shader): void => {
     shader.uniforms.uSkyExposure = exposure
     shader.fragmentShader = shader.fragmentShader
-      .replace(
-        'void main() {',
-        [
-          'uniform float uSkyExposure;',
-          '#ifndef TONE_MAPPING',
-          'vec3 blockoutRrt( vec3 v ) {',
-          '  vec3 a = v * ( v + 0.0245786 ) - 0.000090537;',
-          '  vec3 b = v * ( 0.983729 * v + 0.4329510 ) + 0.238081;',
-          '  return a / b;',
-          '}',
-          'vec3 blockoutAces( vec3 color ) {',
-          '  const mat3 inM = mat3( vec3( 0.59719, 0.07600, 0.02840 ), vec3( 0.35458, 0.90834, 0.13383 ), vec3( 0.04823, 0.01566, 0.83777 ) );',
-          '  const mat3 outM = mat3( vec3( 1.60475, -0.10208, -0.00327 ), vec3( -0.53108, 1.10813, -0.07276 ), vec3( -0.07367, -0.00605, 1.07602 ) );',
-          '  color = outM * blockoutRrt( inM * ( color / 0.6 ) );',
-          '  return clamp( color, 0.0, 1.0 );',
-          '}',
-          '#endif',
-          'void main() {'
-        ].join('\n')
-      )
-      .replace(
-        '#include <tonemapping_fragment>',
-        `gl_FragColor.rgb *= uSkyExposure;\n#ifdef TONE_MAPPING\n#include <tonemapping_fragment>\n#else\ngl_FragColor.rgb = blockoutAces( gl_FragColor.rgb * ${k} );\n#endif`
-      )
+      .replace('void main() {', 'uniform float uSkyExposure;\nvoid main() {')
+      .replace('#include <tonemapping_fragment>', 'gl_FragColor.rgb *= uSkyExposure;\n#include <tonemapping_fragment>')
   }
   material.needsUpdate = true
   return exposure

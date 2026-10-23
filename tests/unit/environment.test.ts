@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest'
 import * as THREE from 'three'
 import type { LightingPresetId } from '@engine/types'
-import { ENV_LOOKS, SKY_EXPOSURE, StageEnvironment, toneMapSky } from '@renderer/viewport/environment'
+import { ENV_LOOKS, SKY_EXPOSURE, StageEnvironment, exposeSky } from '@renderer/viewport/environment'
 
 const PRESETS: LightingPresetId[] = [
   'day',
@@ -169,10 +169,10 @@ describe('StageEnvironment', () => {
   })
 })
 
-describe('toneMapSky', () => {
-  it('scales the physical sky and tone-maps it when the renderer does not (exports), like the viewport', () => {
+describe('exposeSky', () => {
+  it('scales the physical sky and leaves tone mapping to the renderer (the viewport and exports share it), so it is applied once', () => {
     const mat = new THREE.ShaderMaterial({ fragmentShader: 'void main() {\n#include <tonemapping_fragment>\n}' })
-    const u = toneMapSky(mat, 1.45)
+    const u = exposeSky(mat)
     expect(u.value).toBe(SKY_EXPOSURE)
     expect(SKY_EXPOSURE).toBeGreaterThan(0)
     expect(SKY_EXPOSURE).toBeLessThan(1)
@@ -180,8 +180,9 @@ describe('toneMapSky', () => {
     mat.onBeforeCompile(shader as unknown as THREE.WebGLProgramParametersWithUniforms, {} as THREE.WebGLRenderer)
     expect(shader.uniforms.uSkyExposure).toBe(u)
     const f = shader.fragmentShader
-    expect(f.indexOf('gl_FragColor.rgb *= uSkyExposure')).toBeLessThan(f.indexOf('#ifdef TONE_MAPPING'))
-    expect(f).toContain('#include <tonemapping_fragment>')
-    expect(f).toContain('blockoutAces( gl_FragColor.rgb * 1.45 )')
+    expect(f.indexOf('gl_FragColor.rgb *= uSkyExposure')).toBeGreaterThan(-1)
+    expect(f.indexOf('gl_FragColor.rgb *= uSkyExposure')).toBeLessThan(f.indexOf('#include <tonemapping_fragment>'))
+    expect(f.split('#include <tonemapping_fragment>')).toHaveLength(2)
+    expect(f).not.toMatch(/Aces|TONE_MAPPING/)
   })
 })

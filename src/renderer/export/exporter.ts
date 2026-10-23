@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support, the fork's per-profile file-size cap, local-time export stamps and waiting for the mocap library in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's per-profile file-size cap, local-time export stamps, waiting for the mocap library and the viewport's look in 2026; see MODIFICATIONS.md.
 /**
  * The Deliver pipeline. Exports are deterministic: the timeline is stepped
  * at exactly the shot's fps and every frame is rendered from the same
@@ -16,6 +16,7 @@ import type { ProjectDoc, Scene, Shot } from '@engine/types'
 import { useStore } from '../store'
 import { getSceneManager, type SceneManager } from './scene-access'
 import type { RenderPass } from '../viewport/SceneManager'
+import { applyViewLook } from '../viewport/look'
 import { buildComfyWorkflow } from './comfy'
 import { exportStamp } from './stamp'
 import { mocapReady } from '../mocap/library'
@@ -82,6 +83,8 @@ function getExportRenderer(): { canvas: HTMLCanvasElement; renderer: THREE.WebGL
     exportRenderer.shadowMap.enabled = true
     exportRenderer.shadowMap.type = THREE.PCFSoftShadowMap
     exportRenderer.setPixelRatio(1)
+    // Fork (export-look): the viewport's tone mapping and exposure, so a clip exports as the editor shows it.
+    applyViewLook(exportRenderer)
   }
   return { canvas: exportCanvas, renderer: exportRenderer }
 }

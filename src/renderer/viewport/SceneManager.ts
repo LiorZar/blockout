@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -39,7 +39,8 @@ import { buildAsset, markMesh, labelSprite, type AnimInput, type BuiltAsset } fr
 import { heldWeaponMatrix, steadyArm } from './hold'
 import { canHoldWeapons, weaponSpec, type HeldWeapon } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
-import { StageEnvironment, toneMapSky } from './environment'
+import { StageEnvironment, exposeSky } from './environment'
+import { applyViewLook, lookForPass } from './look'
 import { renderStable } from './stable-render'
 import { seatSpots, seatUnder } from '@engine/mocap/library-clips'
 import { isMocapAsset } from '@engine/mocap/registry'
@@ -213,8 +214,8 @@ export class SceneManager {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.shadowMap.enabled = true
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 1.45
+    // Fork (export-look): ACES at exposure 1.45, shared with the export renderer.
+    applyViewLook(this.renderer)
 
     this.scene.background = new THREE.Color(0x1a1c20)
 
@@ -275,7 +276,7 @@ export class SceneManager {
     this.scene.add(this.sky)
     // Fork (fix-env): a ground to the horizon under a graded sky, not a flat void.
     this.scene.add(this.stage.group)
-    toneMapSky(this.sky.material, this.renderer.toneMappingExposure)
+    exposeSky(this.sky.material)
 
     // Camera body visual (selectable, draggable in shoot mode)
     this.cameraBody = this.buildCameraBody()
@@ -2616,8 +2617,11 @@ export class SceneManager {
     // shared three.js state can differ by one warm-up frame; the second is
     // always converged. Byte-determinism is worth one extra rasterization.
     // Fork (fix-topdown): a flush after every draw, so the browser's own mid-frame flushes can't move a pixel.
+    // Fork (export-look): the clean pass keeps the viewport's look; depth / normal stay linear.
+    const restoreLook = lookForPass(exportRenderer, pass)
     renderStable(exportRenderer, this.scene, cam)
     renderStable(exportRenderer, this.scene, cam)
+    restoreLook()
 
     this.scene.overrideMaterial = null
     this.scene.background = bgWas
