@@ -40,6 +40,8 @@
 - A selected bot's BoxHelper skins every vertex on the CPU each frame: Stage with 4 bots, 10.2 ms a frame with none selected, 28.7 ms with the two fighters selected (fight-speed T4 diag, `.maestro/fight-speed/t4-summary.txt`).
 - The Timeline's and Inspector's shot duration / fps fields still re-solve the shot's bot fights on the main thread (MCP `set_shot` uses the worker): a controlled number field can't wait for the worker, so it needs a two-step edit; Lior's call (fight-speed T3).
 - Switching to Deliver on a staged bot fight still runs a ~0.5 s main-thread task before the prompt shows (fight-worker e2e: tasks over 50 ms from the switch to the prompt 517 / 77 ms; the solve itself is in the worker); not profiled.
+- `fight_coverage` mode `follow` sets the shot camera's rig to handheld (intensity 0.4) and no other mode sets it back, so a `master`, `punch-in` or `over-shoulder` run after a `follow` run plays handheld too (seen in shot-clear's probes: alley over-shoulder after follow, `rig handheld`). Restore the rig the camera had before coverage, or set each mode's own.
+- `frame_shot` (`setShotAtTime` → `clearShotSpec`) checks a mark's clear view from its own time to the next mark only; the move into it from the previous mark (the camera already heading for the new framing) isn't checked, unlike fight coverage, which checks each framing from the start of its 0.4 s move (shot-clear T1). Check from the previous mark's time + hold.
 
 ## Features
 

@@ -59,3 +59,23 @@ read, and the same function is the camera's new criterion, so what the search cl
 Before/after numbers per task; `.maestro/shot-clear/SHEET.png` (each fixed shot before / after, looked at); one clean
 full gate, smoke, fork e2e set (`--workers=1`) through `heavy.mjs`; `MODIFICATIONS.md` entries; each task staged
 alone, reported to crd2, never committed.
+
+## Results
+
+| Task | Before (HEAD 3c54c8e) | After | Commit |
+|---|---|---|---|
+| T1 coverage keeps props out of the sightline | 11 of 24 coverage runs had frames where a set piece covers > 10 % of a fighter's box (gym master right 128/360 frames, the bench; alley follow right 301/360, solid wall); the lens inside the gym's mirror 3 frames | 4 of 24, each one frame at 10.3 % (the alley dumpster at a downed fighter's feet, on the 10 % line); the lens never inside the set | ef1690c |
+| T2 camera moves fitted to the set | 49 of 156 preset moves blocked (subject's box > 20 % covered or the lens in the set) with no warning | 0; 2 warn (the high drone orbit can't clear the alley's 8 m walls) | 5e3d927 |
+| T3 bot sit gait on a seat's top | hips 5.9–30.1 cm under the seat top (stool 22.9 / 25.1, chair 5.9 / 8.1, couch 12.4 / 14.6, office chair 27.9 / 30.1 cm; Y Bot / X Bot) | 0.0 cm, feet on the floor; built app, Y Bot's Hips on a stool 0.597 → 0.887 m | c14e267 |
+
+- T1: QA's run3 fight on bots in the gym (0, −2), along the alley (0, 3) and by the downtown bus shelter, 4 modes × 2
+  sides, every frame (`.maestro/shot-clear/cover-head-bots.txt` → `cover-t1i.txt`). Found on the way and fixed: shot
+  words applied a view's `closer` twice (0.55 played as 0.30); coverage started from the last framing's lens. A coverage
+  call on bots takes 0.4–3.5 s, 6.1 s worst (HEAD 0.05–3.3 s; logged in BACKLOG).
+- T2: the 39 presets round a person in the alley and downtown, from a camera 5 m in front and 5 m off 45°, every frame
+  (`moves-head.txt` → `moves-t2d.txt`). A fit takes ≤ 0.4 s, 1.9 s when none is clear.
+- T3: the chair loop on the real library, every 1/24 s (`seat.txt`); the built app before / after (`run-sit-before/`,
+  `run-sit-t3/`).
+- Sheets, looked at: `.maestro/shot-clear/SHEET.png` (T1, 11 rows), `SHEET-moves.png` (T2, 7 rows).
+- Full tree (T1 + T2 + T3): gate `Test Files 102 passed (102)`, `Tests 1729 passed`; smoke 6 passed; fork e2e set
+  (`--workers=1`) 84 passed.
