@@ -177,8 +177,8 @@ when Blockout's tools aren't available (for example, port 17480 is taken).
 | `delete_marks` | `lane, markIds` | Delete marks from one lane. |
 | `apply_motion` | `entityIds, presetId` | A motion-library move (`list_motion_presets`) on people, replacing their marks. |
 | `undo` / `redo` / `save_project` | — | History, and save now (the app also autosaves). |
-| `list_export_profiles` | — | The AI models Blockout exports for: length limits, aspects, frame rate, file and prompt caps, what to attach where. |
-| `export_shot` | `profileId?, passes?, labels?, resolution?` | Export the clean package (default `seedance-2`, clean + depth; `minimax-h3-max` for MiniMax H3 Max): reference video, depth video, stills and `prompt.txt`. Returns `packagePath`, `relativePath`, `prompt` and `warnings` (limits the shot breaks). |
+| `list_export_profiles` | — | The AI models Blockout exports for: length limits (minimum, frame cap and length per output resolution where a model has them), aspects, frame rate, file and prompt caps, what to attach where. |
+| `export_shot` | `profileId?, passes?, labels?, resolution?` | Export the clean package (default `seedance-2`, clean + depth; `minimax-h3-max` for MiniMax H3 Max, `ltx-2.3-render-to-real`, `kling-v3-omni`, `seedance-2.5` for those models): reference video, depth video, stills and `prompt.txt`. Returns `packagePath`, `relativePath`, `prompt` and `warnings` (limits the shot breaks). |
 | `export_frame` | `profileId?, resolution?, labels?` | The frame at the playhead as a full-quality PNG. |
 | `export_contact_sheet` | — | One PNG of every shot's first frame in the scene, captioned. |
 | `export_scene_animatic` | `profileId?, resolution?` | Every shot of the scene exported in order and joined into one video (shots must share aspect and fps). |

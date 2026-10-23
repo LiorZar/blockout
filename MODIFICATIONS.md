@@ -1200,6 +1200,19 @@ Changes in this fork (2026):
   after T1 → after T2: cast 19.6 → 74.9, the rest of the frame 24.1 → 26.9 (+11 %), cast / rest
   0.81 → 2.78; darkest body (the classic man) 12.7 → 52.5. Test: `tests/unit/cast-fill.test.ts`
   (new), `tests/e2e/export-look.spec.ts` (extended; the night test fails without the fill).
+- Export profiles for LTX 2.3 Render to Real, Kling V3 Omni and Seedance 2.5 (export-look T3;
+  `src/engine/profiles.ts`, `src/engine/profile-limits.ts`, `src/renderer/control/handler.ts`,
+  `src/renderer/export/exporter.ts`, `mcp/tools.json`, `docs/generator-profiles.md`,
+  `mcp/README.md`, `AGENTS.md`): `ltx-2.3-render-to-real` (720p up to ~6 s, 480p up to ~15 s,
+  ≤ 361 frames; exports at 720p), `kling-v3-omni` (3–10 s base video, prompt ≤ 2500 characters,
+  a clause that asks for the base video's camera outright, since Kling follows it loosely) and
+  `seedance-2.5` (4–15 s, a guiding reference video at 720p, the generic motion-reference
+  prompt), with CLAUDE.md's limits and the model pages where it is silent. New optional fields
+  `minDuration`, `maxFrames` and `resolutionCaps` add warnings in Deliver and `export_shot` (too
+  short; too many frames for the shot's fps; a 6–15 s LTX shot is told to pick 480p) and come
+  back from `list_export_profiles`; previs profiles (hosted models) no longer get a ComfyUI
+  workflow. No generation was started. Test: `tests/unit/profiles-models.test.ts` (new; 9 of 10
+  fail on e39ae56), `tests/e2e/export-look.spec.ts` (extended).
 - Choreographer routines stay on the set (set-routines T1; `src/engine/routine-set.ts` and
   `src/renderer/routine-set.ts` new, `src/engine/chase-tracks.ts`, `src/engine/choreography.ts`,
   `src/renderer/store.ts`, `src/renderer/control/handler.ts`, `mcp/tools.json`): the chase ran its serpentine along

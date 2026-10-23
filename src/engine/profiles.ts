@@ -1,4 +1,4 @@
-// Modified in this fork (2026): MiniMax H3 Max profile, maxFileMB / maxPromptChars / promptStyle; see MODIFICATIONS.md.
+// Modified in this fork (2026): MiniMax H3 Max, LTX 2.3 Render to Real, Kling V3 Omni and Seedance 2.5 profiles, maxFileMB / maxPromptChars / promptStyle / minDuration / maxFrames / resolutionCaps; see MODIFICATIONS.md.
 /**
  * Generator profiles — data, not code. Each profile describes how a target
  * AI generator consumes references and constrains exports (duration,
@@ -34,6 +34,12 @@ export interface GeneratorProfile {
   maxPromptChars?: number
   /** Fork: 'previs' ends the prompt with this profile's adherenceClause (the clip IS the input video). */
   promptStyle?: 'previs'
+  /** Fork: the model's shortest clip (s); a shorter shot gets a warning. */
+  minDuration?: number
+  /** Fork: the model's frame cap for the input video; a shot with more frames (duration × its fps) gets a warning. */
+  maxFrames?: number
+  /** Fork: output tiers whose length cap depends on the resolution, largest first; the last one's cap is maxDuration. */
+  resolutionCaps?: { label: string; maxDuration: number }[]
 }
 
 export const BUILTIN_PROFILES: GeneratorProfile[] = [
@@ -72,6 +78,65 @@ export const BUILTIN_PROFILES: GeneratorProfile[] = [
     maxFileMB: 50,
     maxPromptChars: 2000,
     promptStyle: 'previs'
+  },
+  // Fork: the other video-input models on Scenario (CLAUDE.md), the clip as the render they restyle or follow.
+  {
+    id: 'ltx-2.3-render-to-real',
+    name: 'LTX 2.3 Render to Real',
+    vendor: 'Lightricks',
+    kind: 'video',
+    maxDuration: 15,
+    recommendedDuration: 6,
+    aspects: ['16:9', '9:16', '4:3', '1:1', '2.39:1'],
+    exportWidth: 1280,
+    fps: 24,
+    refModes: ['referenceVideo'],
+    attachHint:
+      'Attach the reference MP4 as the video input of LTX 2.3 Render to Real and paste prompt.txt; pick 720p for a clip up to ~6 s, 480p up to ~15 s (≤ 361 frames). The optional first-frame image is a finished look, not the grey still.',
+    adherenceClause:
+      'The attached video is a grey-box 3D render of this shot. Turn it into real footage: keep every shape where it is and how it moves, the camera path, framing and lens, and the timing exactly, and give each placeholder shape the real look of the subject named above.',
+    promptStyle: 'previs',
+    maxFrames: 361,
+    resolutionCaps: [
+      { label: '720p', maxDuration: 6 },
+      { label: '480p', maxDuration: 15 }
+    ]
+  },
+  {
+    id: 'kling-v3-omni',
+    name: 'Kling V3 Omni',
+    vendor: 'Kuaishou',
+    kind: 'video',
+    minDuration: 3,
+    maxDuration: 10,
+    recommendedDuration: 5,
+    aspects: ['16:9', '9:16', '1:1'],
+    exportWidth: 1920,
+    fps: 24,
+    refModes: ['referenceVideo'],
+    attachHint:
+      'Attach the reference MP4 as the reference video of Kling V3 Omni with the type "base" (3–10 s) and paste prompt.txt; up to 7 look images go in as reference images. Kling follows the camera loosely, so the prompt names the camera move.',
+    adherenceClause:
+      'The attached base video is a grey-box 3D previs of this shot. Restyle it into the finished shot: keep its layout, where every subject stands and how it moves, and the timing. Keep the camera exactly as in the base video, the same path, framing and lens, with no camera move of your own. Render each placeholder shape as the subject named above.',
+    maxPromptChars: 2500,
+    promptStyle: 'previs'
+  },
+  {
+    id: 'seedance-2.5',
+    name: 'Seedance 2.5',
+    vendor: 'ByteDance',
+    kind: 'video',
+    minDuration: 4,
+    maxDuration: 15,
+    recommendedDuration: 10,
+    aspects: ['16:9', '9:16', '4:3', '1:1'],
+    exportWidth: 1280,
+    fps: 24,
+    refModes: ['referenceVideo'],
+    attachHint:
+      'Attach the reference MP4 as one of the reference videos of Seedance 2.5 (up to 3) and paste prompt.txt; leave the duration on Auto so it matches the clip. It guides the camera and motion rather than locking them, so the prompt spells out the action and the camera move.',
+    adherenceClause:
+      'Precisely match the camera movement, framing, and subject blocking of the attached reference video. Keep subject positions, screen direction, and timing identical to the reference.'
   },
   {
     id: 'veo-3.1',

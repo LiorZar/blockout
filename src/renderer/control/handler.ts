@@ -1544,6 +1544,10 @@ async function execute(action: string, params: Params): Promise<unknown> {
         // Fork: the model's input-file and prompt caps, and what to attach where.
         ...(p.maxFileMB ? { maxFileMB: p.maxFileMB } : {}),
         ...(p.maxPromptChars ? { maxPromptChars: p.maxPromptChars } : {}),
+        // Fork (export-look): the shortest clip, the frame cap and the length per output resolution.
+        ...(p.minDuration ? { minDuration: p.minDuration } : {}),
+        ...(p.maxFrames ? { maxFrames: p.maxFrames } : {}),
+        ...(p.resolutionCaps ? { resolutionCaps: p.resolutionCaps } : {}),
         attachHint: p.attachHint
       }))
 

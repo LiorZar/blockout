@@ -362,7 +362,8 @@ export async function exportShot(opts: ExportOptions): Promise<ExportResult> {
     // --- Prompt, metadata, ComfyUI workflow
     await window.blockout.exportWriteFile(`${pkg}/prompt.txt`, generatePrompt(scene, shot, profile) + '\n')
     await window.blockout.exportWriteFile(`${pkg}/metadata.json`, buildMetadata(scene, shot, profile))
-    if (profile.refModes.includes('depthVideo') || profile.id.startsWith('wan') || profile.id.startsWith('ltx')) {
+    // Fork (export-look): a previs profile feeds the clip itself to a hosted model, so no ComfyUI workflow.
+    if (profile.promptStyle !== 'previs' && (profile.refModes.includes('depthVideo') || profile.id.startsWith('wan') || profile.id.startsWith('ltx'))) {
       const workflow = buildComfyWorkflow(profile, shot, `${sanitize(shot.name)}_depth.mp4`, generatePrompt(scene, shot, profile))
       await window.blockout.exportWriteFile(`${pkg}/comfyui-workflow.json`, workflow)
     }

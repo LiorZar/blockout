@@ -33,3 +33,15 @@ Probes, frames and the sheet: `.maestro/export-look/`.
 
 ## Done when
 Before/after numbers per task; `.maestro/export-look/SHEET.png` looked at; one full gate (`Test Files`), smoke, the fork e2e set (`mcp-gaps`, `fight-camera`, `mannequin`, `weapons`, `mocap-bots`, `export-flush`, `mocap-race`, `export-editor-only`, plus `export-look`) with `--workers=1`, all through the lock; MODIFICATIONS entry; each task staged alone and reported.
+
+## Calls made on the way
+
+- **T2, the fill.** Swept intensity 0–3.2 × drop 0–0.6 rad on a night street (classic man, mannequin woman, both bots; `.maestro/export-look/tune-a`, `tune-b`). Every drop lifts the cast far more than the street; a bigger drop lights more ground. Chosen: drop 0.05 rad (3°), intensity 0.9: cast / rest of frame 0.81 → 2.78, rest +11 %, darkest body (classic man) 1.95× the rest. Targets kept: ratio ≥ 2, every body ≥ 1.5×, rest ≤ +15 %.
+- **T3, Seedance 2.5's cap.** Scenario makes 4–30 s and "Auto" matches the longest reference clip; the reference-clip cap isn't published. 15 s is kept (Seedance 2.0's reference cap) until a longer reference is confirmed; `minDuration` 4.
+- **T3, Kling's prompt cap.** 2500 characters (Kling's API limit; Scenario doesn't publish one).
+- **T3, look images.** LTX's optional first-frame image and Kling's reference images are finished looks, so `refModes` is the video only; the grey first-frame still would pull the render back to grey.
+
+## Finding: exports are not bit-stable on this GPU stack (pre-existing; T1 makes it show more)
+
+On this machine (ANGLE D3D11, RTX 3070 Ti), a render's float results move by 1 ulp while the page composites anything (the viewport, a CSS animation, a visible canvas), for ~2.2 s after it stops; idle, repeated renders are bit-stable. 8-bit output flips ±1 on a handful of pixels: about 2 values per 1080p frame with no tone mapping, about 9 with ACES. The edf6dc0 build's exports already differ between runs at the raw level (2 of 2 runs, the first ~1 s of some exports); with ACES the difference sometimes survives x264 (day street: 1 frame of 48, ≤ 3 levels, ~170 pixels). `.maestro/export-look/det*.mjs`.
+

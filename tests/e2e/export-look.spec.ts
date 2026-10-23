@@ -243,3 +243,28 @@ test('the night cast reads against the street and the frame stays night', async 
   // Still night: the rest of the frame barely moves.
   expect(m.bg, info).toBeLessThanOrEqual(1.15 * m.bgNoFill)
 })
+
+test('the LTX Render to Real, Kling V3 Omni and Seedance 2.5 profiles list their limits and warn on export', async () => {
+  type P = { id: string; minDuration?: number; maxDuration?: number; maxFrames?: number; maxPromptChars?: number; resolutionCaps?: unknown }
+  const profiles = (await rpc<P[]>('list_export_profiles')).data!
+  const byId = (id: string): P | undefined => profiles.find((p) => p.id === id)
+  expect(byId('ltx-2.3-render-to-real')).toMatchObject({
+    maxDuration: 15,
+    maxFrames: 361,
+    resolutionCaps: [
+      { label: '720p', maxDuration: 6 },
+      { label: '480p', maxDuration: 15 }
+    ]
+  })
+  expect(byId('kling-v3-omni')).toMatchObject({ minDuration: 3, maxDuration: 10, maxPromptChars: 2500 })
+  expect(byId('seedance-2.5')).toMatchObject({ minDuration: 4, maxDuration: 15 })
+
+  // The night shot is 1 s: Kling says it needs 3 s; LTX takes it and, as a hosted model, gets no ComfyUI workflow.
+  type Res = { packagePath: string; warnings: string[] }
+  const kling = (await rpc<Res>('export_shot', { profileId: 'kling-v3-omni', passes: { clean: true, depth: false } })).data!
+  expect(kling.warnings.join(' ')).toContain('needs at least 3 s')
+  const ltx = (await rpc<Res>('export_shot', { profileId: 'ltx-2.3-render-to-real', passes: { clean: true, depth: false } })).data!
+  expect(ltx.warnings).toEqual([])
+  expect(existsSync(join(ltx.packagePath, 'prompt.txt'))).toBe(true)
+  expect(existsSync(join(ltx.packagePath, 'comfyui-workflow.json'))).toBe(false)
+})

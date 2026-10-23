@@ -1781,7 +1781,7 @@
   {
     "name": "list_export_profiles",
     "title": "List export targets",
-    "description": "List the AI video and image models Blockout can export for, with their maximum and recommended shot length, aspect ratios, frame rate, input-file and prompt caps, and what to attach where. Use an id with export_shot.",
+    "description": "List the AI video and image models Blockout can export for, with their maximum and recommended shot length, the minimum, frame cap and length per output resolution where a model has them, aspect ratios, frame rate, input-file and prompt caps, and what to attach where. Use an id with export_shot.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -1794,13 +1794,13 @@
   {
     "name": "export_shot",
     "title": "Export the shot",
-    "description": "Export the active shot as a clean blockout package for an AI video model: the reference video, a depth video, stills at every camera mark, and a prompt tailored to the target that says what each grey shape is, what happens and what the camera does. Takes a while for long shots. Call screenshot first to check the framing. Returns the package folder, its path inside the project, the prompt, and warnings for any limit of the target the shot breaks (too long, an aspect it does not take).",
+    "description": "Export the active shot as a clean blockout package for an AI video model: the reference video, a depth video, stills at every camera mark, and a prompt tailored to the target that says what each grey shape is, what happens and what the camera does. Takes a while for long shots. Call screenshot first to check the framing. Returns the package folder, its path inside the project, the prompt, and warnings for any limit of the target the shot breaks (too long or too short, too many frames, an output resolution to pick, an aspect it does not take).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "profileId": {
           "type": "string",
-          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video)."
+          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video, \"ltx-2.3-render-to-real\" for LTX 2.3 Render to Real, \"kling-v3-omni\" for Kling V3 Omni, \"seedance-2.5\" for Seedance 2.5)."
         },
         "passes": {
           "type": "object",
@@ -1852,7 +1852,7 @@
       "properties": {
         "profileId": {
           "type": "string",
-          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video)."
+          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video, \"ltx-2.3-render-to-real\" for LTX 2.3 Render to Real, \"kling-v3-omni\" for Kling V3 Omni, \"seedance-2.5\" for Seedance 2.5)."
         },
         "resolution": {
           "type": "string",
@@ -1890,7 +1890,7 @@
       "properties": {
         "profileId": {
           "type": "string",
-          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video)."
+          "description": "Export target id from list_export_profiles (default \"seedance-2\"; \"minimax-h3-max\" for MiniMax H3 Max 3D to Video, \"ltx-2.3-render-to-real\" for LTX 2.3 Render to Real, \"kling-v3-omni\" for Kling V3 Omni, \"seedance-2.5\" for Seedance 2.5)."
         },
         "resolution": {
           "type": "string",

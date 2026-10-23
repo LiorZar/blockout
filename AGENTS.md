@@ -76,7 +76,7 @@ Headless/dialog-free driving: launch with env `BLOCKOUT_SMOKE_DIR=/some/dir` —
 
 ## Common tasks
 
-- **Add a generator profile**: edit `BUILTIN_PROFILES` in `src/engine/profiles.ts` (see `docs/generator-profiles.md`). Add a prompt test in `tests/unit/schema.test.ts`. Fork: `maxFileMB` caps the encoder's bitrate, `maxPromptChars` trims the prompt, `promptStyle: 'previs'` ends it with the profile's own clause; the prompt's proxy map / action / camera sections live in `src/engine/prompt-scene.ts` (tests: `tests/unit/profiles-h3.test.ts`, `tests/unit/prompt-scene.test.ts`).
+- **Add a generator profile**: edit `BUILTIN_PROFILES` in `src/engine/profiles.ts` (see `docs/generator-profiles.md`). Add a prompt test in `tests/unit/schema.test.ts`. Fork: `maxFileMB` caps the encoder's bitrate, `maxPromptChars` trims the prompt, `promptStyle: 'previs'` ends it with the profile's own clause, `minDuration` / `maxFrames` / `resolutionCaps` add warnings (`profileWarnings`); the prompt's proxy map / action / camera sections live in `src/engine/prompt-scene.ts` (tests: `tests/unit/profiles-h3.test.ts`, `tests/unit/profiles-models.test.ts`, `tests/unit/prompt-scene.test.ts`).
 - **Add a library asset**: add a catalog entry in `src/engine/assets.ts` (id, height, speedScale, motion), a builder case in `src/renderer/viewport/builders.ts` (grey-box, deterministic, forward −Z), and an emoji thumb in `src/renderer/panels/Library.tsx`.
 - **Add an export pass**: extend `RenderPass` in `SceneManager.renderFrameAt`, wire a toggle in `DeliverPanel.tsx` and the pass loop in `export/exporter.ts`.
 - **Change the document schema**: bump nothing lightly — update types in `engine/types.ts`, factories/validation in `engine/schema.ts`, and the round-trip test. Never break `parseProject` on existing files; migrate instead.
@@ -151,7 +151,7 @@ Fork additions (2026; the catalog is `mcp/tools.json`, shared by both transports
 | `apply_motion` | `entityIds, presetId` | A motion-library move on people |
 | `undo` / `redo` / `save_project` | — | History and save |
 | `list_export_profiles` | — | Export targets |
-| `export_shot` | `profileId?, passes?, labels?, resolution?` | Export the package (default `seedance-2`, clean + depth; `minimax-h3-max` for MiniMax H3 Max); returns `packagePath`, `relativePath`, `prompt`, `warnings` (limits the shot breaks) |
+| `export_shot` | `profileId?, passes?, labels?, resolution?` | Export the package (default `seedance-2`, clean + depth; `minimax-h3-max` for MiniMax H3 Max, `ltx-2.3-render-to-real`, `kling-v3-omni`, `seedance-2.5` for those models); returns `packagePath`, `relativePath`, `prompt`, `warnings` (limits the shot breaks) |
 | `export_frame` / `export_contact_sheet` / `export_scene_animatic` | `profileId?, resolution?, labels?` / — / `profileId?, resolution?` | Still, contact sheet, scene animatic |
 | `frame_shot` | `words` or `size, subjectIds, over?, side?, angle?, lens?, dutchDeg?`; `time?` | Shot words ("MCU on B, over A's right shoulder, 50mm") → a live camera mark re-solved every frame. Over a shoulder, the shoulder stays in frame and the eyes sit on the far third; a high / low angle may back the camera off (`achievedSize` says what the frame is) |
 | `list_fight_moves` | — | Strikes, aliases, default targets and impacts |
