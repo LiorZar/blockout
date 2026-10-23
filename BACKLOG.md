@@ -42,6 +42,7 @@
 - Switching to Deliver on a staged bot fight still runs a ~0.5 s main-thread task before the prompt shows (fight-worker e2e: tasks over 50 ms from the switch to the prompt 517 / 77 ms; the solve itself is in the worker); not profiled.
 - `fight_coverage` mode `follow` sets the shot camera's rig to handheld (intensity 0.4) and no other mode sets it back, so a `master`, `punch-in` or `over-shoulder` run after a `follow` run plays handheld too (seen in shot-clear's probes: alley over-shoulder after follow, `rig handheld`). Restore the rig the camera had before coverage, or set each mode's own.
 - `frame_shot` (`setShotAtTime` → `clearShotSpec`) checks a mark's clear view from its own time to the next mark only; the move into it from the previous mark (the camera already heading for the new framing) isn't checked, unlike fight coverage, which checks each framing from the start of its 0.4 s move (shot-clear T1). Check from the previous mark's time + hold.
+- Laying a camera move on the open road can take seconds: 0.44 s on average and 6.8 s at worst over the 39 presets on a car chase's lead (street-kit T2), when shot-clear's fit finds no clear variant and runs its fallback search over every frame (static moves the cars drive through, orbits inside the street walls). Cull the set boxes to the move's reach, or stop the fallback early.
 
 ## Features
 
@@ -51,7 +52,7 @@
 - ~~Export profiles for LTX 2.3 Render-to-Real (720p ≤ ~6 s / 480p ≤ ~15 s, ≤ 361 frames), Kling V3 Omni (3–10 s) and Seedance 2.5 (CLAUDE.md limits); add a `minDuration` field for Kling.~~ DONE (export-look: `ltx-2.3-render-to-real`, `kling-v3-omni`, `seedance-2.5`; `minDuration` / `maxFrames` / `resolutionCaps` warnings)
 - ~~Open road / extendable street kit (a 6 s car chase covers ~92 m against a 36 m tile).~~ DONE (street-kit T1: `env.openRoad`, as long as `params.length`; a car chase lays one under itself or lengthens the one it is placed on; car-frames off the street 7143/8668 → 0)
 - ~~Occlusion-aware camera moves (an orbit inside the alley kit renders only wall).~~ DONE (shot-clear T2: every non-follow preset is fitted to the set as a whole, closer on a wider lens, higher, its sweep cut and turned, or warns; the 39 presets in the alley and downtown from two starts: 49 → 0 moves blocked without a warning; `src/engine/move-clear.ts`)
-- Vehicle-aware sizing in the 39 `camera-moves.ts` presets (the shot solver already handles vehicle extents).
+- ~~Vehicle-aware sizing in the 39 `camera-moves.ts` presets (the shot solver already handles vehicle extents).~~ DONE (street-kit T2: near distances scaled by the vehicle, tracking marks back off until the car fits, a move that still loses it warns; 312 preset moves on a chase lead: 172 → 0 losing the car without a warning)
 - Vehicle-aware speed warnings.
 - A read-only top-down view tool for agents (Clara added a camera mark at y 14 m to read the floor plan; `screenshot` takes no view argument).
 - ~~Narrow layout: docked beside Clara, Blockout can be 650–950 px wide; below ~950 px the viewport becomes a sliver and the titlebar buttons wrap (seen in the 2026-10-19 Clara test). Collapse the side panels when narrow.~~ DONE

@@ -31,7 +31,8 @@ import { headingOf } from '@engine/path'
 import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
 import { groupShotPose, pickFramingSubjectIds } from '@engine/framing'
 import type { ViewOutcome } from '@engine/camera-clear'
-import { clearFollowMarks, clearFramingPose, clearMoveMarks } from '../camera-view'
+import { clearFramingPose } from '../camera-view'
+import { layCameraMove } from '../camera-move' // fork (street-kit)
 import type { Entity, EntityState, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
 import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
@@ -1789,36 +1790,13 @@ export class SceneManager {
       return
     }
     const entity = this.docScene.entities.find((e) => e.id === subject.id)!
-    const evaluator = this.evaluator
-    const cam0 = evaluator.evaluate(0).camera
-    const duration = this.shot.duration
-    const specs = preset.generate({
-      subjectAt: (t) => {
-        const st = evaluator.evaluate(Math.min(Math.max(t, 0), duration))
-        const es = st.entities.find((e) => e.entityId === subject.id)
-        return es
-          ? { x: es.position.x, y: es.position.y, z: es.position.z, heading: es.heading }
-          : { x: subject.pos.x, y: subject.pos.y, z: subject.pos.z, heading: 0 }
-      },
-      subjectHeight: entityHeight(entity.assetId, entity.transform.scale, entity.params),
-      camera: {
-        x: cam0.position.x,
-        y: cam0.position.y,
-        z: cam0.position.z,
-        pan: cam0.pan,
-        tilt: cam0.tilt,
-        focalLength: cam0.focalLength
-      },
-      duration
-    })
     // Fork (fix-camera-set): a people-follow move keeps clear of the set and other cast (camera-view.ts).
     // Fork (shot-clear): any other move is fitted to the set round its subject.
-    const cleared =
-      preset.category === 'follow' && entity.assetId.startsWith('person.')
-        ? clearFollowMarks(this.docScene, this.shot, specs, subject.id)
-        : clearMoveMarks(this.docScene, this.shot, specs, subject.id, preset.track, preset.name)
+    // Fork (street-kit): laid by renderer/camera-move.ts, a vehicle's size in the preset and its box kept in frame.
+    const cleared = layCameraMove(this.docScene, this.shot, presetId, subject.id)
+    if (!cleared) return
     const shotId = this.shot.id
-    const marks = (cleared?.marks ?? specs).map((spec) => ({
+    const marks = cleared.marks.map((spec) => ({
       id: newId('cmark'),
       time: spec.time,
       hold: spec.hold,

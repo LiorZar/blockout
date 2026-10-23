@@ -1481,6 +1481,26 @@ Changes in this fork (2026):
   overlap, no heading step over 2°); void (a ray below the horizon meeting no set, car or kit floor)
   from three live shot-words cameras on the lead, worst frame HEAD on Downtown 11–64 %, now 0 %.
   Test: `tests/unit/road-kit.test.ts` (new).
+- Camera moves sized for a vehicle (street-kit T2; `src/engine/camera-moves.ts`, `src/engine/move-clear.ts`,
+  `src/engine/vehicles.ts`, `src/renderer/camera-move.ts` (new), `src/renderer/viewport/SceneManager.ts`): the 39
+  presets were sized for a person, so on a car the follow, lead and side-track moves rode 1.7 m off
+  its bumper and the frame was all car body. `CameraMoveContext.subjectBox` (a vehicle's drawn box)
+  makes each preset's near distances (end distances, minimum radii, follow / lead / flank offsets, a
+  boom's peak) its longest side / 1.8 m times longer, and a follow height keeps its rise over the aim
+  point scaled the same way; aerial altitudes and the low angles stay put, and a person's moves are
+  unchanged. `clearMove` then keeps the car whole in frame: a moving car's tracking move rides at its
+  speed from the first frame (no eased start or stop), each tracking mark backs off along its own line
+  until the car's box fits in 90 % of the frame, marks round a frame that still loses it (a pass over
+  the car) back off further, a set fit may not lose the box where the move kept it, and a move that
+  still does says so (`leaves LEAD partly out of frame on n of m frames`). The pipeline that was inline
+  in `applyCameraMove` is `layCameraMove` (no WebGL), so tests lay moves exactly as the app does. The 39
+  presets on a chase's lead car, alone and in a 4-car chase, straight and weaving, the camera starting
+  on the road ahead or on the sidewalk (312 moves, every frame at 24 fps): moves that lose the lead's box
+  with no warning, HEAD 172, now 0; moves with the lens inside a car's box 0 and 0; 51 warn (40 the
+  static moves that look away by design: whip pan, static pan, slow tilt, snap and crash zoom; 11 orbits
+  and spirals the street's walls still block on 1–3 % of frames). Laying a move on the road takes 0.44 s
+  on average, up to 6.8 s when no set fit is clear (the fallback search). Test:
+  `tests/unit/vehicle-moves.test.ts` (new).
 - Fight coverage off the main thread (main-thread T1; `src/engine/fight/coverage-clear.ts`,
   `src/engine/fight/coverage-memo.ts` (new), `src/engine/fight/coverage.ts`, `src/engine/fight/solve-memo.ts`,
   `src/engine/camera-clear.ts`, `src/engine/shot.ts`, `src/engine/evaluate.ts`, `src/renderer/camera-view.ts`,

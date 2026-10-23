@@ -11,7 +11,8 @@
  * PURE: no DOM / three.js / Electron.
  */
 
-import type { V3 } from './types'
+import { ASPECT_RATIOS } from './camera'
+import type { AspectId, V3 } from './types'
 
 export interface VehicleBox {
   /** Half width (m). */
@@ -54,4 +55,36 @@ export function vehicleCorners(b: VehicleBox, position: V3, heading: number): V3
     for (const a of [b.front, -b.back])
       for (const y of [0, b.h]) out.push({ x: position.x + r.x * s + f.x * a, y: position.y + y, z: position.z + r.z * s + f.z * a })
   return out
+}
+
+/**
+ * How far the furthest of `pts` sits from the frame's middle, as a share of
+ * the frame (≤ 1: all in frame; Infinity: one is behind the lens). The camera
+ * turns by pan about Y, tilt about X and roll about its view axis, and
+ * renders `aspect` wide at its vertical field of view `vfov`.
+ */
+export function boxReach(pts: V3[], cam: { position: V3; pan: number; tilt: number; roll: number; vfov: number }, aspect: AspectId): number {
+  const tanV = Math.tan(cam.vfov / 2)
+  const tanH = tanV * ASPECT_RATIOS[aspect]
+  const cy = Math.cos(-cam.pan)
+  const sy = Math.sin(-cam.pan)
+  const cx = Math.cos(-cam.tilt)
+  const sx = Math.sin(-cam.tilt)
+  const cr = Math.cos(-cam.roll)
+  const sr = Math.sin(-cam.roll)
+  let reach = 0
+  for (const p of pts) {
+    const dx = p.x - cam.position.x
+    const dy = p.y - cam.position.y
+    const dz = p.z - cam.position.z
+    const x1 = cy * dx + sy * dz
+    const z1 = -sy * dx + cy * dz
+    const y2 = cx * dy - sx * z1
+    const z2 = sx * dy + cx * z1
+    const x3 = cr * x1 - sr * y2
+    const y3 = sr * x1 + cr * y2
+    if (z2 > -0.05) return Infinity
+    reach = Math.max(reach, Math.abs(x3 / -z2 / tanH), Math.abs(y3 / -z2 / tanV))
+  }
+  return reach
 }

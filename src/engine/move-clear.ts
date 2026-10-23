@@ -12,6 +12,12 @@
  * the most frames is kept and a warning says so. A clear move is unchanged.
  * People-follow moves keep camera-clear.ts's clearFollowMove.
  *
+ * Fork (street-kit): on a vehicle the whole car stays in frame. Each tracking
+ * mark first backs off along its own line from the aim point until the car's
+ * box fits in VEHICLE_FIT of the frame; a fit then may not lose the box from
+ * frame where the move kept it, and a move that still loses it on some frame
+ * (a whip pan, a snap zoom) says so.
+ *
  * PURE: no DOM / three.js / Electron, no randomness. It runs when a move is laid.
  */
 
@@ -20,10 +26,14 @@ import type { CameraMarkSpec } from './camera-moves'
 import { ShotEvaluator } from './evaluate'
 import { turnXZ } from './shot'
 import { trackAim } from './track-aim'
-import type { CameraMark, Scene, Shot, V3 } from './types'
+import { verticalFov } from './camera'
+import { boxReach, vehicleBox, vehicleCorners, type VehicleBox } from './vehicles'
+import type { CameraMark, CameraState, Scene, Shot, V3 } from './types'
 
 /** A set piece may cover this share of a move's subject's projected box on any frame. */
 export const MOVE_SET_COVER = 0.2
+/** Fork (street-kit): a vehicle's box fills at most this share of the frame at a tracking move's marks. */
+export const VEHICLE_FIT = 0.9
 
 export interface MoveVariant {
   /** Distance and lens factor (< 1: closer on a wider lens). */
@@ -121,6 +131,43 @@ export function describeMove(v: MoveVariant, lens: number): string {
   return parts.join(', ')
 }
 
+/**
+ * Fork (street-kit): a tracking move's marks backed off along their own lines
+ * from their pivots (scaled about them, so the angle holds) until a vehicle's
+ * box fits in VEHICLE_FIT of the frame; marks already fitting are unchanged.
+ */
+export function backOffForVehicle(
+  specs: CameraMarkSpec[],
+  pivots: V3[],
+  box: VehicleBox,
+  stateAt: (t: number) => { position: V3; heading: number } | undefined,
+  shot: Shot
+): CameraMarkSpec[] {
+  return specs.map((m, i) => {
+    const s = stateAt(m.time)
+    const L = pivots[i]!
+    if (!s || Math.hypot(m.position.x - L.x, m.position.y - L.y, m.position.z - L.z) < 1e-6) return m
+    const pts = vehicleCorners(box, s.position, s.heading)
+    const vfov = verticalFov(shot.camera.sensorId, m.focalLength, shot.aspect)
+    const pose = (k: number): { position: V3; pan: number; tilt: number; roll: number; vfov: number } => {
+      const position = { x: L.x + (m.position.x - L.x) * k, y: Math.max(0.2, L.y + (m.position.y - L.y) * k), z: L.z + (m.position.z - L.z) * k }
+      return { position, ...aimAt(position, L), roll: m.roll, vfov }
+    }
+    const fits = (k: number): boolean => boxReach(pts, pose(k), shot.aspect) <= VEHICLE_FIT
+    if (fits(1)) return m
+    let lo = 1
+    let hi = 1.5
+    while (hi < 20 && !fits(hi)) [lo, hi] = [hi, hi * 1.5]
+    for (let j = 0; j < 24; j++) {
+      const mid = (lo + hi) / 2
+      if (fits(mid)) hi = mid
+      else lo = mid
+    }
+    const p = pose(hi)
+    return { ...m, position: p.position, pan: p.pan, tilt: p.tilt }
+  })
+}
+
 /** Fits for the least blocked search when no fit is clear (a coarse grid, every frame each). */
 const FALLBACK_TURN = [0, 40, -40, 90, -90, 180]
 const FALLBACK_RAISE = [0, 1, 2.5]
@@ -153,14 +200,32 @@ export function clearMove(
   }
   const pivots = specs.map((m) => pivotAt(m.time))
   const name = nameOfEntity(scene)(subjectId)
+  // Fork (street-kit): a vehicle's whole box in frame: tracking marks back off until it fits.
+  const box = vehicleBox(entity.assetId, entity.transform.scale)
+  if (box && opts.track) {
+    // A moving vehicle: the camera rides at its speed from the first frame (an eased start or stop falls behind or runs into it).
+    const from = subjectAt(0)?.position
+    const to = subjectAt(shot.duration)?.position
+    const moving = !!from && !!to && Math.hypot(to.x - from.x, to.z - from.z) > 1
+    specs = backOffForVehicle(moving ? specs.map((m) => ({ ...m, easeIn: 0, easeOut: 0 })) : specs, pivots, box, subjectAt, shot)
+  }
   // The camera alone (no cast): the path the marks make; a tracking move's aim is taken from the subject below.
   const cameraOnly = { ...scene, entities: [], blocking: [] } as Scene
-  const pathOf = (marks: CameraMarkSpec[]): ((t: number) => { position: V3; pan: number; tilt: number; focalLength: number }) => {
+  const pathOf = (marks: CameraMarkSpec[]): ((t: number) => CameraState) => {
     const camMarks: CameraMark[] = marks.map((m, i) => ({ id: `fit${i}`, ...m, position: { ...m.position } }))
     const ev = new ShotEvaluator(cameraOnly, { ...shot, camera: { ...shot.camera, marks: camMarks, trackEntityId: undefined } })
     return (t) => ev.evaluate(t).camera
   }
   const ignore = new Set([subjectId])
+  // Fork (street-kit): how far a vehicle's box reaches across the frame (≤ 1: all of it in frame).
+  const reachAt = (path: ReturnType<typeof pathOf>, t: number): number => {
+    const s = subjectAt(t)
+    if (!box || !s) return 0
+    const c = path(t)
+    const aim = opts.track ? aimAt(c.position, trackAim(entity, s)) : c
+    return boxReach(vehicleCorners(box, s.position, s.heading), { position: c.position, pan: aim.pan, tilt: aim.tilt, roll: c.roll, vfov: c.vfov }, shot.aspect)
+  }
+  let keepFrame = false
   const check = (path: ReturnType<typeof pathOf>, t: number): { ok: boolean; by: string | null } => {
     const s = subjectAt(t)
     if (!s) return { ok: true, by: null }
@@ -169,6 +234,7 @@ export function clearMove(
     const world = at(t).world
     const inside = insideOf(c.position, world)
     if (inside) return { ok: false, by: inside }
+    if (keepFrame && reachAt(path, t) > 1 + 1e-9) return { ok: false, by: null }
     const cover = setCover(c.position, viewFrame(aim, c.focalLength, shot.camera.sensorId, shot.aspect), s, world.boxes, ignore)
     return cover.share <= MOVE_SET_COVER + 1e-9 ? { ok: true, by: null } : { ok: false, by: cover.by }
   }
@@ -176,16 +242,46 @@ export function clearMove(
   // Every sixth frame first: most fits fail early.
   const order = [...frames.filter((_, i) => i % 6 === 0), ...frames.filter((_, i) => i % 6 !== 0)]
   const lens = specs[0]!.focalLength
+  // Fork (street-kit): where a tracking move still loses the vehicle between its marks (passing over it), the marks round
+  // that frame back off further, a few passes.
+  if (box && opts.track) {
+    for (let pass = 0; pass < 6; pass++) {
+      const path = pathOf(specs)
+      const near = new Set<number>()
+      for (const t of frames) {
+        if (reachAt(path, t) <= 1 + 1e-9) continue
+        const i = specs.findIndex((m) => m.time >= t - 1e-9)
+        near.add(Math.max(0, i - 1)).add(Math.max(0, i))
+      }
+      if (near.size === 0) break
+      specs = specs.map((m, i) => {
+        if (!near.has(i)) return m
+        const L = pivots[i]!
+        const position = { x: L.x + (m.position.x - L.x) * 1.15, y: Math.max(0.2, L.y + (m.position.y - L.y) * 1.15), z: L.z + (m.position.z - L.z) * 1.15 }
+        return { ...m, position, ...aimAt(position, L) }
+      })
+    }
+  }
   const asked = pathOf(specs)
+  // Fork (street-kit): a fit may not lose a vehicle the move keeps in frame; a move that loses it anyway says so.
+  keepFrame = !!box && frames.every((t) => reachAt(asked, t) <= 1 + 1e-9)
+  const framed = <R extends { marks: CameraMarkSpec[]; warning?: string }>(r: R): R => {
+    if (!box) return r
+    const path = pathOf(r.marks)
+    const out = frames.filter((t) => reachAt(path, t) > 1 + 1e-9).length
+    if (out === 0) return r
+    const lost = `${opts.name} leaves ${name} partly out of frame on ${out} of ${frames.length} frames.`
+    return { ...r, warning: r.warning ? `${r.warning} ${lost}` : lost }
+  }
   const blockedAt = order.map((t) => check(asked, t)).find((c) => !c.ok)
-  if (!blockedAt) return { marks: specs, variant: zero, share: 1 }
+  if (!blockedAt) return framed({ marks: specs, variant: zero, share: 1 })
   const blocker = blockedAt.by
   for (const v of moveVariants(lens, moveSweeps(specs, pivots))) {
     if (isZeroMove(v)) continue
     const marks = fitMoveMarks(specs, pivots, v, opts.track)
     const path = pathOf(marks)
     if (order.every((t) => check(path, t).ok)) {
-      return { marks, variant: v, share: 1, note: `${opts.name} fitted to the set round ${name}${blocker ? ` (blocked by ${blocker})` : ''}: ${describeMove(v, lens)}.` }
+      return framed({ marks, variant: v, share: 1, note: `${opts.name} fitted to the set round ${name}${blocker ? ` (blocked by ${blocker})` : ''}: ${describeMove(v, lens)}.` })
     }
   }
   // No fit is clear: the one clear on the most frames (ties: the nearest).
@@ -202,11 +298,11 @@ export function clearMove(
           if (share > best.share + 1e-9 || (Math.abs(share - best.share) <= 1e-9 && moveCost(v) < moveCost(best.v))) best = { v, marks, share }
         }
   const how = describeMove(best.v, lens)
-  return {
+  return framed({
     marks: best.marks,
     variant: best.v,
     share: best.share,
     ...(how ? { note: `${opts.name} fitted to the set round ${name}: ${how}.` } : {}),
     warning: `${opts.name} can't keep ${name} in view here${blocker ? ` past ${blocker}` : ''}: ${Math.round((1 - best.share) * 100)}% of the move is still blocked.`
-  }
+  })
 }

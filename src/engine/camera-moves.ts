@@ -1,3 +1,4 @@
+// Modified in this fork (2026): the presets sized for a vehicle (street-kit); see MODIFICATIONS.md.
 /**
  * Camera-move preset library for Blockout — one-click classic camera moves.
  *
@@ -38,6 +39,12 @@ export interface CameraMoveContext {
   /** Live camera state at t=0 — presets should START near this where sensible. */
   camera: { x: number; y: number; z: number; pan: number; tilt: number; focalLength: number }
   duration: number
+  /**
+   * Fork (street-kit): a vehicle's box (m). A preset's near distances are
+   * person-sized; on a vehicle they grow with it (`reach`). Undefined for
+   * anything else, which moves exactly as before.
+   */
+  subjectBox?: { length: number; width: number; height: number }
 }
 
 export interface CameraMarkSpec {
@@ -163,6 +170,20 @@ function times(count: number, duration: number): number[] {
   return out
 }
 
+/** Fork (street-kit): the standing person the presets' distances were made for (m). */
+const PERSON_SIZE = 1.8
+
+/** Fork (street-kit): how many times the subject outsizes that person (a vehicle's longest side); 1 for anything but a vehicle. */
+function reach(ctx: CameraMoveContext): number {
+  const b = ctx.subjectBox
+  return b ? Math.max(1, Math.max(b.length, b.height) / PERSON_SIZE) : 1
+}
+
+/** Fork (street-kit): a camera height a preset gives for a person (m over its feet), on this subject: on a vehicle, the same rise over its aim point, `reach` times larger. */
+function riseOver(ctx: CameraMoveContext, s: SubjectSample, y: number): number {
+  return ctx.subjectBox ? aimPoint(s, ctx.subjectHeight).y + (y - PERSON_SIZE * 0.8) * reach(ctx) : s.y + y
+}
+
 /** Is the subject airborne at t=0? (Used to scale/allow low positions.) */
 function isAirborne(ctx: CameraMoveContext): boolean {
   return ctx.subjectAt(0).y > 3
@@ -183,8 +204,8 @@ const slowPushIn: CameraMovePreset = {
     const ts = times(7, ctx.duration)
     const s0 = ctx.subjectAt(0)
     const startAim = aimPoint(s0, ctx.subjectHeight)
-    const startDist = Math.max(planarDist(cam, startAim), 0.5)
-    const endDist = 2
+    const startDist = Math.max(planarDist(cam, startAim), 0.5 * reach(ctx))
+    const endDist = 2 * reach(ctx)
     const airborne = isAirborne(ctx)
     return build(
       ts.map((t) => {
@@ -219,8 +240,8 @@ const crashIn: CameraMovePreset = {
     const ts = times(7, ctx.duration)
     const s0 = ctx.subjectAt(0)
     const startAim = aimPoint(s0, ctx.subjectHeight)
-    const startDist = Math.max(planarDist(cam, startAim), 0.6)
-    const endDist = 1.2
+    const startDist = Math.max(planarDist(cam, startAim), 0.6 * reach(ctx))
+    const endDist = 1.2 * reach(ctx)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
     const airborne = isAirborne(ctx)
@@ -255,8 +276,8 @@ const pullBackReveal: CameraMovePreset = {
     const ts = times(7, ctx.duration)
     const s0 = ctx.subjectAt(0)
     const startAim = aimPoint(s0, ctx.subjectHeight)
-    const startDist = Math.max(planarDist(cam, startAim), 2)
-    const endDist = startDist + 12
+    const startDist = Math.max(planarDist(cam, startAim), 2 * reach(ctx))
+    const endDist = startDist + 12 * reach(ctx)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
     const airborne = isAirborne(ctx)
@@ -290,8 +311,8 @@ const creepInLow: CameraMovePreset = {
     const ts = times(7, ctx.duration)
     const s0 = ctx.subjectAt(0)
     const startAim = aimPoint(s0, ctx.subjectHeight)
-    const startDist = Math.max(planarDist(cam, startAim), 4)
-    const endDist = 2.5
+    const startDist = Math.max(planarDist(cam, startAim), 4 * reach(ctx))
+    const endDist = 2.5 * reach(ctx)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
     const airborne = isAirborne(ctx)
@@ -332,7 +353,7 @@ function orbit(
   const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
   const s0 = ctx.subjectAt(0)
   const center0 = { x: s0.x, y: s0.y, z: s0.z }
-  const radius0 = Math.max(planarDist(cam, center0), 2)
+  const radius0 = Math.max(planarDist(cam, center0), 2 * reach(ctx))
   const startAz = headingOf({ x: cam.x - center0.x, y: 0, z: cam.z - center0.z })
   const camY = ctx.camera.y
   const airborne = isAirborne(ctx)
@@ -431,7 +452,7 @@ const craneUpReveal: CameraMovePreset = {
     const startAim = aimPoint(s0, ctx.subjectHeight)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
-    const radius = Math.max(planarDist(cam, startAim), 3)
+    const radius = Math.max(planarDist(cam, startAim), 3 * reach(ctx))
     const ts = times(7, ctx.duration)
     const airborne = isAirborne(ctx)
     return build(
@@ -464,7 +485,7 @@ const craneDownIntro: CameraMovePreset = {
     const startAim = aimPoint(s0, ctx.subjectHeight)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
-    const radius = Math.max(planarDist(cam, startAim), 3)
+    const radius = Math.max(planarDist(cam, startAim), 3 * reach(ctx))
     const ts = times(7, ctx.duration)
     const airborne = isAirborne(ctx)
     return build(
@@ -497,7 +518,7 @@ const pedestalUp: CameraMovePreset = {
     const startAim = aimPoint(s0, ctx.subjectHeight)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
-    const radius = Math.max(planarDist(cam, startAim), 2)
+    const radius = Math.max(planarDist(cam, startAim), 2 * reach(ctx))
     const ts = times(6, ctx.duration)
     const airborne = isAirborne(ctx)
     return build(
@@ -531,10 +552,10 @@ const boomOver: CameraMovePreset = {
     const bearing = headingOf({ x: cam.x - center0.x, y: 0, z: cam.z - center0.z })
     const nearDir = forward(bearing)
     const farDir = forward(bearing + Math.PI)
-    const radius = Math.max(planarDist(cam, center0), 3)
+    const radius = Math.max(planarDist(cam, center0), 3 * reach(ctx))
     const ts = times(7, ctx.duration)
     const airborne = isAirborne(ctx)
-    const peakY = ctx.camera.y + 6
+    const peakY = ctx.camera.y + 6 * reach(ctx)
     return build(
       ts.map((t) => {
         const u = t / ctx.duration
@@ -572,7 +593,7 @@ const droneRisePullback: CameraMovePreset = {
     const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
     const s0 = ctx.subjectAt(0)
     const startAim = aimPoint(s0, ctx.subjectHeight)
-    const startDist = Math.max(planarDist(cam, startAim), 3)
+    const startDist = Math.max(planarDist(cam, startAim), 3 * reach(ctx))
     const endDist = startDist + 20
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
@@ -717,9 +738,9 @@ const followBehind: CameraMovePreset = {
   track: true,
   generate(ctx) {
     const airborne = isAirborne(ctx)
-    const scale = airborne ? 2.5 : 1
+    const scale = airborne ? Math.max(2.5, reach(ctx)) : reach(ctx)
     const distance = 4 * scale
-    const height = 1.8 * scale
+    const height = 1.8 * (airborne ? scale : 1)
     const ts = times(8, ctx.duration)
     return build(
       ts.map((t) => {
@@ -728,7 +749,7 @@ const followBehind: CameraMovePreset = {
         const target = aimPoint(s, ctx.subjectHeight)
         return {
           t,
-          pos: { x: s.x - back.x * distance, y: s.y + height, z: s.z - back.z * distance },
+          pos: { x: s.x - back.x * distance, y: airborne ? s.y + height : riseOver(ctx, s, height), z: s.z - back.z * distance },
           aimAt: target,
           focalLength: ctx.camera.focalLength
         }
@@ -746,9 +767,9 @@ const leadTheSubject: CameraMovePreset = {
   track: true,
   generate(ctx) {
     const airborne = isAirborne(ctx)
-    const scale = airborne ? 2.5 : 1
+    const scale = airborne ? Math.max(2.5, reach(ctx)) : reach(ctx)
     const distance = 4 * scale
-    const height = 1.8 * scale
+    const height = 1.8 * (airborne ? scale : 1)
     const ts = times(8, ctx.duration)
     return build(
       ts.map((t) => {
@@ -757,7 +778,7 @@ const leadTheSubject: CameraMovePreset = {
         const target = aimPoint(s, ctx.subjectHeight)
         return {
           t,
-          pos: { x: s.x + fwd.x * distance, y: s.y + height, z: s.z + fwd.z * distance },
+          pos: { x: s.x + fwd.x * distance, y: airborne ? s.y + height : riseOver(ctx, s, height), z: s.z + fwd.z * distance },
           aimAt: target,
           focalLength: ctx.camera.focalLength
         }
@@ -769,7 +790,7 @@ const leadTheSubject: CameraMovePreset = {
 
 function sideTrack(ctx: CameraMoveContext, sign: number): CameraMarkSpec[] {
   const airborne = isAirborne(ctx)
-  const scale = airborne ? 2.5 : 1
+  const scale = airborne ? Math.max(2.5, reach(ctx)) : reach(ctx)
   const distance = 4 * scale
   const height = airborne ? 1.8 * scale : 1.6
   const ts = times(8, ctx.duration)
@@ -781,7 +802,7 @@ function sideTrack(ctx: CameraMoveContext, sign: number): CameraMarkSpec[] {
       const target = aimPoint(s, ctx.subjectHeight)
       return {
         t,
-        pos: { x: s.x + side.x * distance, y: s.y + height, z: s.z + side.z * distance },
+        pos: { x: s.x + side.x * distance, y: airborne ? s.y + height : riseOver(ctx, s, height), z: s.z + side.z * distance },
         aimAt: target,
         focalLength: ctx.camera.focalLength
       }
@@ -954,7 +975,7 @@ const vertigoDollyZoom: CameraMovePreset = {
     const s0 = ctx.subjectAt(0)
     const startAim = aimPoint(s0, ctx.subjectHeight)
     // Start from a distance ≥6m; move in to 55% of it.
-    const startDist = Math.max(planarDist(cam, startAim), 6)
+    const startDist = Math.max(planarDist(cam, startAim), 6 * reach(ctx))
     const endDist = startDist * 0.55
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
@@ -1050,7 +1071,7 @@ const leadFollowFront: CameraMovePreset = {
   track: true,
   generate(ctx) {
     const airborne = isAirborne(ctx)
-    const scale = airborne ? 2.5 : 1
+    const scale = airborne ? Math.max(2.5, reach(ctx)) : reach(ctx)
     const distance = 4 * scale
     const height = airborne ? 1.8 * scale : 1.6
     const ts = times(8, ctx.duration)
@@ -1061,7 +1082,7 @@ const leadFollowFront: CameraMovePreset = {
         const target = aimPoint(s, ctx.subjectHeight)
         return {
           t,
-          pos: { x: s.x + fwd.x * distance, y: s.y + height, z: s.z + fwd.z * distance },
+          pos: { x: s.x + fwd.x * distance, y: airborne ? s.y + height : riseOver(ctx, s, height), z: s.z + fwd.z * distance },
           aimAt: target,
           focalLength: ctx.camera.focalLength
         }
@@ -1079,7 +1100,7 @@ const lowLeadTiltUp: CameraMovePreset = {
   track: true,
   generate(ctx) {
     const airborne = isAirborne(ctx)
-    const distance = 4
+    const distance = 4 * reach(ctx)
     const lowY = 0.4
     const ts = times(8, ctx.duration)
     return build(
@@ -1107,10 +1128,10 @@ const sideDollyPast: CameraMovePreset = {
   track: true,
   generate(ctx) {
     const airborne = isAirborne(ctx)
-    const flank = 4
+    const flank = 4 * reach(ctx)
     const height = airborne ? 4 : 1.6
-    const behind = 6 // meters behind at start
-    const ahead = 6 // meters ahead at end
+    const behind = 6 * reach(ctx) // meters behind at start
+    const ahead = 6 * reach(ctx) // meters ahead at end
     const ts = times(8, ctx.duration)
     return build(
       ts.map((t) => {
@@ -1124,7 +1145,7 @@ const sideDollyPast: CameraMovePreset = {
           t,
           pos: {
             x: s.x + side.x * flank + fwd.x * along,
-            y: s.y + height,
+            y: airborne ? s.y + height : riseOver(ctx, s, height),
             z: s.z + side.z * flank + fwd.z * along
           },
           aimAt: target,
@@ -1151,7 +1172,7 @@ function orbitAt(
   const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
   const s0 = ctx.subjectAt(0)
   const center0 = { x: s0.x, y: s0.y, z: s0.z }
-  const radius0 = Math.max(planarDist(cam, center0), 2)
+  const radius0 = Math.max(planarDist(cam, center0), 2 * reach(ctx))
   const startAz = headingOf({ x: cam.x - center0.x, y: 0, z: cam.z - center0.z })
   const camY = ctx.camera.y
   const airborne = isAirborne(ctx)
@@ -1212,7 +1233,7 @@ function spiral(
   const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
   const s0 = ctx.subjectAt(0)
   const center0 = { x: s0.x, y: s0.y, z: s0.z }
-  const radius0 = Math.max(planarDist(cam, center0), 2)
+  const radius0 = Math.max(planarDist(cam, center0), 2 * reach(ctx))
   const startAz = headingOf({ x: cam.x - center0.x, y: 0, z: cam.z - center0.z })
   const camY = ctx.camera.y
   const yEnd = endY(camY, s0)
@@ -1272,7 +1293,7 @@ const pedestalUpSlow: CameraMovePreset = {
     const startAim = aimPoint(s0, ctx.subjectHeight)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
-    const radius = Math.max(planarDist(cam, startAim), 2)
+    const radius = Math.max(planarDist(cam, startAim), 2 * reach(ctx))
     const ts = times(6, ctx.duration)
     const airborne = isAirborne(ctx)
     return build(
@@ -1419,8 +1440,8 @@ const pushInDutchRoll: CameraMovePreset = {
     const ts = times(7, ctx.duration)
     const s0 = ctx.subjectAt(0)
     const startAim = aimPoint(s0, ctx.subjectHeight)
-    const startDist = Math.max(planarDist(cam, startAim), 0.5)
-    const endDist = 2
+    const startDist = Math.max(planarDist(cam, startAim), 0.5 * reach(ctx))
+    const endDist = 2 * reach(ctx)
     const bearing = headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z })
     const dir = forward(bearing)
     const airborne = isAirborne(ctx)
