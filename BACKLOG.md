@@ -49,7 +49,7 @@
 - ~~Over-the-shoulder shot words: offset the aim so the foreground shoulder stays in frame with long lenses (today the subject's head is centred, per the plan).~~ DONE (shoulder pinned near the frame edge, eyes on the far third and near the upper third; angle and size honoured, qa-clara bugs 4 + 5)
 - ~~Target-model export profiles (H3 Max first, then LTX Render-to-Real, Kling V3 Omni, Seedance 2.5) and a proxy-mapping `prompt.txt`.~~ DONE for H3 Max (`minimax-h3-max`, 50 MB bitrate cap) and the proxy-mapping prompt
 - ~~Export profiles for LTX 2.3 Render-to-Real (720p ≤ ~6 s / 480p ≤ ~15 s, ≤ 361 frames), Kling V3 Omni (3–10 s) and Seedance 2.5 (CLAUDE.md limits); add a `minDuration` field for Kling.~~ DONE (export-look: `ltx-2.3-render-to-real`, `kling-v3-omni`, `seedance-2.5`; `minDuration` / `maxFrames` / `resolutionCaps` warnings)
-- Open road / extendable street kit (a 6 s car chase covers ~92 m against a 36 m tile).
+- ~~Open road / extendable street kit (a 6 s car chase covers ~92 m against a 36 m tile).~~ DONE (street-kit T1: `env.openRoad`, as long as `params.length`; a car chase lays one under itself or lengthens the one it is placed on; car-frames off the street 7143/8668 → 0)
 - ~~Occlusion-aware camera moves (an orbit inside the alley kit renders only wall).~~ DONE (shot-clear T2: every non-follow preset is fitted to the set as a whole, closer on a wider lens, higher, its sweep cut and turned, or warns; the 39 presets in the alley and downtown from two starts: 49 → 0 moves blocked without a warning; `src/engine/move-clear.ts`)
 - Vehicle-aware sizing in the 39 `camera-moves.ts` presets (the shot solver already handles vehicle extents).
 - Vehicle-aware speed warnings.

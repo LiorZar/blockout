@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director (kept across remounts); mannequin thumbs; Weapons group; Sequences fight hint; mocap bots and Choreographer / Sequences bodies; see MODIFICATIONS.md.
+// Modified in this fork (2026): the Choreographer's Fight routine is the Fight Director (kept across remounts); mannequin thumbs; Weapons group; Sequences fight hint; mocap bots and Choreographer / Sequences bodies, the open road thumb; see MODIFICATIONS.md.
 /**
  * Stage-mode asset palette. Browse the built-in catalog grouped by category,
  * filter by name, and arm click-to-place (the Viewport does the drop).
@@ -730,6 +730,7 @@ const THUMBS: Record<string, string> = {
   'env.stadium': '🏟',
   'env.sky': '☁️',
   'env.houseFull': '🏠',
+  'env.openRoad': '🛣️', // fork (street-kit)
   // Primitives
   'prim.cube': '⬜',
   'prim.cylinder': '⚪',

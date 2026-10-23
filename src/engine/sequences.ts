@@ -1,4 +1,4 @@
-// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and apply_motion marks are posed moves, mocap clip runs on bots; see MODIFICATIONS.md.
+// Modified in this fork (2026): the floor rule (floor.ts) on posed marks, and apply_motion marks are posed moves, mocap clip runs on bots, a car chase on its own open road; see MODIFICATIONS.md.
 /**
  * Crowd & sequence director: one-click choreographed groups. Generates the
  * ENTITIES (people, cars) and their TRACKS (marks with gaits, altitude, and
@@ -14,6 +14,8 @@
 import { MOTION_PRESETS, type MotionPreset } from './motions'
 import { bodyLowY, motionRootY, type Body } from './floor'
 import { clipMotion, clipPlays, tagPlay, type SeatSpot } from './mocap/library-clips'
+import { OPEN_ROAD, ROAD_END, roadLocal, roadSpan, roadWorld, type RoadPlace } from './road-kit'
+import { vehicleBox } from './vehicles'
 import type { MarkClip } from './types'
 
 export type SequenceType = 'dance' | 'fight' | 'footChase' | 'carChase'
@@ -34,6 +36,8 @@ export interface SequenceOptions {
   duration: number
   /** Fork: the bodies the men and the women are cast as (a bot plays its motions as clip runs). */
   bodies?: [string, string]
+  /** Fork (street-kit): the open road a car chase was placed on; the chase runs along it and lengthens it. */
+  road?: RoadPlace & { entityId: string }
 }
 
 export interface SequenceMarkSpec {
@@ -49,6 +53,8 @@ export interface SequenceMarkSpec {
   posedMove?: boolean
   /** Fork: a mocap clip run's mark on a bot (types.ts `ActorMark.clip`). */
   clip?: MarkClip
+  /** Fork (street-kit): waypoints from the previous mark (types.ts `MarkBase.via`). */
+  via?: { x: number; y: number; z: number }[]
 }
 
 export interface SequenceEntitySpec {
@@ -58,6 +64,10 @@ export interface SequenceEntitySpec {
   rotationY: number
   label?: { text: string; color: string }
   marks: SequenceMarkSpec[]
+  /** Fork (street-kit): the entity's params (the open road's length). */
+  params?: Record<string, number>
+  /** Fork (street-kit): update this entity (an open road the chase lengthens) instead of adding one. */
+  replaces?: string
 }
 
 /** Hard cap so a 60-dancer number can't explode the timeline. */
@@ -340,43 +350,105 @@ function footChaseSequence(opts: SequenceOptions): SequenceEntitySpec[] {
 /* ------------------------------ car chase ------------------------------ */
 
 const CHASE_CARS = ['vehicle.sedan', 'vehicle.suv', 'vehicle.pickup', 'vehicle.van']
+/** Fork (street-kit): the chase's pace (m/s; upstream's 17 × 0.9), the gap between cars (m) and the spacing of a car's waypoints (m). */
+const CHASE_PACE = 15.3
+const CHASE_GAP = 7.5
+const VIA_STEP = 8
+/** Fork (street-kit): road behind the last car's start and past the lead's end (m). */
+const ROAD_BEHIND = 40
+const ROAD_AHEAD = 45
 
+/**
+ * Fork (street-kit): the shot starts mid-chase, so each car drives one smooth
+ * line at speed from the first frame to the last (two marks, the weave in
+ * `via` points, no easing: no heading snaps at a mark, no standing start). On
+ * an open road (`opts.road`) it runs along the road; `carChaseRoad` gives the
+ * road under it.
+ */
 function carChaseSequence(opts: SequenceOptions): SequenceEntitySpec[] {
   const count = clampCount(opts.count)
-  const speed = 17
-  const length = Math.min(160, speed * opts.duration * 0.9)
+  const length = CHASE_PACE * opts.duration
   const weaving = opts.style === 'weaving'
+  const road = opts.road
+  // On a road: start where the click falls along its centre line, driving along it the way nearest the asked heading.
+  const origin = road ? onRoadOrigin(road, opts.origin) : opts.origin
   const out: SequenceEntitySpec[] = []
   for (let i = 0; i < count; i++) {
-    const backset = i * 7.5
+    const backset = i * CHASE_GAP
     const lane = i === 0 ? 0 : ((i % 3) - 1) * 2.6
-    const start = place(opts.origin, lane, -backset)
-    const marks: SequenceMarkSpec[] = []
-    const steps = 5
-    for (let s2 = 0; s2 <= steps; s2++) {
-      const f = s2 / steps
-      const along = f * length - backset
-      const wob = weaving ? Math.sin(f * Math.PI * 2.5 + i * 1.3) * 2.8 : lane * (1 - f * 0.3)
-      const p = place(opts.origin, i === 0 && !weaving ? 0 : wob, along)
-      marks.push({
-        time: f * opts.duration,
-        position: { x: s2 === 0 ? start.x : p.x, y: 0, z: s2 === 0 ? start.z : p.z },
-        gait: 'run',
-        easeIn: 0,
-        easeOut: s2 === 0 ? 0.25 : 0,
-        hold: 0
-      })
-    }
+    const lateral = (f: number): number => (weaving ? Math.sin(f * Math.PI * 2.5 + i * 1.3) * 2.8 : lane * (1 - f * 0.3))
+    const steps = Math.max(2, Math.ceil(length / VIA_STEP))
+    const pts = Array.from({ length: steps + 1 }, (_, k) => {
+      const p = place(origin, lateral(k / steps), (k / steps) * length - backset)
+      return { x: p.x, y: 0, z: p.z }
+    })
     out.push({
       assetId: CHASE_CARS[i % CHASE_CARS.length]!,
       name: i === 0 ? 'Lead car' : `Chase car ${i}`,
-      position: { x: start.x, y: 0, z: start.z },
-      rotationY: opts.origin.heading,
+      position: { ...pts[0]! },
+      // Facing along its line at the first frame (the line's first tangent points at the first waypoint).
+      rotationY: Math.atan2(-(pts[1]!.x - pts[0]!.x), -(pts[1]!.z - pts[0]!.z)),
       label: i === 0 ? { text: 'LEAD', color: '#e5484d' } : undefined,
-      marks
+      marks: [
+        { time: 0, position: pts[0]!, gait: 'run', easeIn: 0, easeOut: 0, hold: 0 },
+        { time: opts.duration, position: pts[steps]!, via: pts.slice(1, steps), gait: 'run', easeIn: 0, easeOut: 0, hold: 0 }
+      ]
     })
   }
   return out
+}
+
+/**
+ * Fork (street-kit): the open road under a staged car chase (`cars` from
+ * generateSequence): from ROAD_BEHIND m behind the last car's start to
+ * ROAD_AHEAD m past the lead's end, or the road it was placed on lengthened
+ * to cover that (`replaces` names it).
+ */
+export function carChaseRoad(opts: SequenceOptions, cars: SequenceEntitySpec[]): SequenceEntitySpec {
+  const origin = opts.road ? onRoadOrigin(opts.road, opts.origin) : opts.origin
+  const fx = -Math.sin(origin.heading)
+  const fz = -Math.cos(origin.heading)
+  let from = 0
+  let to = 0
+  for (const c of cars) {
+    const box = vehicleBox(c.assetId)
+    for (const m of c.marks) {
+      const along = (m.position.x - origin.x) * fx + (m.position.z - origin.z) * fz
+      from = Math.min(from, along - (box?.back ?? 0))
+      to = Math.max(to, along + (box?.front ?? 0))
+    }
+  }
+  return chaseRoad(origin, from - ROAD_BEHIND, to + ROAD_AHEAD, opts.road)
+}
+
+/** The point of the road nearest `o` on its centre line, heading along it the way nearest `o.heading`. */
+function onRoadOrigin(road: RoadPlace, o: { x: number; z: number; heading: number }): { x: number; z: number; heading: number } {
+  const along = Math.max(-road.length / 2 - ROAD_END, Math.min(road.length / 2 + ROAD_END, roadLocal(road, o).along))
+  const p = roadWorld(road, 0, along)
+  const turn = Math.atan2(Math.sin(o.heading - road.heading), Math.cos(o.heading - road.heading))
+  return { x: p.x, z: p.z, heading: Math.abs(turn) <= Math.PI / 2 ? road.heading : road.heading + Math.PI }
+}
+
+/** The open road under a chase from `from` to `to` m along its heading; on a road, that road lengthened to cover them. */
+function chaseRoad(origin: { x: number; z: number; heading: number }, from: number, to: number, road?: RoadPlace & { entityId: string }): SequenceEntitySpec {
+  let span = roadSpan(origin, origin.heading, from, to)
+  if (road) {
+    // Both spans along the road's own axis.
+    const a = roadLocal(road, roadWorld({ ...origin }, 0, from)).along
+    const b = roadLocal(road, roadWorld({ ...origin }, 0, to)).along
+    const lo = Math.min(-road.length / 2, a, b)
+    const hi = Math.max(road.length / 2, a, b)
+    span = roadSpan(road, road.heading, lo, hi)
+  }
+  return {
+    assetId: OPEN_ROAD,
+    name: 'Open road',
+    position: { x: span.x, y: 0, z: span.z },
+    rotationY: span.heading,
+    params: { length: Math.round(span.length * 10) / 10 },
+    marks: [],
+    ...(road ? { replaces: road.entityId } : {})
+  }
 }
 
 /* -------------------------------- entry -------------------------------- */

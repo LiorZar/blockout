@@ -1458,6 +1458,29 @@ Changes in this fork (2026):
   22.9 / 25.1 cm, chair 5.9 / 8.1 cm, couch 12.4 / 14.6 cm, office chair 27.9 / 30.1 cm, now 0.0 cm,
   feet on the floor; built app, Y Bot's Hips on a stool 0.597 → 0.887 m, on a chair 0.597 → 0.677 m.
   Test: `tests/unit/mocap-seats.test.ts` (extended).
+- An open road under a car chase (street-kit T1; `src/engine/road-kit.ts`, `src/engine/vehicles.ts`,
+  `src/renderer/viewport/road-kit.ts` (new), `src/engine/sequences.ts`, `src/engine/assets.ts`,
+  `src/renderer/viewport/builders.ts`, `src/renderer/store.ts`, `src/renderer/control/handler.ts`,
+  `src/renderer/panels/Library.tsx`, `mcp/tools.json`): the street kits are 20–36 m tiles and a 6 s
+  chase covers ~90 m, so the cars drove off the set within two seconds. `env.openRoad` ("Open
+  road") is a city street whose drivable length is `params.length`: asphalt to kerbs at ±5.5 m with
+  centre and lane dashes, sidewalks to ±9 m, a lamp post every 15 m each side, a front row of
+  buildings with a storefront band and window rows, a taller back row, and an end block across each
+  end, so a camera looking down the street sees a facade, never the empty ground; widths and heights
+  come from an index hash, and its surfaces sit 2 mm over a standard kit's. The layout is engine
+  data (`roadLayout`); a building and its bands draw as one mesh, so the set readers see one box.
+  The Library / `spawn_sequence` car chase now lays one under itself in the same undo step (the
+  road isn't selected), from 40 m behind the last car's start to 45 m past the lead's end, or runs
+  along the open road it is placed on (snapped to its centre line and axis) and lengthens it
+  (`spawn_sequence` returns `roadId`). Each car drives one smooth line at the chase's pace from the
+  first frame to the last (two marks, the weave in `via` points, no easing: the shot starts
+  mid-chase, no heading snaps at a mark; the old 160 m cap went with the void). `vehicles.ts` holds
+  each vehicle's box as the builders draw it (the catalog footprint is a placement radius). The
+  chase (both styles, 2–4 cars, 6 / 15 s), every frame at 24 fps: car-frames with a corner off the
+  street, HEAD staged on Downtown along its street 7143 of 8668, now 0 of 8668 (no two cars
+  overlap, no heading step over 2°); void (a ray below the horizon meeting no set, car or kit floor)
+  from three live shot-words cameras on the lead, worst frame HEAD on Downtown 11–64 %, now 0 %.
+  Test: `tests/unit/road-kit.test.ts` (new).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

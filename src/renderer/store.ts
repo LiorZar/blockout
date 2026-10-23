@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies, mocap clip runs and mocap fights (solve cache, staging busy state), routines on the set; see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies, mocap clip runs and mocap fights (solve cache, staging busy state), routines on the set, a car chase on its open road; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -21,7 +21,8 @@ import {
 } from '@engine/schema'
 import { assetSpec } from '@engine/assets'
 import { newId } from '@engine/ids'
-import { generateSequence, choreographMotion } from '@engine/sequences'
+import { generateSequence, choreographMotion, carChaseRoad } from '@engine/sequences'
+import { OPEN_ROAD, onRoad, roadLength, type RoadPlace } from '@engine/road-kit' // fork (street-kit)
 import { buildRoutine, mirrorJoints } from '@engine/choreography'
 import { mirrorForHolder } from '@engine/fight/moves'
 import { seatSpots } from '@engine/mocap/library-clips'
@@ -641,6 +642,16 @@ export function routineFightStaged(): Promise<string | null> {
   const p = routineStaging ?? Promise.resolve(null)
   routineStaging = null
   return p
+}
+
+/** Fork (street-kit): the open road under a click (its street, not its buildings), for a car chase to run along. */
+function onOpenRoad(scene: Scene | null, at: { x: number; z: number }): (RoadPlace & { entityId: string }) | undefined {
+  for (const e of scene?.entities ?? []) {
+    if (e.assetId !== OPEN_ROAD) continue
+    const road = { x: e.transform.position.x, z: e.transform.position.z, heading: e.transform.rotationY, length: roadLength(e.params) }
+    if (onRoad(road, at)) return { ...road, entityId: e.id }
+  }
+  return undefined
 }
 
 /**
@@ -1592,21 +1603,38 @@ export const useStore = create<BlockoutState>((set, get) => ({
       else stageRoutineFight(input)
       return
     }
-    const specs = generateSequence({
+    // Fork (street-kit): a car chase placed on an open road runs along it.
+    const road = opts.type === 'carChase' ? onOpenRoad(get().scene(), origin) : undefined
+    const seq = {
       type: opts.type,
       count: opts.count,
       style: opts.style,
       origin,
       duration,
-      ...(opts.bodies ? { bodies: opts.bodies } : {}) // fork
-    })
+      ...(opts.bodies ? { bodies: opts.bodies } : {}), // fork
+      ...(road ? { road } : {})
+    }
+    const specs = generateSequence(seq)
+    if (opts.type === 'carChase') specs.push(carChaseRoad(seq, specs)) // fork (street-kit): the road under it
     const newIds: string[] = []
+    let roadNote = '' // fork (street-kit)
     get().mutate(`stage ${opts.type} sequence`, (doc) => {
       const scene = doc.scenes.find((s) => s.id === sceneId)
       const shot = scene?.shots.find((s) => s.id === shotId)
       const take = scene?.blocking.find((b) => b.id === shot?.blockingTakeId)
       if (!scene || !take) return
       for (const spec of specs) {
+        // Fork (street-kit): the chase's open road, laid or lengthened (the set: not a performer, not selected).
+        if (spec.assetId === OPEN_ROAD) {
+          const was = scene.entities.find((e) => e.id === spec.replaces)
+          const road = was ?? createEntity(spec.assetId, spec.name, { ...spec.position })
+          road.transform.position = { ...spec.position }
+          road.transform.rotationY = spec.rotationY
+          road.params = { ...road.params, ...spec.params }
+          if (!was) scene.entities.push(road)
+          roadNote = ` on ${was ? 'the open road, now' : 'an open road'} ${roadLength(road.params).toFixed(0)} m long`
+          continue
+        }
         const entity = createEntity(spec.assetId, spec.name, { ...spec.position })
         entity.transform.rotationY = spec.rotationY
         if (spec.label) entity.label = { ...spec.label }
@@ -1625,7 +1653,8 @@ export const useStore = create<BlockoutState>((set, get) => ({
               gait: m.gait,
               joints: m.joints ? { ...m.joints } : undefined,
               // Fork: a bot's clip run (facing its heading, a posed move).
-              ...(m.clip ? { clip: { ...m.clip }, arriveHeading: m.arriveHeading, posedMove: m.posedMove } : {})
+              ...(m.clip ? { clip: { ...m.clip }, arriveHeading: m.arriveHeading, posedMove: m.posedMove } : {}),
+              ...(m.via ? { via: m.via.map((p) => ({ ...p })) } : {}) // fork (street-kit): a car's smooth line
             }))
           })
         }
@@ -1634,7 +1663,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     if (newIds.length > 0) {
       set({ selection: { kind: 'entities', entityIds: newIds } })
       get().toast(
-        `${newIds.length} performers staged and choreographed — ▶ to watch. Drag the group to reposition; every performer stays individually editable.`,
+        `${newIds.length} performers staged and choreographed${roadNote} — ▶ to watch. Drag the group to reposition; every performer stays individually editable.`,
         'success'
       )
     }

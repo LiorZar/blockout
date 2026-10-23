@@ -1,4 +1,4 @@
-// Modified in this fork (2026): catalog additions, mocap bots; see MODIFICATIONS.md.
+// Modified in this fork (2026): catalog additions, mocap bots, the open road; see MODIFICATIONS.md.
 /**
  * Asset catalog — engine-side metadata for every built-in library item.
  * The renderer maps each id to a procedural grey-box builder; the engine
@@ -262,6 +262,8 @@ export const ASSET_CATALOG: AssetSpec[] = [
   A('env.stadium', 'Stadium Section', 'environment', 8, 24, 0, 'static', 'a stadium section'),
   A('env.sky', 'Sky (Aerial)', 'environment', 0.1, 40, 0, 'static', 'an open sky'),
   A('env.houseFull', 'House Interior (Rooms)', 'environment', 2.4, 10, 0, 'static', 'a full house interior with rooms'),
+  // Fork (street-kit): a city street as long as its params.length (road-kit.ts); a car chase lays one.
+  A('env.openRoad', 'Open road', 'environment', 12, 30, 0, 'static', 'a long city street lined with buildings'),
 
   // Fork: weapons a person can hold (src/engine/weapons.ts; prop.sword and prop.baseballBat too).
   A('prop.katana', 'Katana', 'weapons', 1.0, 0.1, 0, 'static', 'a katana'),

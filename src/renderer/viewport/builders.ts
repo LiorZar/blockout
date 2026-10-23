@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots, mocap clip inputs, the nightclub's light cones editor-only; see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots, mocap clip inputs, the nightclub's light cones editor-only, the open road; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -19,6 +19,8 @@ import { isMocapAsset, MOCAP_STAND_IN } from '@engine/mocap/registry'
 import { buildMocapPerson } from '../mocap/body'
 import { dressMannequin } from './mannequin-mesh'
 import { buildWeapon, isWeaponModel, onFloor } from './weapon-builders'
+import { OPEN_ROAD, roadLength } from '@engine/road-kit'
+import { openRoadGroup } from './road-kit'
 
 export interface AnimInput {
   gait: GaitId
@@ -6370,6 +6372,11 @@ export function buildAsset(assetId: string, params?: Record<string, number | str
   if (assetId.startsWith('furniture.')) return buildFurniture(assetId)
   if (isWeaponModel(assetId)) return buildWeapon(assetId)
   if (assetId.startsWith('prop.')) return onFloor(buildProp(assetId), assetId)
+  // Fork (street-kit): the open road takes its length from its params (road-kit.ts).
+  if (assetId === OPEN_ROAD) {
+    const group = openRoadGroup(roadLength(params))
+    return { group, height: assetSpec(assetId).height, setTint: makeSetTint(group) }
+  }
   if (assetId.startsWith('env.')) return buildEnv(assetId)
   if (assetId.startsWith('prim.')) return buildPrimitive(assetId)
   return buildFallback(assetId)

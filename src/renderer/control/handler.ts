@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots, their clips and their fights, routines on the set) in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots, their clips and their fights, routines on the set, car chases on an open road) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -28,6 +28,7 @@ import {
 import { BUILTIN_PROFILES } from '@engine/profiles'
 import { generatePrompt } from '@engine/prompt'
 import { profileWarnings } from '@engine/profile-limits'
+import { OPEN_ROAD, onRoad, roadLength } from '@engine/road-kit' // fork (street-kit)
 import { getSceneManager } from '../export/scene-access'
 import type { ActorMark, AspectId, CameraMark, Entity, GaitId, LightingPresetId, RigId, Scene, Shot, V3 } from '@engine/types'
 import { WEAPON_SPECS, weaponSpec } from '@engine/weapons'
@@ -210,6 +211,16 @@ function fightWeapons(params: Params): [string | null, string | null] | undefine
 }
 
 /** Gap 3 (fork): the fight a two-person routine staged through the fight solver, if it did. */
+/** Fork (street-kit): the open road a car chase's lead car starts on. */
+function chaseRoadId(scene: Scene | null, leadId: string | undefined): { roadId?: string } {
+  const lead = scene?.entities.find((e) => e.id === leadId)
+  if (!scene || !lead) return {}
+  const road = scene.entities.find(
+    (e) => e.assetId === OPEN_ROAD && onRoad({ x: e.transform.position.x, z: e.transform.position.z, heading: e.transform.rotationY, length: roadLength(e.params) }, lead.transform.position)
+  )
+  return road ? { roadId: road.id } : {}
+}
+
 function newFightId(fightsBefore: number): { fightId?: string } {
   const fights = useStore.getState().scene()?.fights ?? []
   return fights.length > fightsBefore ? { fightId: fights[fights.length - 1]!.id } : {}
@@ -1059,6 +1070,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         staged: sel?.kind === 'entities' ? sel.entityIds.length : 0,
         entityIds: sel?.kind === 'entities' ? sel.entityIds : [],
         ...newFightId(fightsBefore),
+        ...(type === 'carChase' ? chaseRoadId(after.scene(), sel?.kind === 'entities' ? sel.entityIds[0] : undefined) : {}), // fork (street-kit)
         ...(bodies && type === 'carChase' ? { note: 'bodies ignored: a car chase casts cars.' } : {})
       }
     }

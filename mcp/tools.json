@@ -865,7 +865,7 @@
   {
     "name": "spawn_sequence",
     "title": "Stage a crowd sequence",
-    "description": "Stage a whole choreographed crowd in one call: N dancers performing together, a paired brawl or mob fight, a foot chase, or a car chase. Creates the performers AND their choreography. Position with x/z/headingDeg (heading 0 faces -Z). A fight of count 2 is solved by the Fight Director (blows land; returns fightId); bigger fights are crowd choreography where blows don't connect. For a scripted fight where blows land, use stage_fight.",
+    "description": "Stage a whole choreographed crowd in one call: N dancers performing together, a paired brawl or mob fight, a foot chase, or a car chase. Creates the performers AND their choreography. A car chase drives at speed from the first frame to the last and lays an open road (env.openRoad) as long as it needs under itself, or runs along the open road it is placed on and lengthens it (returns roadId). Position with x/z/headingDeg (heading 0 faces -Z). A fight of count 2 is solved by the Fight Director (blows land; returns fightId); bigger fights are crowd choreography where blows don't connect. For a scripted fight where blows land, use stage_fight.",
     "inputSchema": {
       "type": "object",
       "properties": {
