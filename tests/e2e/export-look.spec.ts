@@ -186,3 +186,60 @@ test('the depth and normal passes stay linear: the look never reaches them', asy
   expect(changed.depth).toBe(0)
   expect(changed.normal).toBe(0)
 })
+
+test('the night cast reads against the street and the frame stays night', async () => {
+  await rpc('new_scene', { name: 'Night' })
+  await rpc('set_shot', { duration: 1 })
+  await rpc('add_entity', { assetId: 'env.cityStreet', x: 0, z: 0 })
+  await rpc('set_lighting', { preset: 'night' })
+  await rpc('add_entity', { assetId: 'person.man', x: -1.2, z: -4 })
+  await rpc('add_entity', { assetId: 'person.mannequinFemale', x: 0, z: -4.4 })
+  await rpc('add_entity', { assetId: 'person.mannequinMale', x: 1.2, z: -4.2 })
+  await rpc('clear_camera_marks')
+  await rpc('add_camera_mark', { x: 0, y: 1.6, z: 2, panDeg: 0, tiltDeg: -5, time: 0, focalLength: 28 })
+  // The cast's silhouette is where the normal pass changes without them; luminance on and off it in the clean frame.
+  const m = (await page.evaluate(`(() => {
+    const W = 480, H = 270, t = 0.5
+    const sm = window.__blockout_scene
+    const render = (pass) => window.__blockout.renderRawForTest(t, W, H, false, pass)
+    const people = [...sm.visuals.values()].filter((v) => v.entity.assetId.startsWith('person.'))
+    const silhouette = (vs) => {
+      const a = render('normal')
+      for (const v of vs) v.root.visible = false
+      const b = render('normal')
+      for (const v of vs) v.root.visible = true
+      const mask = new Uint8Array(W * H)
+      for (let i = 0; i < W * H; i++) for (let c = 0; c < 3; c++) if (a[i * 4 + c] !== b[i * 4 + c]) mask[i] = 1
+      return mask
+    }
+    const luma = (px, mask, on) => {
+      let s = 0, n = 0
+      for (let i = 0; i < W * H; i++) {
+        if (mask[i] !== on) continue
+        s += 0.2126 * px[i * 4] + 0.7152 * px[i * 4 + 1] + 0.0722 * px[i * 4 + 2]
+        n++
+      }
+      return s / n
+    }
+    const clean = render('clean')
+    const cast = silhouette(people)
+    const fill = sm.scene.getObjectByName('__castFill')
+    let bgNoFill = luma(clean, cast, 0)
+    if (fill) {
+      fill.visible = false
+      bgNoFill = luma(render('clean'), cast, 0)
+      fill.visible = true
+    }
+    return {
+      cast: luma(clean, cast, 1),
+      bg: luma(clean, cast, 0),
+      bgNoFill,
+      bodies: people.map((v) => luma(clean, silhouette([v]), 1))
+    }
+  })()`)) as { cast: number; bg: number; bgNoFill: number; bodies: number[] }
+  const info = JSON.stringify(m)
+  expect(m.cast, info).toBeGreaterThanOrEqual(2 * m.bg)
+  for (const b of m.bodies) expect(b, info).toBeGreaterThanOrEqual(1.5 * m.bg)
+  // Still night: the rest of the frame barely moves.
+  expect(m.bg, info).toBeLessThanOrEqual(1.15 * m.bgNoFill)
+})

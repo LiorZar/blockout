@@ -1188,6 +1188,18 @@ Changes in this fork (2026):
   street 28.3 / 23.6 → equal; worst 7×7 probe 39.2 → 0.1 levels; depth frames byte-identical
   before and after (`.maestro/export-look/`). Test: `tests/e2e/export-look.spec.ts` (new; 3 of
   3 fail on edf6dc0), `tests/unit/environment.test.ts` (extended).
+- The night cast reads (export-look T2; `src/renderer/viewport/cast-fill.ts` new,
+  `src/renderer/viewport/SceneManager.ts`): the night preset (moon 0.7, sky 0.4) left the bodies
+  darker than the street behind them. A cool, shadowless directional fill now shines from the
+  shot camera, 3° below its view axis, on the night preset only (hidden for the rest, so their
+  shaders are unchanged); it follows the shot camera's pose at t, so it is deterministic and the
+  viewport and exports agree. A raised ambient was the other option and lifts the street and
+  walls as much as the cast. Intensity 0.9 and the angle come from a sweep
+  (`.maestro/export-look/tune-a`, `tune-b`). Night street with a classic man, a mannequin woman
+  and both mocap bots, cast silhouette from the normal pass, clean-frame mean luminance (0–255),
+  after T1 → after T2: cast 19.6 → 74.9, the rest of the frame 24.1 → 26.9 (+11 %), cast / rest
+  0.81 → 2.78; darkest body (the classic man) 12.7 → 52.5. Test: `tests/unit/cast-fill.test.ts`
+  (new), `tests/e2e/export-look.spec.ts` (extended; the night test fails without the fill).
 - Choreographer routines stay on the set (set-routines T1; `src/engine/routine-set.ts` and
   `src/renderer/routine-set.ts` new, `src/engine/chase-tracks.ts`, `src/engine/choreography.ts`,
   `src/renderer/store.ts`, `src/renderer/control/handler.ts`, `mcp/tools.json`): the chase ran its serpentine along

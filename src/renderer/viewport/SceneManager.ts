@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports, a night fill on the cast) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -41,6 +41,7 @@ import { canHoldWeapons, weaponSpec, type HeldWeapon } from '@engine/weapons'
 import { personDims } from '@engine/skeleton'
 import { StageEnvironment, exposeSky } from './environment'
 import { applyViewLook, lookForPass } from './look'
+import { CastFill } from './cast-fill'
 import { renderStable } from './stable-render'
 import { seatSpots, seatUnder } from '@engine/mocap/library-clips'
 import { isMocapAsset } from '@engine/mocap/registry'
@@ -121,6 +122,8 @@ export class SceneManager {
   private sky: Sky
   /** Fork (fix-env): the ground and graded sky behind the action (environment.ts). */
   private stage = new StageEnvironment()
+  /** Fork (export-look): the night preset's fill from the shot camera's side (cast-fill.ts). */
+  private castFill = new CastFill(this.scene)
   private skyEnabled = false
   /** Bottom-right orientation gizmo (editor-only; never rendered into exports). */
   private viewHelper: ViewHelper | null = null
@@ -882,6 +885,7 @@ export class SceneManager {
 
     this.scene.fog = env.fog > 0.01 ? new THREE.FogExp2(p.bg, env.fog * 0.06) : null
     this.stage.apply(this.scene, env.lighting) // fork (fix-env)
+    this.castFill.apply(env.lighting) // fork (export-look)
   }
 
   /* ------------------------------ interaction --------------------------- */
@@ -2155,6 +2159,7 @@ export class SceneManager {
     this.shotCam.fov = c.vfov * RAD2DEG
     this.shotCam.aspect = ASPECT_RATIOS[this.shot.aspect]
     this.shotCam.updateProjectionMatrix()
+    this.castFill.follow(this.shotCam) // fork (export-look)
 
     // Camera body visual follows the shot camera — unless the user is
     // dragging it (the drag commits to a camera mark on release).
