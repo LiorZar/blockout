@@ -37,6 +37,7 @@ import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
 import { randomFightScript } from '@engine/fight/script'
 import { clearShift } from '@engine/fight/obstacles'
 import { fightObstacles } from './fight-obstacles'
+import { offThread, planningRun } from './fight-offthread'
 import { routineSet } from './routine-set'
 import { clearShotSpec, shotWordsClearer } from './camera-view'
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
@@ -332,6 +333,8 @@ export interface StageFightInput {
   coverage?: FightDoc['coverage']
   /** Weapons (fork): a weapon asset to put in each fighter's usual hand (null: as they are). */
   weapons?: [string | null, string | null]
+  /** Fork (fight-speed): the ids a staging made (its new entities' and the fight's), reused in the order made, new ones added: every run of an off-thread staging (offThread) solves the same fight. */
+  ids?: string[]
 }
 
 /** RoutineSpec.style that marks a Fight Director placement (see spawnChoreography). */
@@ -619,13 +622,52 @@ function fitShotToRoutine(scene: Scene, shot: Shot, duration: number): void {
   refightShot(scene, shot)
 }
 
-/** Stage a routine's two-person fight through stageFight (toasts the outcome); false if it couldn't. */
+/** Fork (fight-speed): stageFight with its solves in the fight worker (fight-offthread.ts): the same result, the app live meanwhile. */
+export function stageFightOffThread(input: StageFightInput): Promise<{ fightId: string; report: FightSolution['report'] }> {
+  const ids: string[] = []
+  return offThread(() => useStore.getState().stageFight({ ...input, ids }))
+}
+
+/** Fork (fight-speed): updateFight with its solves in the fight worker. */
+export function updateFightOffThread(fightId: string, patch: Parameters<BlockoutState['updateFight']>[1]): Promise<FightSolution['report']> {
+  return offThread(() => useStore.getState().updateFight(fightId, patch))
+}
+
+/** Fork (fight-speed): a routine's bot fight staging in the fight worker, while one runs: its error, or null. */
+let routineStaging: Promise<string | null> | null = null
+
+/** Fork (fight-speed): when the routine fight staging the last action started ends (MCP answers after it): its error, or null. */
+export function routineFightStaged(): Promise<string | null> {
+  const p = routineStaging ?? Promise.resolve(null)
+  routineStaging = null
+  return p
+}
+
+/**
+ * Stage a routine's two-person fight through stageFight (toasts the outcome); false if it couldn't.
+ * Fork (fight-speed): a bot fight stages off the main thread (true at once; routineFightStaged ends with it).
+ */
 function stageRoutineFight(input: StageFightInput): boolean {
   const st = useStore.getState()
-  try {
-    const { report } = st.stageFight(input)
+  const staged = (report: FightSolution['report']): void => {
     const warn = report.warnings.length ? `, ${report.warnings.length} warning${report.warnings.length > 1 ? 's' : ''} (see the Fight Director)` : ''
     st.toast(`Fight staged by the Fight Director: ${report.beats.length} beats${warn}. ▶ to watch.`, 'success')
+  }
+  if (slowFight(input)) {
+    routineStaging = stageFightOffThread(input).then(
+      ({ report }) => {
+        staged(report)
+        return null
+      },
+      (e: Error) => {
+        st.toast(e.message, 'error')
+        return e.message
+      }
+    )
+    return true
+  }
+  try {
+    staged(st.stageFight(input).report)
     return true
   } catch (e) {
     st.toast((e as Error).message, 'error')
@@ -862,6 +904,11 @@ export const useStore = create<BlockoutState>((set, get) => ({
   mutate(label, fn) {
     const { doc, undoStack, exportProgress } = get()
     if (!doc) return
+    // Fork (fight-speed): a planning run (fight-offthread.ts offThread) edits a throwaway copy: it commits nothing.
+    if (planningRun()) {
+      if (!exportProgress.running) fn(structuredClone(doc))
+      return
+    }
     if (exportProgress.running) {
       // The export loop is reading this document frame by frame; editing it
       // mid-export would change the video partway through.
@@ -1304,6 +1351,13 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const scene = get().scene()
     const shot = get().shot()
     if (!scene || !shot) throw new Error('No active shot.')
+    // Fork (fight-speed): the ids a run before this one made, in the order made (input.ids).
+    let made = 0
+    const idOf = (fresh: string): string => {
+      if (!input.ids) return fresh
+      if (made === input.ids.length) input.ids.push(fresh)
+      return input.ids[made++]!
+    }
     const spawned: Entity[] = []
     let fighters: [Entity, Entity]
     if (input.fighters) fighters = fightersOf(scene, input.fighters)
@@ -1317,6 +1371,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
         const side = q === 0 ? -1 : 1
         const pos = { x: x + right.x * side * (GUARD_DISTANCE / 2), y: 0, z: z + right.z * side * (GUARD_DISTANCE / 2) }
         const e = createEntity(assets[q]!, `Fighter ${labels[q]}`, pos)
+        e.id = idOf(e.id)
         const color = nextLabelColor(used)
         used.push(color)
         e.label = { text: labels[q]!, color }
@@ -1333,6 +1388,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       const assetId = input.weapons?.[q]
       if (!assetId || !weaponSpec(assetId)) return
       const w = createEntity(assetId, assetSpec(assetId).name, { ...holder.transform.position })
+      w.id = idOf(w.id)
       w.heldBy = { entityId: holder.id, hand: handFor(w) }
       const color = nextLabelColor(colors)
       colors.push(color)
@@ -1340,7 +1396,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       arming.push(w)
     })
     const fight: FightDoc = {
-      id: newId('fight'),
+      id: idOf(newId('fight')),
       name: `Fight ${(scene.fights?.length ?? 0) + 1}`,
       fighterIds: [fighters[0].id, fighters[1].id],
       beats: structuredClone(input.beats),
@@ -1371,7 +1427,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       if (sh) notePastEnd(sh, sol.report)
       if (fight.coverage && sh) writeCoverage(sc, sh, fight, sol.report, fight.coverage, cameraLineSide(sc, sh, fight))
     })
-    if (spawned.length > 0) set({ selection: { kind: 'entities', entityIds: spawned.map((e) => e.id) } })
+    if (spawned.length > 0 && !planningRun()) set({ selection: { kind: 'entities', entityIds: spawned.map((e) => e.id) } })
     return { fightId: fight.id, report: sol.report }
   },
 
@@ -1589,18 +1645,20 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const pending = get().pendingFight
     if (spec.kind === 'fight' && spec.style === FIGHT_DIRECTOR_STYLE && pending) {
       set({ pendingFight: null })
-      const stage = (): void => {
+      const staged = ({ report }: { report: FightSolution['report'] }): void => {
+        const warn = report.warnings.length ? `, ${report.warnings.length} warning${report.warnings.length > 1 ? 's' : ''}` : ''
+        get().toast(`Fight staged: ${report.beats.length} beats${warn}. Press play to watch.`, 'success')
+      }
+      const failed = (e: Error): void => get().toast(e.message, 'error')
+      // Mocap fights (fork): a bot fight's solve takes seconds; say so first (fork, fight-speed: and solve it off the main thread).
+      if (slowFight(pending)) void (now ? Promise.resolve() : fightNotice('Staging fight…')).then(() => stageFightOffThread({ ...pending, at })).then(staged, failed)
+      else {
         try {
-          const { report } = get().stageFight({ ...pending, at })
-          const warn = report.warnings.length ? `, ${report.warnings.length} warning${report.warnings.length > 1 ? 's' : ''}` : ''
-          get().toast(`Fight staged: ${report.beats.length} beats${warn}. Press play to watch.`, 'success')
+          staged(get().stageFight({ ...pending, at }))
         } catch (e) {
-          get().toast((e as Error).message, 'error')
+          failed(e as Error)
         }
       }
-      // Mocap fights (fork): a bot fight's solve takes seconds; say so first.
-      if (!now && slowFight(pending)) void fightNotice('Staging fight…').then(stage)
-      else stage()
       return
     }
     const { sceneId, shotId } = get()

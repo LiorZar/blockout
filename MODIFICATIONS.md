@@ -1352,6 +1352,24 @@ Changes in this fork (2026):
   prompt reads the staged fight's own solve (no props and an empty prop list are one key). The
   solver is untouched: the 14 `mocap-fights-real` scripts both ways and QA's run3 solve to
   byte-equal marks and reports. Test: `tests/unit/fight-solve-memo.test.ts` (new).
+- Bot fights stage off the main thread (fight-speed T2; `src/renderer/fight-offthread.ts` and
+  `src/renderer/fight-worker.ts` new; `src/engine/fight/solve-memo.ts`, `src/renderer/store.ts`,
+  `src/renderer/mocap/library.ts`, `src/renderer/control/handler.ts`,
+  `src/renderer/panels/FightDirector.tsx`, `AGENTS.md`): staging or re-solving a Y Bot vs X Bot
+  fight ran its solves (seconds each) on the renderer's main thread behind "Staging fight…".
+  Now `offThread` runs the store action in planning mode (a solve the memo doesn't have stops
+  it, `store.mutate` edits a throwaway copy), solves what it stopped at in a worker, remembers
+  it, and runs the action for real once every solve hits: the same marks, report, undo step and
+  ids as before. The worker's engine has the same bots and clips: the renderer relays each
+  registration to it, in order. `stageFight` takes the ids an earlier run made
+  (`StageFightInput.ids`). MCP `stage_fight` / `update_fight` (and a routine or sequence fight
+  of two bots, which answers once it has staged), the Fight Director's Stage, Apply and
+  Re-solve, and the Choreographer's routine fights stage this way; without a worker (Vitest)
+  or when it fails, the solve runs on the main thread as before. Built app, MCP stage of a
+  bot combos fight: before, one 10.2 s main-thread task and a 10.5 s frame gap; now the app
+  draws 210 frames while it solves (worst gap 89 ms, longest task 89 ms), and the fight equals
+  the same staging solved on the main thread. Tests: `tests/unit/fight-offthread.test.ts`,
+  `tests/e2e/fight-worker.spec.ts` (new).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

@@ -6,7 +6,7 @@
  */
 
 import { useMemo, useState } from 'react'
-import { fightNotice, slowFight, solveInScene, useStore } from '../store'
+import { fightNotice, slowFight, solveInScene, stageFightOffThread, updateFightOffThread, useStore } from '../store'
 import type { BeatReport } from '@engine/fight/solve'
 import { assetSpec } from '@engine/assets'
 import { WEAPON_SPECS } from '@engine/weapons'
@@ -134,32 +134,35 @@ export function FightDirector(): JSX.Element {
       heading: 0
     }
     const input = { beats: parsed.beats, at, fighters: [selected[0]!, selected[1]!] as [string, string], ...settings(), ...weapons() }
-    const stage = (): void => {
+    const staged = (r: { fightId: string; report: { beats: unknown[] } }): void => {
+      setFightId(r.fightId)
+      toast(`Fight staged on the 2 selected: ${r.report.beats.length} beats.`, 'success')
+    }
+    const failed = (e: Error): void => toast(e.message, 'error')
+    // Mocap fights (fork): a bot fight's solve takes seconds; say so first (fork, fight-speed: and solve it off the main thread).
+    if (slowFight(input)) void fightNotice('Staging fight…').then(() => stageFightOffThread(input)).then(staged, failed)
+    else {
       try {
-        const r = stageFight(input)
-        setFightId(r.fightId)
-        toast(`Fight staged on the 2 selected: ${r.report.beats.length} beats.`, 'success')
+        staged(stageFight(input))
       } catch (e) {
-        toast((e as Error).message, 'error')
+        failed(e as Error)
       }
     }
-    // Mocap fights (fork): a bot fight's solve takes seconds; say so first.
-    if (slowFight(input)) void fightNotice('Staging fight…').then(stage)
-    else stage()
   }
 
   const onResolve = (): void => {
     if ('error' in parsed || !fight) return
     const patch = { beats: parsed.beats, ...settings(), ...(coverage ? {} : { coverage: undefined }) }
-    const resolve = (): void => {
+    const failed = (e: Error): void => toast(e.message, 'error')
+    // Fork (fight-speed): a bot fight re-solves off the main thread.
+    if (slowFight({ fightId: fight.id })) void fightNotice('Re-solving fight…').then(() => updateFightOffThread(fight.id, patch)).then(undefined, failed)
+    else {
       try {
         updateFight(fight.id, patch)
       } catch (e) {
-        toast((e as Error).message, 'error')
+        failed(e as Error)
       }
     }
-    if (slowFight({ fightId: fight.id })) void fightNotice('Re-solving fight…').then(resolve)
-    else resolve()
   }
 
   return (

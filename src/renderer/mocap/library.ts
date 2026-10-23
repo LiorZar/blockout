@@ -16,6 +16,7 @@ import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { registerMocapClip } from '@engine/mocap/clip'
 import { isMocapAsset, mocapLoadDone, mocapRig, registerMocapBody, trackMocapLoad } from '@engine/mocap/registry'
 import type { MocapManifest, MocapManifestClip } from '../../shared/mocap-library'
+import { relayMocap } from '../fight-offthread'
 import { readClipTake } from './clips'
 import { extractMocap, fileUnit, primaryBones } from './extract'
 
@@ -62,7 +63,9 @@ function bindLocals(root: THREE.Group): Map<string, THREE.Matrix4> {
 /** Register a parsed character as a bot (the loader's way in, and the tests'). */
 export function registerMocapTemplate(assetId: string, root: THREE.Group, name = assetId): MocapTemplate {
   const unit = fileUnit(root)
-  registerMocapBody(assetId, extractMocap(root, unit))
+  const src = extractMocap(root, unit)
+  registerMocapBody(assetId, src)
+  relayMocap({ kind: 'body', assetId, src }) // fork (fight-speed): the fight solver's worker registers it too
   const t: MocapTemplate = { root, unit, name, bindLocal: bindLocals(root) }
   TEMPLATES.set(assetId, t)
   return t
@@ -82,7 +85,9 @@ export function registerClipTake(id: string, root: THREE.Object3D, source: strin
   const t = TEMPLATES.get(source)
   const take = (root as THREE.Object3D & { animations?: THREE.AnimationClip[] }).animations?.[0]
   if (!t || !take) throw new Error(`clip ${id}: ${t ? 'no take in the file' : `${source} isn't loaded`}`)
-  registerMocapClip(id, readClipTake(root, take, { unit: t.unit, fps: opts.fps ?? 30, source, loop: opts.loop, inPlace: opts.inPlace }))
+  const src = readClipTake(root, take, { unit: t.unit, fps: opts.fps ?? 30, source, loop: opts.loop, inPlace: opts.inPlace })
+  registerMocapClip(id, src)
+  relayMocap({ kind: 'clip', id, src }) // fork (fight-speed): the fight solver's worker registers it too
 }
 
 function notify(): void {

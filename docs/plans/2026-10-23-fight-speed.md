@@ -82,3 +82,20 @@ each on fresh inputs, already cached where it repeats.
   solutions (14 scripts × 2 orders, run3 through the store) byte-equal to base; typecheck,
   lint clean; `fight-solve-memo`, `mocap-fights-store`, `prompt-scene`, `fight-props-store`:
   `Test Files 4 passed (4)`.
+- **T2** (`.maestro/fight-speed/t2b-summary.txt`, snapshot of the T2 tree, the lock):
+  typecheck, lint clean; `fight-offthread` (8 tests: the stage and the re-solve equal the
+  main thread's with no solve there, one undo step; a miss inside a mutate commits nothing
+  while it solves; a worker that fails falls back; a shot the fight grows re-solves its other
+  fight in the worker; a routine bot fight; input errors), `fight-solve-memo`,
+  `mocap-fights-store`, `fight-props-store`: `Test Files 4 passed (4)`; build; e2e
+  `fight-worker` + `mocap-bots`: `14 passed`. Built app, MCP `stage_fight` of the combos
+  script on bots (`.maestro/fight-speed/diag-both-summary.txt`, `t2b-e2e.txt`): base, one
+  10,186 ms task, worst frame gap 10.5 s; T2, committed after 12.3 s with 210 frames drawn,
+  worst gap 89 ms, longest task 89 ms (the render's frames: 50–90 ms each with four bots in
+  this setup). Left after the commit (not the solve): the new fight's scene (its marks
+  overlay, `markMesh` 55 ms), a shader's first use (136 ms) and the bots' bounds (below):
+  tasks of 210 / 313 ms on the first two frames.
+- **Found on the way**: every frame, each bot mesh's bounds are recomputed by skinning every
+  vertex on the CPU (`mocap/body.ts` clears them each frame so measures are of the pose;
+  three's depth sort then recomputes the sphere; a selected bot's box helper the box):
+  ~70 ms a frame with four bots here. Reported to crd2.

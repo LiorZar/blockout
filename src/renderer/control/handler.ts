@@ -7,7 +7,7 @@
  * does is undoable, autosaved, and visible live.
  */
 
-import { useStore, currentProjectJson, fightNotice, lastRoutineReport, refightShot, releaseHeldBy, slowFight, slowRoutine, solveInScene } from '../store'
+import { useStore, currentProjectJson, fightNotice, lastRoutineReport, refightShot, releaseHeldBy, routineFightStaged, slowFight, slowRoutine, solveInScene, stageFightOffThread, updateFightOffThread } from '../store'
 import { ASSET_CATALOG, assetSpec } from '@engine/assets'
 import { isMocapAsset, waitForMocap } from '@engine/mocap/registry'
 import { assetListed, mocapStatus } from '../mocap/library'
@@ -763,9 +763,13 @@ async function execute(action: string, params: Params): Promise<unknown> {
         ...(exaggeration !== undefined ? { exaggeration } : {}),
         ...(coverage ? { coverage } : {})
       }
-      // Mocap fights (fork): a bot fight's solve takes seconds; the app says so first.
-      if (slowFight(input)) await fightNotice('Staging fight…')
-      const { fightId, report } = s.stageFight(input)
+      // Mocap fights (fork): a bot fight's solve takes seconds; the app says so first (fork, fight-speed: and solves it off the main thread).
+      if (!slowFight(input)) {
+        const { fightId, report } = s.stageFight(input)
+        return fightResult(fightId, report)
+      }
+      await fightNotice('Staging fight…')
+      const { fightId, report } = await stageFightOffThread(input)
       return fightResult(fightId, report)
     }
 
@@ -779,13 +783,15 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const beats = fightBeatsFromParams(params, 'update_fight', fightLabels(scene, fight.fighterIds), shot.duration)
       const exaggeration = flt(params, 'exaggeration')
       const coverage = fightCoverage(params, 'update_fight')
-      if (slowFight({ fightId })) await fightNotice('Re-solving fight…')
-      const report = s.updateFight(fightId, {
+      const patch = {
         ...(beats ? { beats } : {}),
         ...(exaggeration !== undefined ? { exaggeration } : {}),
         ...(coverage ? { coverage } : {})
-      })
-      return fightResult(fightId, report)
+      }
+      // Fork (fight-speed): a bot fight re-solves off the main thread.
+      if (!slowFight({ fightId })) return fightResult(fightId, s.updateFight(fightId, patch))
+      await fightNotice('Re-solving fight…')
+      return fightResult(fightId, await updateFightOffThread(fightId, patch))
     }
 
     case 'fight_coverage': {
@@ -1040,6 +1046,9 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const now = type === 'fight' && count === 2 && slowFight({ beats: [], ...(bodies ? { assets: bodies } : {}) })
       if (now) await fightNotice('Staging fight…')
       s.spawnSequence({ type, count, style, origin: { x, z, heading: toRad(headingDeg) }, ...cast, ...(now ? { now } : {}) })
+      // Fork (fight-speed): a bot fight stages off the main thread; answer once it has.
+      const failed = now ? await routineFightStaged() : null
+      if (failed) throw new Error(failed)
       const after = useStore.getState()
       const sel = after.selection
       return {
@@ -1072,8 +1081,12 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const headingDeg = flt(params, 'headingDeg') ?? 0
       const fightsBefore = s.scene()?.fights?.length ?? 0
       // Mocap fights (fork): a bot fight's solve takes seconds; the app says so first.
-      if (slowRoutine(spec)) await fightNotice('Staging fight…')
+      const slow = slowRoutine(spec)
+      if (slow) await fightNotice('Staging fight…')
       s.spawnChoreography(spec, { x, z, heading: toRad(headingDeg) }, true)
+      // Fork (fight-speed): a bot fight stages off the main thread; answer once it has.
+      const failed = slow ? await routineFightStaged() : null
+      if (failed) throw new Error(failed)
       const sel = useStore.getState().selection
       return {
         kind: spec.kind,
@@ -1092,8 +1105,12 @@ async function execute(action: string, params: Params): Promise<unknown> {
       }
       const spec = routineSpecFromParams(params)
       const fightsBefore = s.scene()?.fights?.length ?? 0
-      if (slowRoutine(spec, entityIds)) await fightNotice('Staging fight…')
+      const slow = slowRoutine(spec, entityIds)
+      if (slow) await fightNotice('Staging fight…')
       const applied = s.choreographEntities(entityIds, spec)
+      // Fork (fight-speed): a bot fight stages off the main thread; answer once it has.
+      const failed = slow ? await routineFightStaged() : null
+      if (failed) throw new Error(failed)
       if (applied === 0) {
         throw new Error('No matching performers — choreography applies to people (person.* entities).')
       }
