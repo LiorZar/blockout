@@ -33,9 +33,9 @@
 
 import type { ChaseEnding, ChoreoEntitySpec, ChoreoMarkSpec, RoutineCtx, RoutineSpec } from './choreography'
 import type { Body } from './floor'
-import type { GaitId } from './types'
+import type { GaitId, V3 } from './types'
 import type { MotionPreset } from './motions'
-import { motionClip, runTravel } from './mocap/library-clips'
+import { RUN_FROM, motionClip, playsClips, runTravel } from './mocap/library-clips'
 import { toWorld } from './skeleton'
 import { chaseRoute, clearance, isSet, type RoutineSet } from './routine-set'
 
@@ -44,7 +44,7 @@ export interface ChaseKit {
   serpentine: (ctx: RoutineCtx, length: number, amplitude: number, seed: number) => { x: number; z: number }[]
   mulberry32: (seed: number) => () => number
   motion: (id: string) => MotionPreset | undefined
-  playMotion: (marks: ChoreoMarkSpec[], preset: MotionPreset, pos: { x: number; y: number; z: number }, startT: number, opts?: { facing?: number; gait?: GaitId; mirror?: boolean }) => number
+  playMotion: (marks: ChoreoMarkSpec[], preset: MotionPreset, pos: { x: number; y: number; z: number }, startT: number, opts?: { facing?: number; gait?: GaitId; mirror?: boolean; clipFrom?: number; clip?: string }) => number
   dedupeSort: (marks: ChoreoMarkSpec[]) => ChoreoMarkSpec[]
 }
 
@@ -73,6 +73,11 @@ const DT = 1 / 240
 const MIN_PACE = 3
 /** On a set, a fall's hips keep this far from a solid and the floor's edge (m): a body's half width. */
 const FALL_CLEAR = 0.35
+/** Fork (set-routines): a travel leg walks under WALK_MAX (m/s), and runs over JOG_MAX (`gaits.ts` walk / jog top speeds). */
+const WALK_MAX = 2.2
+const JOG_MAX = 4
+/** Fork (set-routines): the hardest a pursuer behind another brakes (m/s²): a sprinter's stop. */
+const BRAKE = 6
 
 const facingTo = (from: XZ, to: XZ): number => Math.atan2(-(to.x - from.x), -(to.z - from.z))
 const forwardOf = (heading: number): XZ => ({ x: -Math.sin(heading), z: -Math.cos(heading) })
@@ -109,6 +114,24 @@ function sampled(n: number, f: (t: number) => number): (t: number) => number {
     const x = Math.min(n, Math.max(0, t / DT))
     const i = Math.min(n - 1, Math.floor(x))
     return v[i]! + (v[i + 1]! - v[i]!) * (x - i)
+  }
+}
+
+/**
+ * Fork (set-routines): a track that brakes at most BRAKE: where it slows
+ * faster, it starts slowing earlier (never further along than the track, so
+ * a pursuer keeps its spacing to the one ahead).
+ */
+function braked(n: number, arc: (t: number) => number): (t: number) => number {
+  const d = Array.from({ length: n + 1 }, (_, i) => arc(i * DT))
+  const v = Array.from({ length: n }, (_, i) => (d[i + 1]! - d[i]!) / DT)
+  for (let i = n - 2; i >= 0; i--) v[i] = Math.min(v[i]!, v[i + 1]! + BRAKE * DT)
+  const out = [d[0]!]
+  for (let i = 0; i < n; i++) out.push(out[i]! + v[i]! * DT)
+  return (t) => {
+    const x = Math.min(n, Math.max(0, t / DT))
+    const i = Math.min(n - 1, Math.floor(x))
+    return out[i]! + (out[i + 1]! - out[i]!) * (x - i)
   }
 }
 
@@ -152,6 +175,24 @@ function settle(set: RoutineSet, out: ChoreoEntitySpec[], dur: number): void {
     e.marks.push({ time: t1, position: { x: p1.x, y: 0, z: p1.z }, gait: 'walk', easeIn: 0, easeOut: 0, hold: 0, arriveHeading: last.arriveHeading })
     if (t2 > t1 + 1e-6) e.marks.push({ time: t2, position: { x: p2.x, y: 0, z: p2.z }, gait: 'stand', easeIn: 0, easeOut: 0.3, hold: 0, arriveHeading: last.arriveHeading })
   }
+}
+
+/**
+ * Fork (set-routines): a leg plays the gait of the mark it runs to, so each
+ * travel mark takes the gait of the leg arriving at it (its mean speed; the
+ * first mark its own speed): a pursuer braking behind the tackle runs into
+ * its slower marks instead of walking at 3–4 m/s. `fast` picks the gait of a
+ * leg at JOG_MAX or under that is too fast to walk.
+ */
+function paced(marks: ChoreoMarkSpec[], fast: (t: number) => GaitId): ChoreoMarkSpec[] {
+  for (let k = 1; k < marks.length; k++) {
+    const m = marks[k]!
+    const a = marks[k - 1]!
+    if (m.joints || m.posedMove || m.clip || m.ride || m.time - a.time < 1e-6) continue
+    const v = Math.hypot(m.position.x - a.position.x, m.position.z - a.position.z) / (m.time - a.time)
+    m.gait = v < 0.3 ? 'stand' : v < WALK_MAX ? 'walk' : v > JOG_MAX ? 'run' : fast(m.time)
+  }
+  return marks
 }
 
 /**
@@ -202,7 +243,12 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
   // Caught: from the fall's start the runner slows to a stop by the landing (a keyframe body; a bot plays its clip's own travel).
   const fallLand = fall ? (fall.keyframes.find((kf) => (kf.move?.up ?? 0) <= -0.5)?.t ?? fall.duration) : 1
   const stopAt = (t: number): number => (!caught || t < tEnd ? 1 : clamp01(1 - (t - tEnd) / fallLand))
-  const fallClip = caught ? motionClip('trip-and-fall-flat', bodyOf(0)) : null
+  // Fork (set-routines): a bot's fall clip picks the runner up at a run (RUN_FROM).
+  const fallSpec = caught ? motionClip('trip-and-fall-flat', bodyOf(0)) : null
+  const runFrom = fallSpec ? RUN_FROM[fallSpec.clip] : undefined
+  const fallClip = fallSpec && runFrom !== undefined ? { ...fallSpec, from: runFrom } : fallSpec
+  /** Fork (set-routines): the runner jogs the first third (upstream); a bot runs, its jog loop being a 1.5 m/s jog. */
+  const runnerFast = (t: number): GaitId => (t / dur < 0.35 && !playsClips(bodyOf(0)) ? 'jog' : 'run')
   /** Fork (set-routines): the fall played mirrored (a bot's clip drifts to the other side), where the set has room on that side only. */
   let fallMirror = false
   // Fork (set-routines): on a set the chase runs a route on its floor (routine-set.ts), at the pace the route holds.
@@ -301,12 +347,24 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
     return t <= contactT ? g : g + (TACKLE_GAP - g) * smooth((t - contactT) / 0.25)
   }
   const giveUp = skid
+  // Fork (set-routines): a bot tackler dives on its fall clip with the runner (RUN_FROM) from where it runs at the tackle;
+  // the keyframe lunge's push-off swept its feet along the floor. A keyframe body lunges.
+  const diveSpec = caught && playsClips(bodyOf(1)) ? motionClip('trip-and-fall-flat', bodyOf(1)) : null
+  const diveFrom = diveSpec ? RUN_FROM[diveSpec.clip] : undefined
+  const dive = diveSpec && diveFrom !== undefined ? { clip: diveSpec.clip, from: diveFrom } : null
+  /** The dive's travel (the tackler's own frame) t after the tackle starts. */
+  const diveTravel = (t: number): V3 => runTravel(dive!.clip, bodyOf(1), dive!.from, dive!.from + Math.min(Math.max(0, t), tackle!.duration), fallMirror)
   const arcs: ((t: number) => number)[] = [runnerAt]
   for (let pi = 1; pi < n; pi++) {
     const lag = (pi - 1) * 1.6 * (gap0 / 3.5) // fork (set-routines): closer on a short route
     const ahead = arcs[pi - 1]!
     let base: (t: number) => number = (t) => runnerAt(t) - gapAt(t) - lag
     if (pi === 1 && caught) base = (t) => runnerAt(t) - (t < tackleT ? gapAt(t) : tackleGap(t))
+    if (pi === 1 && dive) {
+      const run = base
+      const a0 = run(tackleT)
+      base = (t) => (t <= tackleT ? run(t) : a0 - diveTravel(t - tackleT).z)
+    }
     if (pi === 1 && ending === 'escape' && giveUp) {
       // Escape: the pursuer brakes to a stop over its give-up skid, then stands.
       const free = base
@@ -316,14 +374,19 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
     }
     const own = base
     const track = pi === 1 ? own : (t: number) => smin(own(t), ahead(t) - CHASE_SPACING, 1)
-    arcs.push(sampled(N, track))
+    arcs.push(pi === 1 ? sampled(N, track) : braked(N, track))
   }
 
   // ---- Marks ----
+  const diveAt = dive ? path.at(arcs[1]!(tackleT)) : null
   const posOn = (i: number, t: number): XZ & { heading: number } => {
     if (i === 0) {
       const p = runnerPos(t)
       return { ...p, heading: caught && t > tEnd ? fallHeading : path.at(runArc(t)).heading }
+    }
+    if (i === 1 && diveAt && t > tackleT) {
+      const q = toWorld(diveTravel(t - tackleT), { x: diveAt.x, y: 0, z: diveAt.z }, diveAt.heading, 1)
+      return { x: q.x, z: q.z, heading: diveAt.heading }
     }
     if (i === 1 && caught && t > tackleT) {
       // The tackle: behind the runner along its fall, facing it.
@@ -367,7 +430,9 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
       const p = posOn(i, t)
       const v = speedOf(i, t)
       const gait: GaitId = v < 0.3 ? 'stand' : v < 2.2 ? 'walk' : gaitAt(t)
-      marks.push({ time: t, position: { x: p.x, y: 0, z: p.z }, gait, easeIn: 0, easeOut: s === 0 ? 0.2 : 0, hold: 0, arriveHeading: p.heading })
+      // Fork (set-routines): the chase is under way from the first frame (upstream eased out of a standstill over 0.05 s:
+      // a bot crossfaded from its idle, the idle's feet dragged along).
+      marks.push({ time: t, position: { x: p.x, y: 0, z: p.z }, gait, easeIn: 0, easeOut: 0, hold: 0, arriveHeading: p.heading })
     }
   }
 
@@ -379,12 +444,12 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
     if (vault && !Number.isNaN(beatT1)) beats.push({ preset: vault, t0: beatT1 })
     if (skid && !Number.isNaN(beatT2)) beats.push({ preset: skid, t0: beatT2 })
     // Travel first: a beat's mark at the same time replaces a travel mark (dedupeSort keeps the later).
-    travel(marks, 0, beats, caught ? tEnd : dur, (t) => (t / dur < 0.35 ? 'jog' : 'run'))
+    travel(marks, 0, beats, caught ? tEnd : dur, runnerFast)
     for (const b of beats) ride(marks, 0, b.preset, b.t0, 'run')
     if (caught) {
       // The fall: one play (a bot plays its clip from here, along its own travel); a keyframe body slows to a stop on the line.
       const from = marks.length
-      kit.playMotion(marks, fall!, { x: fallStart.x, y: 0, z: fallStart.z }, tEnd, { facing: fallHeading, ...(fallMirror ? { mirror: true } : {}) })
+      kit.playMotion(marks, fall!, { x: fallStart.x, y: 0, z: fallStart.z }, tEnd, { facing: fallHeading, ...(fallMirror ? { mirror: true } : {}), ...(runFrom !== undefined ? { clipFrom: runFrom } : {}) })
       for (const m of marks.slice(from)) {
         const p = runnerPos(m.time)
         m.position = { x: p.x, y: m.position.y, z: p.z }
@@ -397,7 +462,7 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
       position: { x: start.x, y: 0, z: start.z },
       rotationY: start.heading,
       label: { text: 'RUNNER', color: '#e5484d' },
-      marks: kit.dedupeSort(marks)
+      marks: paced(kit.dedupeSort(marks), runnerFast)
     })
   }
   // Pursuers: the first stumbles at beat 1, skids with the runner at beat 2, then tackles (caught) or gives up (escape).
@@ -411,7 +476,8 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
     const gives = pi === 1 && !caught && ending === 'escape' && !!giveUp
     travel(marks, pi, beats, (pi === 1 && caught) || gives ? tEnd : dur, () => 'run')
     for (const b of beats) ride(marks, pi, b.preset, b.t0, 'run')
-    if (pi === 1 && caught) ride(marks, pi, tackle!, tackleT, 'stand')
+    if (pi === 1 && diveAt) kit.playMotion(marks, tackle!, { x: diveAt.x, y: 0, z: diveAt.z }, tackleT, { facing: diveAt.heading, clip: dive!.clip, clipFrom: dive!.from, ...(fallMirror ? { mirror: true } : {}) })
+    else if (pi === 1 && caught) ride(marks, pi, tackle!, tackleT, 'stand')
     else if (gives) {
       ride(marks, pi, giveUp!, tEnd, 'run')
       if (hands) ride(marks, pi, hands, tEnd + giveUp!.duration, 'stand')
@@ -422,7 +488,7 @@ export function chaseOnTracks(spec: RoutineSpec, ctx: RoutineCtx, kit: ChaseKit,
       name: n > 2 ? `Pursuer ${pi}` : 'Pursuer',
       position: { x: start.x, y: 0, z: start.z },
       rotationY: start.heading,
-      marks: kit.dedupeSort(marks)
+      marks: paced(kit.dedupeSort(marks), () => 'run')
     })
   }
   return out

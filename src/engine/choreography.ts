@@ -202,6 +202,10 @@ interface PlayOpts {
   gait?: GaitId
   /** Fork: a strike's target this far ahead (a bot's keyframe lunge stops short of it: mocap/library-clips.ts). */
   reach?: number
+  /** Fork (set-routines): a bot's clip run starts at this clip time (mocap/library-clips.ts `MotionPlay.from`). */
+  clipFrom?: number
+  /** Fork (set-routines): a bot plays the motion on this clip (mocap/library-clips.ts `MotionPlay.clip`). */
+  clip?: string
 }
 
 /**
@@ -217,7 +221,7 @@ function playMotion(
 ): number {
   const fwd = opts.facing !== undefined ? forwardOf(opts.facing) : { x: 0, z: 0 }
   // Fork: one play, which a bot plays as a clip run (mocap/library-clips.ts).
-  const play = { presetId: preset.id, pos: { ...pos }, heading: opts.facing, startT, endT: startT + preset.duration, mirror: opts.mirror, ...(opts.reach !== undefined ? { reach: opts.reach } : {}) }
+  const play = { presetId: preset.id, pos: { ...pos }, heading: opts.facing, startT, endT: startT + preset.duration, mirror: opts.mirror, ...(opts.reach !== undefined ? { reach: opts.reach } : {}), ...(opts.clipFrom !== undefined ? { from: opts.clipFrom } : {}), ...(opts.clip ? { clip: opts.clip } : {}) }
   for (const kf of preset.keyframes) {
     if (marks.length >= MAX_MARKS_PER_ENTITY) break
     const forward = kf.move?.forward ?? 0

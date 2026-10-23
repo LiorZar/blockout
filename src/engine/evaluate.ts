@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts); see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts); see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -14,6 +14,7 @@ import { verticalFov } from './camera'
 import { easedProgress, lerp, lerpAngle, smoothstep } from './easing'
 import { posedMoveY } from './floor'
 import { clipPosition, clipStateAt } from './mocap/clip-marks'
+import { loopPhaseAt } from './mocap/loop-phase'
 import { GAITS, checkSpeed, type SpeedVerdict } from './gaits'
 import { Path, headingOf } from './path'
 import { RigNoise } from './rigs'
@@ -57,6 +58,31 @@ function lerpJoints(
 }
 
 const ROOT_CHANNELS = new Set(['rootX', 'rootY', 'rootZ'])
+
+/** A leg's parts the gait rules read. */
+type GaitLeg = { from: ActorMark; to: ActorMark; departTime: number; arriveTime: number; path: { length: number } }
+
+/**
+ * The gait of a leg toward a mark that doesn't travel: upstream walks there.
+ * Fork (set-routines): a leg into a posed move (a motion's first pose, a bot's
+ * clip) keeps the travelling gait it departs with while its pace isn't too
+ * slow for it (`checkSpeed`), so a chase runs into its fall or tackle instead
+ * of walking at a run's speed.
+ */
+function legGait(leg: GaitLeg): GaitId {
+  const g = leg.from.gait
+  if (!leg.to.posedMove || !GAITS[g].travels) return 'walk'
+  const v = leg.path.length / Math.max(1e-6, leg.arriveTime - leg.departTime)
+  const verdict = checkSpeed(g, v)
+  return verdict.ok || verdict.kind !== 'tooSlow' ? g : 'walk'
+}
+
+/** The gait a leg plays (the rule trackStates applies to a state's gait): a locked leg (lockFacing, a posed move) its destination's, a travel leg its destination's travelling gait, else `legGait`. */
+function legPlays(leg: GaitLeg): GaitId {
+  const posed = !!(leg.from.posedMove && leg.to.posedMove)
+  const locked = (leg.to.lockFacing || posed) && (leg.from.arriveHeading !== undefined || leg.to.arriveHeading !== undefined)
+  return locked || GAITS[leg.to.gait].travels ? leg.to.gait : legGait(leg)
+}
 
 interface Leg<M extends MarkBase> {
   from: M
@@ -379,15 +405,18 @@ export class ShotEvaluator {
               )
             }
           : r.position
+      // Fork (set-routines): a bot's gait loops on one foot phase (mocap/loop-phase.ts).
+      const loopPhase = entity.assetId.startsWith('person.') ? loopPhaseAt(entity, legs, r.distanceTravelled, legPlays) : undefined
       entities.push({
         entityId: entity.id,
         position,
         heading,
-        gait: locked ? locked.to.gait : r.leg && spec.travels ? gait : r.leg ? 'walk' : gait,
+        gait: locked ? locked.to.gait : r.leg && spec.travels ? gait : r.leg ? legGait(r.leg) : gait,
         distanceTravelled: r.distanceTravelled,
         speed: r.speed,
         joints,
-        ...(clip ? { clip } : {})
+        ...(clip ? { clip } : {}),
+        ...(loopPhase !== undefined ? { loopPhase } : {})
       })
     }
 

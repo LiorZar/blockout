@@ -252,12 +252,21 @@ function endEarly(start: ClipRunMark, end: ClipRunMark, body: Body): void {
  * A motion on a loaded bot as clip runs filling [startT, endT] (the
  * sit-down by its seat, `sitRun`), or null (keep the keyframe motion).
  */
-export function motionRun(id: string, body: Body | undefined, pos: V3, heading: number, startT: number, endT: number, mirror = false, seats: readonly SeatSpot[] = []): ClipRunMark[] | null {
+export function motionRun(id: string, body: Body | undefined, pos: V3, heading: number, startT: number, endT: number, mirror = false, seats: readonly SeatSpot[] = [], from?: number, clip?: string): ClipRunMark[] | null {
   const sit = id === SIT_DOWN && playsClips(body) ? sitRun(body, pos, heading, startT, endT, seats) : null
   if (sit) return sit
-  const spec = motionClip(id, body)
-  return spec ? clipRun(spec, body!, pos, heading, startT, endT, mirror) : null
+  const spec = clip ? (playsClips(body) && mocapClip(clip) ? { clip } : null) : motionClip(id, body)
+  return spec ? clipRun(from !== undefined ? { ...spec, from } : spec, body!, pos, heading, startT, endT, mirror) : null
 }
+
+/**
+ * Fork (set-routines): where a fall clip picks up a body running at full
+ * speed, by clip: both feet off the floor, the body pitching forward at about
+ * a run's speed. The library's trip walks for 0.9 s, catches its foot and
+ * dives from 1.0 s; played from the start after a run, its walk-in brakes the
+ * runner to 1.5 m/s and its first pose is dragged along the street.
+ */
+export const RUN_FROM: Readonly<Record<string, number>> = { trip: 1.06 }
 
 /** A motion on a loaded bot filling [startT, startT + duration], or null (keep the keyframe motion): `apply_motion`'s path. */
 export function clipMotion(id: string, body: Body | undefined, pos: V3, heading: number, duration: number, startT = 0, mirror = false, seats: readonly SeatSpot[] = []): ClipRunMark[] | null {
@@ -356,6 +365,10 @@ export interface MotionPlay {
   mirror?: boolean
   /** Fork (fight-polish): a routine strike's target, this far ahead along its heading (m): a bot's keyframe lunge stops short of it. */
   reach?: number
+  /** Fork (set-routines): the clip time a bot's run of the play starts at, instead of its preset clip's (`RUN_FROM`). */
+  from?: number
+  /** Fork (set-routines): the clip a bot plays the play on instead of its preset's (a chase's tackle dives on the trip); its run marks name the preset (`MarkClip.as`). */
+  clip?: string
 }
 
 const PLAYS = new WeakMap<object, MotionPlay>()
@@ -537,12 +550,20 @@ export function clipPlays<M extends { time: number }>(marks: M[], body: Body, he
       continue
     }
     const fight = MOTION_PRESETS.find((p) => p.id === play?.presetId)?.category === 'fight'
-    const run = !play ? null : fight ? fightRun(play, body, heading, fell, last?.time) : motionRun(play.presetId, body, play.pos, play.heading ?? heading, play.startT, play.endT, play.mirror)
+    const run = !play
+      ? null
+      : play.clip
+        ? motionRun(play.presetId, body, play.pos, play.heading ?? heading, play.startT, play.endT, play.mirror, undefined, play.from, play.clip)
+        : fight
+          ? fightRun(play, body, heading, fell, last?.time)
+          : motionRun(play.presetId, body, play.pos, play.heading ?? heading, play.startT, play.endT, play.mirror, undefined, play.from)
     if (!play || !run) {
       out.push(play && fight && play.reach !== undefined ? short(marks[i]!, play) : marks[i]!)
       i++
       continue
     }
+    // Fork (set-routines): a play on another clip names its preset.
+    if (play.clip) for (const r of run) r.clip = { ...r.clip, as: play.presetId }
     fell = FALL_CLIPS.has(run[0]!.clip.id) ? run[0]!.clip.id : undefined
     while (i < marks.length && PLAYS.get(marks[i]!) === play) i++
     // A push-back at the run's (or the play's) end: the run ends where it puts the body.

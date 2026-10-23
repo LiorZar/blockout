@@ -40,6 +40,27 @@ helper and a small hook; upstream tests stay as they are.
 5. **Warnings** reach the Choreographer toast and the MCP results of
    `spawn_choreography` / `choreograph_entities` (`warnings`).
 
+6. **T3, gaits at a run**: a leg into a posed move (a fall, the tackle, a bot's clip) keeps the
+   travelling gait it departs with (upstream walks into any non-travelling mark, so the chase
+   walked into its fall at 4.6 m/s); the chase's travel marks take the gait of the leg arriving
+   at them (walk under 2.2 m/s, run over 4, else the routine's jog / run); a bot runner runs from
+   the start (the library's jog is a 1.5 m/s jog, played 2.5× fast at 3.8 m/s); the chase is under
+   way on its first frame (no 0.05 s ease out of a standstill, which crossfaded a bot from its
+   idle).
+7. **T3, one foot phase per bot** (`src/engine/mocap/loop-phase.ts`): every gait loop plays at the
+   bot's foot phase, counted from each loop's left-foot touchdown and advanced over each leg by its
+   travel over the loop's stride per foot cycle (the jog clip holds three); the loop fading out of
+   a crossfade goes on at that phase instead of freezing. Both loops of a crossfade then have the
+   same foot down; their planted spots still differ by the strides' difference.
+8. **T3, braking**: a pursuer following another brakes at most 6 m/s² (it starts slowing earlier,
+   never closer than its spacing).
+9. **T3, falls at a run**: the caught runner's fall on a bot plays the trip clip from its dive
+   (1.06 s: both feet off the floor, 3.7–4 m/s, `RUN_FROM`), not from its 0.9 s walk-in (a
+   1.5 m/s brake and its first pose dragged along the street); the bot tackler dives on the same
+   clip with the runner, from where it runs (the keyframe lunge's push-off swept a foot 20 cm a
+   frame across the floor). Its marks still name the tackle (`MarkClip.as`), so the H3 prompt says
+   "lunges into a tackle". Keyframe bodies keep the lunge.
+
 ## Tasks
 
 1. **T1 routines on the set** (`BACKLOG.md:24`).
@@ -82,3 +103,11 @@ helper and a small hook; upstream tests stay as they are.
   over 10 % of the frame 174 → 0, over the runner's head or chest 133 → 0, camera ≤ 0.18 m and 1.9° a
   frame (one steady 90° offset); lead-the-subject, the caught runner's hips and head in frame in the
   last 0.5 s 0/12 → 12/12. `follow-cast.test.ts` 3 of 3 fail on edf6dc0, 3 / 3 pass.
+- **T3** (bots, QA's Downtown chase seeds 7 / 3 / 21; `.maestro/set-routines/skate-t3a.txt`,
+  `dbg/slide-*.txt`), edf6dc0 → tree, foot-slide runs over 15 cm: 13 / 13 / 16 → 3 / 6 / 2, worst
+  104 / 89 / 111 → 32 / 24 / 29 cm. Run → trip (104 / 76 / 27 cm) and the tackle dive (71 cm): no run
+  over 15 cm. COP 2 slowing 79 / 89 / 111 → 32 / 19 / 29 cm: target missed (the crossfaded loops have
+  the same foot down but plant it at spots that differ by their strides; a foot pin would close it).
+  Escape: runs 28 → 14, worst 88 → 38 cm. T1 and T2 targets hold on the T3 tree
+  (`routes-t3a-*`, `framing-t3a-*`). `chase-blends.test.ts` 8 of 9 and `loop-phase.test.ts` 3 of 3
+  fail on edf6dc0.

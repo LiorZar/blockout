@@ -161,7 +161,10 @@ describe('travel legs keep upstream behaviour (only motion playback is a posed m
           if (inPosedLeg(spec, t)) return
           const at = `${name} ${spec.name} @${t.toFixed(2)}`
           expect(Math.atan2(Math.sin(a[i]!.heading - b[i]!.heading), Math.cos(a[i]!.heading - b[i]!.heading)), at).toBeCloseTo(0, 9)
-          expect(a[i]!.gait, at).toBe(b[i]!.gait)
+          // Fork (set-routines T3): a leg into a motion runs on the gait it departs with (evaluate.ts `legGait`); upstream walks.
+          const leg = legAt(spec, t)
+          const into = !!leg && !leg[0].posedMove && !!leg[1].posedMove && a[i]!.gait === leg[0].gait && b[i]!.gait === 'walk'
+          if (!into) expect(a[i]!.gait, at).toBe(b[i]!.gait)
           expect(a[i]!.position.x, at).toBeCloseTo(b[i]!.position.x, 9)
           expect(a[i]!.position.y, at).toBeCloseTo(b[i]!.position.y, 9)
           expect(a[i]!.position.z, at).toBeCloseTo(b[i]!.position.z, 9)

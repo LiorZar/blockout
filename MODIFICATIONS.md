@@ -1234,6 +1234,35 @@ Changes in this fork (2026):
   0), over the runner's head or chest 133 → 0, camera ≤ 0.18 m and 1.9° a frame;
   lead-the-subject, runner's hips and head in frame 0.94 → 1.00, in the last 0.5 s 0/12 → 12/12.
   Test: `tests/unit/follow-cast.test.ts` (new; 3 of 3 fail on edf6dc0).
+- The chase's bots stop sliding where the motion changes at a run (set-routines T3;
+  `src/engine/mocap/loop-phase.ts` new, `src/engine/mocap/gait-clips.ts`,
+  `src/renderer/mocap/scene.ts`, `src/engine/evaluate.ts`, `src/engine/types.ts`,
+  `src/engine/chase-tracks.ts`, `src/engine/choreography.ts`, `src/engine/mocap/library-clips.ts`,
+  `src/engine/mocap/clip-marks.ts`, `src/engine/prompt-scene.ts`): on QA's chase a bot's foot slid
+  up to 1.1 m. A leg into a posed move walked (upstream walks into any mark that doesn't travel),
+  so the runner walked into its fall and the tackler into its tackle at 4.6–5 m/s; the travel
+  marks took their gait from the speed at the mark, so a pursuer braking behind the tackle walked
+  at 3.8 m/s; a gait crossfade froze the loop fading out, its planted foot riding the body, and
+  the two loops had no foot phase in common; the trip clip walks for 0.9 s before it trips, so the
+  runner braked to 1.5 m/s with the clip's first pose dragged along the street; the keyframe
+  tackle's push-off swept a foot along the floor. Now a leg into a posed move keeps the travelling
+  gait it departs with unless its pace is too slow for it; each travel mark of the chase takes the
+  gait of the leg arriving at it, a bot runner runs from the start (the library's jog is a 1.5 m/s
+  jog) and the chase is under way on its first frame; a pursuer following another brakes at most
+  6 m/s². Every gait loop of a bot plays at the bot's one foot phase (`EntityState.loopPhase`,
+  from each loop's left-foot touchdown, `ClipWarp.origin`, per foot cycle, `ClipWarp.cycles`), and
+  the loop fading out of a crossfade goes on at it, so both loops have the same foot down. The
+  caught runner's fall on a bot plays the trip clip from its dive (`RUN_FROM`: 1.06 s, both feet
+  off the floor at 3.7–4 m/s), and a bot tackler dives on the same clip with the runner from where
+  it runs; its marks name the tackle (`MarkClip.as`), so the prompt still says "lunges into a
+  tackle". Keyframe bodies keep the lunge. QA's Downtown chase on bots, seeds 7 / 3 / 21, foot
+  slides over 15 cm, edf6dc0 → now: runs 13 / 13 / 16 → 3 / 6 / 2, worst 104 / 89 / 111 cm →
+  32 / 24 / 29 cm; at the run into the trip 104 / 76 / 27 cm and in the tackle 71 cm → none; the
+  pursuer braking behind 79 / 89 / 111 → 32 / 19 / 29 cm. The escape ending: runs 28 → 14, worst
+  88 → 38 cm. T1's and T2's numbers hold on the same probes. Tests:
+  `tests/unit/chase-blends.test.ts` and `tests/unit/loop-phase.test.ts` (new; 8 of 9 and 3 of 3
+  fail on edf6dc0), `tests/unit/motion-floor.test.ts` (extended: a leg into a motion may run where
+  upstream walks).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

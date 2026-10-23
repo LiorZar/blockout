@@ -101,6 +101,10 @@ export interface ClipWarp {
   rate: number
   stride: number
   C: Float64Array
+  /** Fork (set-routines): `C` where the left foot touches down (the planted contact turns from the right foot to the left; 0 when it never does), the loop's foot-phase origin (`loop-phase.ts`). */
+  origin?: number
+  /** Fork (set-routines): the left foot's touchdowns in one loop (a clip may hold two strides), at least 1. */
+  cycles?: number
 }
 
 /** Samples per second for a clip's travel. */
@@ -158,7 +162,67 @@ export function measureWarp(m: MocapDims, clip: MocapClip): ClipWarp | null {
     out = { rate, stride: C[n]!, C }
     vRef = C[n]! / clip.duration
   }
+  if (out) {
+    // Fork (set-routines): which foot pushes the body (slides back under it on the floor) at each sample.
+    const side = Array.from({ length: n }, (_, i) => {
+      const push = speeds(i).filter(([, u]) => u > 0.1 * vRef).map(([b]) => b)
+      const L = push.some((b) => LEFT_FOOT.has(b))
+      const R = push.some((b) => RIGHT_FOOT.has(b))
+      return L === R ? 0 : L ? 1 : -1
+    })
+    Object.assign(out, touchdowns(side, out.C))
+  }
   return out
+}
+
+const LEFT_FOOT = new Set([BONE_INDEX.LeftFoot, BONE_INDEX.LeftToeBase])
+const RIGHT_FOOT = new Set([BONE_INDEX.RightFoot, BONE_INDEX.RightToeBase])
+
+/** A stance shorter than this share of the loop is flicker (a foot brushing the floor), not a step. */
+const STANCE_MIN = 0.04
+
+/**
+ * Fork (set-routines): the left foot's stances around a loop, from which
+ * foot pushes at each sample (1 left, −1 right, 0 neither or both): `C`
+ * where the first begins (after a right stance), and how many there are.
+ */
+function touchdowns(side: number[], C: Float64Array): { origin: number; cycles: number } {
+  const n = side.length
+  let runs: { s: number; start: number; len: number }[] = []
+  for (let i = 0; i < n; i++) {
+    const s = side[i]!
+    if (s === 0) continue
+    const last = runs[runs.length - 1]
+    if (last?.s === s) last.len++
+    else runs.push({ s, start: i, len: 1 })
+  }
+  // Around the loop, and without flicker: same-side neighbours join.
+  const join = (): void => {
+    for (let changed = true; changed; ) {
+      changed = false
+      if (runs.length > 1 && runs[0]!.s === runs[runs.length - 1]!.s) {
+        const l = runs.pop()!
+        runs[0] = { s: l.s, start: l.start, len: l.len + runs[0]!.len }
+        changed = true
+      }
+      for (let i = 1; i < runs.length; i++)
+        if (runs[i]!.s === runs[i - 1]!.s) {
+          runs[i - 1]!.len += runs[i]!.len
+          runs.splice(i, 1)
+          changed = true
+          break
+        }
+    }
+  }
+  join()
+  for (let short = runs.findIndex((r) => r.len < STANCE_MIN * n); short >= 0 && runs.length > 2; short = runs.findIndex((r) => r.len < STANCE_MIN * n)) {
+    runs.splice(short, 1)
+    join()
+  }
+  const left = runs.filter((r) => r.s === 1)
+  if (left.length === 0 || left.length === runs.length) return { origin: 0, cycles: 1 }
+  const first = left.reduce((a, r) => (r.start < a.start ? r : a))
+  return { origin: C[first.start]!, cycles: left.length }
 }
 
 /** How far one cycle carries a bot (0 for a clip that doesn't travel). */

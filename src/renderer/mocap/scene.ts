@@ -9,7 +9,8 @@
  */
 
 import { smoothstep } from '@engine/easing'
-import { gaitClipId } from '@engine/mocap/gait-clips'
+import { mocapClip } from '@engine/mocap/clip'
+import { clipWarp, gaitClipId } from '@engine/mocap/gait-clips'
 import { personDims } from '@engine/skeleton'
 import type { Entity, EntityState, FightDoc, GaitId } from '@engine/types'
 import { holdLoop, loopArm } from '@engine/weapon-hold'
@@ -32,6 +33,20 @@ export function poseKind(assetId: string, input: AnimInput): string {
 }
 
 /**
+ * Fork (set-routines): the distance a gait input's travelling loop plays at on
+ * the bot's foot phase (`EntityState.loopPhase`, cycles from the loop's left
+ * touchdown; `loop-phase.ts`), else the input's own.
+ */
+function onPhase(entity: Entity, input: AnimInput, phase: number | undefined): number {
+  const m = personDims(entity.assetId, entity.params).mocap
+  const id = phase === undefined || !m ? undefined : gaitClipId(entity.assetId, input.gait, input.speed, input.seated)
+  const clip = id ? mocapClip(id) : undefined
+  const warp = clip ? clipWarp(m!, clip, entity.assetId) : null
+  if (!warp || !(warp.stride > 0)) return input.distance
+  return (phase! * (warp.stride / (warp.cycles ?? 1)) + (warp.origin ?? 0)) * (input.scale ?? entity.transform.scale) * m!.k
+}
+
+/**
  * Fill a bot's extra inputs. `inputAt` gives the same entity's input at
  * another shot time (without these extras); `fights` and `held` decide the
  * fists (a fighter's hands, a hand holding a weapon; else the marks' `handL`
@@ -40,6 +55,7 @@ export function poseKind(assetId: string, input: AnimInput): string {
 export function botInput(entity: Entity, es: EntityState, input: AnimInput, o: { inputAt: (t: number) => AnimInput | null; fights?: FightDoc[]; held: ReadonlySet<'L' | 'R'>; weapons?: HeldWeapon[] }): void {
   input.scale = entity.transform.scale
   if (es.clip) input.clip = es.clip
+  input.distance = onPhase(entity, input, es.loopPhase)
   // held-weapons: on a crouch, sit or lie loop the loop's own arms hold the weapons, each arm moved off the body where
   // the loop's fist is in it, as on a clip (weapon-hold.ts).
   const loop = !es.clip && o.weapons?.length ? holdLoop(entity.assetId, input.gait, input.speed, input.seated) : undefined
@@ -75,5 +91,10 @@ export function botInput(entity: Entity, es: EntityState, input: AnimInput, o: {
     else lo = mid
   }
   const prev = o.inputAt(lo)
-  if (prev) input.from = { input: { ...prev, scale: entity.transform.scale }, w: smoothstep(Math.min(1, (t - hi) / GAIT_BLEND)) }
+  // Fork (set-routines): the pose fading out goes on (a travelling loop at the bot's foot phase, as the one fading in),
+  // so its planted feet stay put instead of riding the body through the fade.
+  if (prev) {
+    const from = { ...prev, scale: entity.transform.scale, time: t }
+    input.from = { input: { ...from, distance: es.loopPhase === undefined ? input.distance : onPhase(entity, from, es.loopPhase) }, w: smoothstep(Math.min(1, (t - hi) / GAIT_BLEND)) }
+  }
 }

@@ -406,7 +406,9 @@ function recognizeMotions(marks: ActorMark[]): { t: number; preset: MotionPreset
     const m = marks[i]!
     // Fork: a mocap bot's clip run, named by its motion (mocap/library-clips.ts).
     if (m.clip) {
-      const named = clipMotionName(m.clip.id)
+      // Fork (set-routines): a run standing for another motion (a bot's tackle on the trip clip) is named by it.
+      const as = m.clip.as
+      const named = (as ? MOTION_PRESETS.find((p) => p.id === as) : undefined) ?? clipMotionName(m.clip.id)
       if (named && found[found.length - 1]?.preset.id !== named.id) found.push({ t: m.time, preset: named })
       i++
       continue

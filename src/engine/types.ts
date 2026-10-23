@@ -1,4 +1,4 @@
-// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons), ActorMark.clip / EntityState.clip (mocap clips), ClipState.step (bot footwork); see MODIFICATIONS.md.
+// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons), ActorMark.clip / EntityState.clip (mocap clips), ClipState.step (bot footwork), EntityState.loopPhase (bot foot phase), MarkClip.as; see MODIFICATIONS.md.
 /**
  * Blockout document model.
  *
@@ -189,6 +189,8 @@ export interface MarkClip {
   mirror?: boolean
   /** Fork (mocap-backlog): the seat prop's top under a chair sit, metres over the mark's floor in the body's own size (src/engine/mocap/seat.ts). */
   seat?: number
+  /** Fork (set-routines): the motion preset this run plays when the clip isn't its own (a bot's tackle dives on the trip clip), for the prompt. */
+  as?: string
 }
 
 /**
@@ -428,6 +430,8 @@ export interface EntityState {
   joints?: Record<string, number>
   /** Fork (mocap clips): the clip a mocap bot plays now (joints add on top). */
   clip?: ClipState
+  /** Fork (set-routines): a mocap bot's foot phase (cycles) its gait loops play at (mocap/loop-phase.ts). */
+  loopPhase?: number
 }
 
 /** Result of evaluating the camera at time t (rig noise already applied). */

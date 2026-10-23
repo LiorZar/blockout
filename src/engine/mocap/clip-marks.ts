@@ -347,6 +347,8 @@ export function sanitizeClipMarks(scene: Scene): void {
           if (c.mirror !== undefined && typeof c.mirror !== 'boolean') delete c.mirror
           // Fork (mocap-backlog): a seat top is a height in metres.
           if (c.seat !== undefined && !(typeof c.seat === 'number' && c.seat > 0 && c.seat < 5)) delete c.seat
+          // Fork (set-routines): the motion a run stands for is a preset id.
+          if (c.as !== undefined && (typeof c.as !== 'string' || !c.as)) delete c.as
         }
       }
 }
