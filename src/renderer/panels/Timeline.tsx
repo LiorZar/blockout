@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's fight re-solve in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's fight re-solve and vehicle speed warnings in 2026; see MODIFICATIONS.md.
 /**
  * Shoot-mode bottom timeline: transport, a scrubbable second-ruler, and one
  * lane per moving entity (camera first) with draggable mark pills. Reads and
@@ -313,15 +313,22 @@ export function Timeline(): JSX.Element {
           ))}
           {evaluator?.warnings().map((w) => (
             <span
-              key={`${w.entityId}-${w.legIndex}`}
+              key={`${w.entityId}-${w.legIndex}-${w.message ?? ''}`}
               className="warning-chip"
               style={{ cursor: 'pointer' }}
               onClick={() =>
                 setSelection({ kind: 'mark', entityId: w.entityId, markId: w.toMarkId })
               }
             >
-              ⚠ {w.entityName}: implied {w.verdict.impliedSpeed.toFixed(1)} m/s — try{' '}
-              {suggestionLabel(w.verdict.suggestion)}
+              {/* Fork (street-kit): a vehicle's or a follow camera's warning comes in words. */}
+              {w.message ? (
+                `⚠ ${w.message}`
+              ) : (
+                <>
+                  ⚠ {w.entityName}: implied {w.verdict.impliedSpeed.toFixed(1)} m/s — try{' '}
+                  {suggestionLabel(w.verdict.suggestion)}
+                </>
+              )}
             </span>
           ))}
         </div>

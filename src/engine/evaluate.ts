@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts) solved from the lens asked for, lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off, the entity states alone (evaluateEntities); see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts) solved from the lens asked for, lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off, the entity states alone (evaluateEntities), speed warnings that know what a vehicle can do; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -17,7 +17,8 @@ import { clipPosition, clipStateAt } from './mocap/clip-marks'
 import { loopPhaseAt } from './mocap/loop-phase'
 import { GAITS, checkSpeed, type SpeedVerdict } from './gaits'
 import { Path, headingOf } from './path'
-import { RigNoise } from './rigs'
+import { RIGS, RigNoise } from './rigs'
+import { RIG_TOP_SPEED, cameraMessage, topSpeedIssue, vehicleIssues, vehicleLimits, vehicleMessage } from './vehicle-speed'
 import { solveShot, type ShotSpec, type ShotSubject, type SolvedShot } from './shot'
 import { evaluateShotTrack, shotTrackSegment } from './shot-track'
 import { applyHolds } from './weapons'
@@ -207,6 +208,8 @@ export interface SpeedWarning {
   legIndex: number
   verdict: Exclude<SpeedVerdict, { ok: true }>
   gait: GaitId
+  /** Fork (street-kit): the warning in words, for a vehicle's or a follow camera's (vehicle-speed.ts); people keep the verdict's suggestion. */
+  message?: string
 }
 
 export class ShotEvaluator {
@@ -677,9 +680,17 @@ export class ShotEvaluator {
 
   /** Speed sanity warnings for every travel leg in the shot's blocking. */
   warnings(): SpeedWarning[] {
+    // Fork (street-kit): worked out once per evaluator (a vehicle's path is sampled).
+    if (this.speedWarnings) return this.speedWarnings
     const out: SpeedWarning[] = []
     for (const { entity, legs } of this.entityLegs.values()) {
       const spec = assetSpec(entity.assetId)
+      // Fork (street-kit): a vehicle is checked on its path against what it can do, not against a person's gaits.
+      const limits = vehicleLimits(entity.assetId)
+      if (limits) {
+        out.push(...this.vehicleWarnings(entity, legs, limits))
+        continue
+      }
       legs.forEach((leg, i) => {
         const duration = leg.arriveTime - leg.departTime
         if (duration <= 0 || leg.path.length < 0.05) return
@@ -698,7 +709,61 @@ export class ShotEvaluator {
         }
       })
     }
+    out.push(...this.followCameraWarnings())
+    this.speedWarnings = out
     return out
+  }
+
+  /** Fork (street-kit): the memo of warnings(). */
+  private speedWarnings: SpeedWarning[] | null = null
+
+  /** Fork (street-kit): a vehicle's top speed, launches, stops and corners over the shot (vehicle-speed.ts). */
+  private vehicleWarnings(entity: Entity, legs: Leg<ActorMark>[], limits: NonNullable<ReturnType<typeof vehicleLimits>>): SpeedWarning[] {
+    if (legs.length === 0) return []
+    const at = (t: number): V3 => this.poseOf(entity.id, t).position
+    const name = entity.label?.text || entity.name
+    const noun = assetSpec(entity.assetId).promptNoun
+    return vehicleIssues(at, 0, this.shot.duration, limits).map((issue) => {
+      const i = Math.max(0, legs.findIndex((l) => issue.t <= l.arriveTime + 1e-9))
+      const leg = legs[i] ?? legs[legs.length - 1]!
+      return {
+        entityId: entity.id,
+        entityName: name,
+        fromMarkId: leg.from.id,
+        toMarkId: leg.to.id,
+        legIndex: i,
+        verdict: { ok: false, kind: 'tooFast', impliedSpeed: issue.speed, suggestion: 'addTime' },
+        gait: leg.to.gait,
+        message: vehicleMessage(name, noun, issue, limits)
+      }
+    })
+  }
+
+  /** Fork (street-kit): a camera that follows a moving subject faster than its rig can (a camera car always keeps up with its mount). */
+  private followCameraWarnings(): SpeedWarning[] {
+    const cam = this.shot.camera
+    if (!cam.trackEntityId || this.cameraLegs.length === 0 || (cam.rig === 'carMount' && cam.mountEntityId)) return []
+    const subject = this.entityLegs.get(cam.trackEntityId)
+    if (!subject || subject.legs.length === 0) return []
+    const at = (t: number): V3 => evaluateTrack(cam.marks, this.cameraLegs, t).position
+    const top = RIG_TOP_SPEED[cam.rig]
+    const issue = topSpeedIssue(at, 0, this.shot.duration, top)
+    if (!issue) return []
+    const i = Math.max(0, this.cameraLegs.findIndex((l) => issue.t <= l.arriveTime + 1e-9))
+    const leg = this.cameraLegs[i] ?? this.cameraLegs[this.cameraLegs.length - 1]!
+    const name = subject.entity.label?.text || subject.entity.name
+    return [
+      {
+        entityId: 'camera',
+        entityName: 'Camera',
+        fromMarkId: leg.from.id,
+        toMarkId: leg.to.id,
+        legIndex: i,
+        verdict: { ok: false, kind: 'tooFast', impliedSpeed: issue.speed, suggestion: 'addTime' },
+        gait: 'run',
+        message: cameraMessage(name, RIGS[cam.rig].name, issue.speed, top)
+      }
+    ]
   }
 
   /**

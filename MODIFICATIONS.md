@@ -1501,6 +1501,21 @@ Changes in this fork (2026):
   and spirals the street's walls still block on 1–3 % of frames). Laying a move on the road takes 0.44 s
   on average, up to 6.8 s when no set fit is clear (the fallback search). Test:
   `tests/unit/vehicle-moves.test.ts` (new).
+- Speed warnings that know what a vehicle can do (street-kit T3; `src/engine/vehicle-speed.ts` (new),
+  `src/engine/evaluate.ts`, `src/renderer/panels/Timeline.tsx`, `src/renderer/export/exporter.ts`): upstream
+  checks a travel leg against a person's gait speeds times `speedScale`, so a car at a chase's
+  15 m/s read as too slow for its "run" (26–135 m/s) and the Timeline told every car to jog. A
+  road, rail or water vehicle is now checked on its evaluated path over the shot: its top speed,
+  and over each half-second window the change of speed (speeding up, braking) and the turn at the
+  mean speed (cornering, v ω), against the class's limits (a sedan 70 m/s, 9 / 11 / 11 m/s²; a bus
+  30 m/s, 2.5 / 7 / 4), the worst moment of each kind once per vehicle. A camera that tracks a
+  moving subject warns when its marks travel faster than its rig can follow (ground rigs and crane
+  8 m/s, drone 30, car mount 70; a mounted camera car always keeps up). They come through the same
+  channel, `ShotEvaluator.warnings()`, with a fork `message` the Timeline chips and `metadata.json`
+  show; people keep the gait check unchanged. The Library car chase (both styles, 2–4 cars, 6 / 15 s)
+  had 180 warnings at HEAD (on Downtown) and 36 after T1, all "try jog"; now 0. `warnings()` is
+  worked out once per evaluator: 4 ms on a 15 s 4-car chase. Test: `tests/unit/vehicle-speed.test.ts`
+  (new: one per warning, and the chase).
 - Fight coverage off the main thread (main-thread T1; `src/engine/fight/coverage-clear.ts`,
   `src/engine/fight/coverage-memo.ts` (new), `src/engine/fight/coverage.ts`, `src/engine/fight/solve-memo.ts`,
   `src/engine/camera-clear.ts`, `src/engine/shot.ts`, `src/engine/evaluate.ts`, `src/renderer/camera-view.ts`,

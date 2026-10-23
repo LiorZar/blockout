@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support, the fork's per-profile file-size cap, local-time export stamps, waiting for the mocap library, the viewport's look and its prompt's fight solves off the main thread in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's per-profile file-size cap, local-time export stamps, waiting for the mocap library, the viewport's look and its prompt's fight solves off the main thread, vehicle speed warnings in words in 2026; see MODIFICATIONS.md.
 /**
  * The Deliver pipeline. Exports are deterministic: the timeline is stepped
  * at exactly the shot's fps and every frame is rendered from the same
@@ -224,7 +224,8 @@ function buildMetadata(scene: Scene, shot: Shot, profile: GeneratorProfile): str
       subject: w.entityName,
       issue: w.verdict.kind,
       impliedSpeedMs: Math.round(w.verdict.impliedSpeed * 10) / 10,
-      suggestion: w.verdict.suggestion
+      suggestion: w.verdict.suggestion,
+      ...(w.message ? { message: w.message } : {}) // fork (street-kit): a vehicle's or a follow camera's warning in words
     }))
   }
   return JSON.stringify(meta, null, 2) + '\n'
