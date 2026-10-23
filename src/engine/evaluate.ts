@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival; see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt); see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -184,9 +184,13 @@ export class ShotEvaluator {
   private rigNoise: RigNoise
   private staticEntities: Entity[] = []
 
-  constructor(scene: Scene, shot: Shot) {
+  /** Fork (qa-fixes): false leaves a bot's feet to its clips (no footwork windows, mocap/footwork.ts): the fight solve's own checks. */
+  private readonly footwork: boolean
+
+  constructor(scene: Scene, shot: Shot, opts: { footwork?: boolean } = {}) {
     this.scene = scene
     this.shot = shot
+    this.footwork = opts.footwork ?? true
     this.cameraLegs = shot.camera.marks.length >= 2 ? buildLegs(shot.camera.marks) : []
     this.rigNoise = new RigNoise(shot.camera.rig, shot.camera.seed)
 
@@ -359,7 +363,7 @@ export class ShotEvaluator {
       const to = posed ? locked?.to : undefined
       // Fork: mocap clip marks (mocap/clip-marks.ts): the clip a bot plays, its root travel and floor line.
       const u = r.leg ? easedProgress(r.legProgress, r.leg.from.easeOut, r.leg.to.easeIn) : 0
-      const clip = entity.assetId.startsWith('person.') ? clipStateAt(r, time, u, entity) : undefined
+      const clip = entity.assetId.startsWith('person.') ? clipStateAt(r, time, u, entity, this.footwork ? legs : undefined) : undefined
       const position = clip
         ? clipPosition(entity, r, u, heading, r.position)
         : grounded && from?.joints && to?.joints && entity.assetId.startsWith('person.')

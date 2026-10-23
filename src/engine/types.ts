@@ -1,4 +1,4 @@
-// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons), ActorMark.clip / EntityState.clip (mocap clips); see MODIFICATIONS.md.
+// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons), ActorMark.clip / EntityState.clip (mocap clips), ClipState.step (bot footwork); see MODIFICATIONS.md.
 /**
  * Blockout document model.
  *
@@ -204,6 +204,25 @@ export interface ClipState {
   from?: { id: string; t: number; mirror?: boolean; seat?: number }
   /** Fork (mocap-backlog): the seat top the clip sits on (`MarkClip.seat`). */
   seat?: number
+  /** Fork (qa-fixes): the feet step over root travel the clip doesn't make (src/engine/mocap/footwork.ts). */
+  step?: ClipStep
+}
+
+/**
+ * Fork (qa-fixes): a window of root travel and turn past a bot's clips, as
+ * the pose at t sees it (src/engine/mocap/clip-marks.ts `clipStateAt`).
+ */
+export interface ClipStep {
+  /** The travel done so far and in all over the window, in the body's frame at t (body metres; −z forward). */
+  e: { x: number; z: number }
+  E: { x: number; z: number }
+  /** The turn done so far and in all (rad). */
+  a: number
+  A: number
+  /** Progress through the window (0..1), the steps each foot takes, and the foot stepping first (0 left, 1 right). */
+  s: number
+  n: number
+  lead: 0 | 1
 }
 
 export interface CameraMark extends MarkBase {

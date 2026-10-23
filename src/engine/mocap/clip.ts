@@ -18,7 +18,8 @@
  *   and grounds the pose: its lowest point sits at the clip's clearance (the
  *   source bot's height off its floor past a contact band, `CONTACT`),
  *   scaled to the bot; a chair sit rests on its seat's top (`seat.ts`), a
- *   retargeted bot's planted knees stay put (`contact-lock.ts`). Every
+ *   retargeted bot's planted knees stay put (`contact-lock.ts`); over root
+ *   travel the clips don't make the feet step (`footwork.ts`). Every
  *   consumer (floor, weapons, shot words, the renderer) sees the same pose.
  *
  * PURE: no DOM / three.js / Electron. Clips are registered at startup
@@ -30,6 +31,7 @@ import type { ClipState, V3 } from '../types'
 import { effectorsOf, jointLocals, mocapPose, poseFramesOf, type MocapDims, type MocapPose, type RigLocals } from './fk'
 import { qconj, qmul, qnorm, qpow, qrot, qslerp, vadd, vscale, type Quat } from './quat'
 import { lockKnees } from './contact-lock'
+import { plantFeet } from './footwork'
 import { seatLift } from './seat'
 import { mocapRig } from './registry'
 import { BONE_INDEX, MOCAP_BONES, type MocapBone } from './rig'
@@ -320,9 +322,30 @@ export function mirrorSample(s: ClipSample): ClipSample {
   }
 }
 
-/** The clip's root travel at clip time `t` (source rig metres). */
+/** The clip's root travel at clip time `t` (source rig metres): `clipSample`'s, without the pose. */
 export function clipRoot(clip: MocapClip, t: number, mirror = false): { x: number; z: number } {
-  return clipSample(clip, t, mirror).root
+  const D = clip.duration
+  let n = 0
+  let tt = 0
+  if (D > 0) {
+    if (clip.loop) {
+      n = Math.floor(t / D)
+      tt = t - n * D
+    } else tt = Math.min(D, Math.max(0, t))
+  }
+  const last = clip.frames - 1
+  const f = Math.min(last, tt * clip.fps)
+  const i = Math.min(Math.floor(f), Math.max(0, last - 1))
+  const j = Math.min(i + 1, last)
+  const u = j > i ? f - i : 0
+  const R = clip.root
+  let x = R[2 * i]! + (R[2 * j]! - R[2 * i]!) * u
+  let z = R[2 * i + 1]! + (R[2 * j + 1]! - R[2 * i + 1]!) * u
+  if (n !== 0) {
+    x += n * (R[2 * last]! - R[0]!)
+    z += n * (R[2 * last + 1]! - R[1]!)
+  }
+  return { x: mirror ? -x : x, z }
 }
 
 /** Source rig metres → a bot's metres: its hips height over the source's, times its height multiplier. */
@@ -542,6 +565,7 @@ export function mocapClipPose(m: MocapDims, st: ClipState, joints?: Record<strin
   let pose = lockKnees(m, clip, st.t, !!st.mirror, clipPose(m, s, joints))
   let clear = s.clear * clipScale(m, s.hipH)
   const w = Math.min(1, Math.max(0, st.w ?? 1))
+  let ends: { a: MocapPose; ca: number; b: MocapPose; cb: number } | undefined
   if (w < 1) {
     const fc = st.from ? CLIPS.get(st.from.id) : undefined
     let a: MocapPose
@@ -551,6 +575,7 @@ export function mocapClipPose(m: MocapDims, st: ClipState, joints?: Record<strin
       a = lockKnees(m, fc, st.from.t, !!st.from.mirror, clipPose(m, sa, joints))
       ca = sa.clear * clipScale(m, sa.hipH)
     } else a = mocapPose(m, jointLocals(joints))
+    ends = { a, ca, b: pose, cb: clear }
     pose = blendPoses(m, a, pose, w)
     clear = ca + (clear - ca) * w
   }
@@ -558,7 +583,11 @@ export function mocapClipPose(m: MocapDims, st: ClipState, joints?: Record<strin
   const grounded = groundPose(m, pose, clear)
   const seat = st.seat ?? (w < 1 ? st.from?.seat : undefined)
   const lift = seat === undefined ? null : seatLift(m, grounded, seat)
-  return lift ? chain(m, lift.G, lift.hips, grounded.XG) : grounded
+  if (lift) return chain(m, lift.G, lift.hips, grounded.XG)
+  // Fork (qa-fixes): the feet step over root travel the clips don't make (`footwork.ts`).
+  if (!st.step) return grounded
+  const feet = plantFeet(m, grounded, st.step, ends && st.from ? { a: groundPose(m, ends.a, ends.ca), b: groundPose(m, ends.b, ends.cb) } : undefined)
+  return feet ? chain(m, feet.G, feet.hips, grounded.XG) : grounded
 }
 
 /** A bot's pose for joints and an optional clip state: the clip's (joints as its overlay), else the rig pose. */

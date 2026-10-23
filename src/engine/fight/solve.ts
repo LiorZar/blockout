@@ -2297,11 +2297,14 @@ export function solveFight(
         if (!kIdx.includes(j)) joints = withOffsets(joints, legSplay(atk, e, joints, stateOf(kf.clip), { x: pos.x, y: groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), z: pos.z }, pl.heading, def, dst.joints, dst.clip, { x: dst.pos.x, y: dst.y, z: dst.pos.z }, hd))
       }
       let gait: GaitId = 'stand'
+      // Fork (qa-fixes): a bot's step-in from a clip into a clip is a posed crossfade, its feet stepping (mocap/footwork.ts).
+      let posedIn = false
       if (j === 0) {
         const lastMark = atk.marks[atk.marks.length - 1]!
         const d = flat(sub(pos, { x: lastMark.position.x, z: lastMark.position.z }))
         // Fork: a step-in (≤ MAX_STEP_SPEED) walks; a jog's flight lifted both feet off the floor.
         gait = d < 0.05 ? 'stand' : 'walk'
+        posedIn = !!atk.idle && !!kf.clip && !!lastMark.clip
         // Mocap bots (fork): the idle plays on until the step-in (or a short settle) before the beat.
         if (atk.idle && lastMark.clip?.id === atk.idle) {
           const lead = gait === 'walk' ? clamp(d / BOT_STEP, BOT_LEAD, t - lastMark.time) : BOT_LEAD
@@ -2312,11 +2315,16 @@ export function solveFight(
             const hold = lastMark.time + Math.min(0.5 / fps, (t - lastMark.time) / 2)
             addMark(atk, hold, { x: lastMark.position.x, z: lastMark.position.z }, lastMark.position.y, 'stand', {}, lastMark.arriveHeading, { id: atk.idle, at: hold }, true)
           }
-          // A keyframe move crossfades from the idle into its first pose where the bot stands, then steps in (the floor holds through both).
-          if (gait === 'walk' && !kf.clip && t - at > 2 / fps) addMark(atk, at + Math.min(BOT_XFADE, (t - at) / 2), { x: lastMark.position.x, z: lastMark.position.z }, groundY(atk.floor, joints, p.kfLift(j)), 'stand', joints, lastMark.arriveHeading, undefined, true)
+          // A keyframe move: the bot steps in on its idle (qa-fixes: its feet stepping), then crossfades into the move's first pose where it stands.
+          if (gait === 'walk' && !kf.clip && t - at > 2 / fps) {
+            const xf = t - Math.min(BOT_XFADE, (t - at) / 2)
+            addMark(atk, xf, pos, groundY(atk.floor, {}, 0, { id: atk.idle, t: xf }), 'stand', {}, pl.heading, { id: atk.idle, at: xf }, true)
+            gait = 'stand'
+            posedIn = true
+          }
         }
       }
-      addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), gait, joints, pl.heading, kf.clip, !!atk.idle && gait !== 'walk')
+      addMark(atk, t, pos, groundY(atk.floor, joints, p.kfLift(j), stateOf(kf.clip)), gait, joints, pl.heading, kf.clip, !!atk.idle && (gait !== 'walk' || posedIn))
     }
     const atkEnd = p.startT + preset.duration
     atk.spot = p.kfRoot(kfs.length - 1)
@@ -2517,8 +2525,10 @@ export function solveFight(
         restT = recoveryEnd + clamp(Math.max(moveA, moveD) / 1.5, 0.25, 1.5)
         const ra = restOf(atk, restT)
         const rd = restOf(def, restT)
-        addMark(atk, restT, aRest, groundY(atk.floor, ra.joints, 0, stateOf(ra.clip)), moveA > 0.05 ? 'walk' : 'stand', ra.joints, facing(aRest, dRest), ra.clip, !!atk.idle && moveA <= 0.05)
-        addMark(def, restT, dRest, groundY(def.floor, rd.joints, 0, stateOf(rd.clip)), moveD > 0.05 ? 'walk' : 'stand', rd.joints, facing(dRest, aRest), rd.clip, !!def.idle && moveD <= 0.05)
+        // Fork (qa-fixes): a bot walking back from a clip crossfades into its idle, its feet stepping (mocap/footwork.ts).
+        const posedRest = (f: Fighter, move: number): boolean => !!f.idle && (move <= 0.05 || !!f.marks[f.marks.length - 1]!.clip)
+        addMark(atk, restT, aRest, groundY(atk.floor, ra.joints, 0, stateOf(ra.clip)), moveA > 0.05 ? 'walk' : 'stand', ra.joints, facing(aRest, dRest), ra.clip, posedRest(atk, moveA))
+        addMark(def, restT, dRest, groundY(def.floor, rd.joints, 0, stateOf(rd.clip)), moveD > 0.05 ? 'walk' : 'stand', rd.joints, facing(dRest, aRest), rd.clip, posedRest(def, moveD))
         return { aRest, dRest }
       }
       // Fork (fight-polish): bots with a weapon held out rest far enough apart (restGap); walking there, the weapon must not sweep through the other
@@ -2595,7 +2605,7 @@ export function solveFight(
     if (!f.idle || f.down || !last || last.clip?.id !== f.idle || shot.duration <= last.time + 0.05) continue
     addMark(f, shot.duration, { x: last.position.x, z: last.position.z }, last.position.y, 'stand', {}, last.arriveHeading, { id: f.idle, at: shot.duration }, true)
   }
-  const ev = fightEvaluator(F, Math.max(shot.duration, endT), fps)
+  const ev = fightEvaluator(F, Math.max(shot.duration, endT), fps, true)
   for (const h of hits) {
     if (h.outcome !== 'hit' && h.outcome !== 'ko' && h.outcome !== 'block' && h.outcome !== 'parry') continue
     const st = ev.evaluate(h.time)
@@ -2666,7 +2676,8 @@ function samplePaths(ev: ShotEvaluator, F: [Fighter, Fighter], endT: number, fps
 }
 
 /** The evaluator over the fighters' marks so far, their held weapons in hand (for the grip poses). */
-function fightEvaluator(F: [Fighter, Fighter], duration: number, fps: number): ShotEvaluator {
+/** The fighters' marks in an evaluator; `footwork` false: states without the bots' stepping feet (mocap/footwork.ts), as the solve's own checks read them. */
+function fightEvaluator(F: [Fighter, Fighter], duration: number, fps: number, footwork = false): ShotEvaluator {
   const scene = {
     id: 'fight',
     name: 'fight',
@@ -2709,7 +2720,7 @@ function fightEvaluator(F: [Fighter, Fighter], duration: number, fps: number): S
     blockingTakeId: 'take',
     camera: { sensorId: 'super35', rig: 'sticks', rigIntensity: 0, seed: 1, marks: [] }
   } as unknown as Shot
-  return new ShotEvaluator(scene, shotDoc)
+  return new ShotEvaluator(scene, shotDoc, { footwork })
 }
 
 /**

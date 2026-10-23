@@ -1126,6 +1126,26 @@ Changes in this fork (2026):
   reports `mocap: { ready, bots, clips }`. The control server gives those six tools 180 s
   instead of 30 s. Test: `tests/e2e/mocap-race.spec.ts` (new; the clip reads held back in
   the main process).
+- Bot feet step instead of gliding (qa-fixes, mocap-qa bug 4; `src/engine/mocap/footwork.ts`
+  (new), `src/engine/mocap/clip-marks.ts`, `clip.ts`, `src/engine/fight/solve.ts`,
+  `src/engine/evaluate.ts`, `src/engine/types.ts`): where a bot's marks carried its root
+  further, or turned it more, than its clips do (a fight's step-in, walk back to guard,
+  stagger, push), the clips' planted feet rode along. The evaluator now finds those windows
+  on a bot's track (runs of posed clip legs travelling past the clip's own root travel;
+  each crossfade between two clips on its own) and hands the pose the travel and turn,
+  done and in all (`ClipState.step`, optional); the pose holds each grounded foot and steps
+  it in turn, front foot first, at most 0.4 m a step, lifted while the other stands on
+  the floor, by two-bone leg IK (the hips sink at most 8 cm for a step's reach). Feet off
+  the floor, falls, and in-place travelling loops keep the clip's feet. The solver lays a
+  bot's step-in and walk back to guard between two clips as a posed crossfade (no walk
+  loop under a clip blend, which had snapped the hips 12 cm in a frame); a keyframe move
+  steps in on the idle, then crossfades into its first pose. The solve's own checks read
+  the bots without footwork (`ShotEvaluator`'s new `footwork` option), so its separation
+  is unchanged. QA's run3 fight (rendered bones, QA's `skate-runs`): slide runs over 15 cm
+  BRUNO 16 → 0, KIRA 20 → 5 (all in the keyframe spinning back kick, hips still); the
+  worst toe slide while the hips travel 111 → 13 cm (the jab clip's own retreat); contact
+  0.21 cm before and after. Test: `tests/unit/mocap-footwork.test.ts` (new; 7 of 8 fail
+  on 7d9e5c1's sources).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
