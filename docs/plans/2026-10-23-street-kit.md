@@ -70,10 +70,58 @@ last, the camera-move presets frame a car instead of sitting in its bumper, and 
   (HEAD app) and after; `.maestro/street-kit/SHEET.png`; check the lead car framed, no editor chrome, no void,
   `prompt.txt` names each proxy and the road.
 
+### T5 The chase lays its camera (crd3's rulings on Lior's open questions)
+- crd3: a Library / MCP car chase also lays a camera in the same undo step, a follow on the lead with a rig that can keep
+  up, fitted by `layCameraMove`, only when the shot camera has no marks yet; `apply_camera_move` with a follow-type preset
+  on a moving vehicle sets a rig that keeps up (Car mount, Drone for an aerial follow) in the same mutate, a rig set by
+  hand stays and its warning with it; a chase dropped on Downtown keeps laying its own road (one BACKLOG line).
+- **My call: Lead the Subject** on LEAD. All five follow candidates keep the lead's box in frame with no warning on a
+  freshly staged chase (`chasecam.probe.ts`, presets mode); Lead the Subject shows the pursuers too (1.96 of the 2 on
+  average in frame per frame, follow-behind and the side tracks 0.71), so the clip reads as a chase.
+- **My call: "set by hand" = not the default Sticks.** The document doesn't record who set a rig; Sticks is what a new
+  shot gets, so a follow over Sticks takes the rig it needs and any other rig stays.
+- **My call: follow-type = the `follow` and `aerial` categories** (every aerial preset rides along with its subject);
+  aerial, or a subject flying over 3 m, takes Drone, the rest Car mount (no mount entity: the marks stay in the world,
+  a camera car). "Moving" = the subject travels over 1 m in the shot (nine samples). Orbits, pushes and pans keep the rig.
+- Test first: `tests/unit/chase-camera.test.ts`. **Target:** a freshly staged chase (both styles, 2–4 cars, 6 / 15 s)
+  keeps the lead's box in frame on every frame with 0 warnings, in one click; the follow / aerial presets on a moving
+  lead: camera speed warnings over Sticks → 0 on the rig the move names.
+
 ## Done when
 Before / after numbers per task; the sheet looked at; one clean full gate, smoke and the fork e2e set (mcp-gaps,
 fight-camera, mannequin, weapons, mocap-bots, export-flush, mocap-race, export-editor-only, export-look, fight-worker)
 with the lock and `--workers=1`; `MODIFICATIONS.md` entries; BACKLOG items marked DONE; each task staged alone.
 
 ## Results
-(filled in per task)
+
+Probes and runs under `.maestro/street-kit/`; every frame at 24 fps unless said.
+
+| Task | Measure | Before | After | Evidence |
+|---|---|---|---|---|
+| T1 open road (`add591c`) | car-frames with a corner off the street (both styles, 2–4 cars, 6 / 15 s) | 7143 / 8668 (HEAD, on Downtown) | 0 / 8668; no overlaps, no heading step > 2° | `chase-head-downtown.txt`, `chase-t1.txt` |
+| | void, worst frame (ray grid, 3 live shot-words cameras on the lead) | 11–64 % | 0 % | `void-head-downtown.txt`, `void-t1.txt`, `t1-look.png` |
+| T2 vehicle moves (`387a8b3`) | of 312 preset moves on the lead (39 × alone / 4 cars × straight / weaving × 2 starts): lose the lead's box with no warning | 172 | 0 | `moves-head.txt`, `moves-t2b.txt`, `t2-moves.png` |
+| | moves with the lens inside a car | 0 | 0 (51 warn: 40 static by design, 11 orbits / spirals 1–3 % blocked by the street walls) | same |
+| | lay time | — | 0.44 s mean, 6.8 s max (BACKLOG line) | same |
+| T3 speed warnings (`c945991`) | Library chase warnings (both styles, 2–4 cars, 6 / 15 s) | 180 (HEAD on Downtown), 36 after T1, all "try jog" | 0; 19 tests, one per warning | `chase-t3.txt`, `tests/unit/vehicle-speed.test.ts` |
+| | `warnings()` cost, 15 s 4-car chase | — | 4.0 ms per fresh evaluator | `warncost.probe.ts` |
+| T4 proof | H3 Max export, 15 s, 4 cars, 1920×1080, 24 fps, 360 frames: lead's box out of frame | 361 / 361 both styles (camera in its bumper) | 0 / 361 (worst reach 0.98 straight, 0.85 weaving) | `export-before.txt`, `export-t3.txt` |
+| | speed warnings / export warnings | 20 per export / none | 0 / none | same |
+| T5 chase camera | freshly staged chase, camera as staged (both styles, 2–4 cars, 6 / 15 s): lead's box out of frame | 3036 / 3036 (default camera, no marks) | 0 / 3036; warnings 0 → 0; lens inside a car 0; pursuers in frame 0.01 → 1.96 per frame | `chasecam-bare-t5.txt`, `chasecam-staged-t5.txt` |
+| | 13 follow / aerial presets on the moving lead (2 styles × 2 / 4 cars, 52 moves): camera speed warnings | 52 on Sticks | 0 on the rig the move names | `chasecam-rig-t5.txt` |
+| | built app, one click (spawn_sequence, export, nothing else), H3 Max 15 s 4 cars | — | lead out of frame 0 / 361 (worst reach 0.85 straight, 0.86 weaving), speed warnings 0, export warnings none, 3.4 / 4.0 MB; `spawn_sequence` → `camera {presetId: lead-the-subject, rig: carMount}`; `apply_camera_move` follow-behind over Sticks → `rig: carMount`, overhead-track-follow → `drone`, over Handheld → kept | `export-t5.txt`, `run-export-t5/export.json` |
+
+**Sheet** `.maestro/street-kit/SHEET.png` (looked at): one row per style, before (HEAD on Downtown, camera by hand) |
+after T1–T4 (open road, camera by hand) | after T5 (one click). Before: the car's roof and tail fill the frame over the
+empty ground. After: the car framed on the street, buildings and lamp posts both sides, no void, no editor chrome; T5:
+LEAD head-on with the pursuers behind it. `prompt.txt` (T5, both styles): "The red box on wheels (LEAD) is a sedan car.
+The 3 grey boxes on wheels are an SUV, a pickup truck and a van. … chase LEAD toward the camera. Camera: car-mounted …
+Setting: a long city street lined with buildings." Every proxy and the road are named.
+
+**Gate** (lock, `--workers=1` for e2e). Staged tree (`c945991` + T5, checkout-index snapshot, its own build):
+typecheck / lint 0, `Test Files 107 passed (107)`, `Tests 1788 passed (1788)`; smoke `6 passed`; fork e2e set (mcp-gaps,
+fight-camera, mannequin, weapons, mocap-bots, export-flush, mocap-race, export-editor-only, export-look, fight-worker)
+`89 passed (5.5m)` (`idx-t5.txt`, `idx-smoke-t5.txt`, `idx-e2e-t5.txt`). Working tree (with main-thread's unstaged
+work): `Test Files 108 passed (108)`, `Tests 1793 passed`; smoke `6 passed`; e2e `84 passed, 1 failed`: main-thread's
+new unstaged `fight-worker.spec.ts:180` first-frames bar, 146 ms > 100 (`gate-final.txt`, `smoke-final.txt`,
+`e2e-final.txt`).
