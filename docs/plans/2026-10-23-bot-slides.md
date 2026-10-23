@@ -117,3 +117,13 @@ on bots, seeds 7 / 3 / 21, both endings).
   13.92–14.08 s, the fight idle crossfading to and from the mirrored body block): none left on
   d916477; run3's slide runs over 5 cm there: 0 (`fight-run3-head.txt`), and 0 on T2
   (`fight-run3-t2f.txt`). Nothing to change.
+- **Done** (the frozen app built from snap-t3, d2cd266 + T3 = b552024's code; `.maestro/bot-slides/final/`,
+  `SHEET.png`, looked at): QA's run3 fight exported for H3 twice with matching reference and depth
+  SHAs, contact max 0.2 cm over 5 impacts; on the master wide KIRA's spinning back kick keeps her
+  pivot foot planted, lands on BRUNO's body and sets the kicking foot back down; BRUNO's knockdown
+  and get-up read. Fight bones: KIRA's worst slide 8.4 cm at 0.79 s (the eased push after the
+  block, hips moving), BRUNO's 13 cm at 1.08 s (a stagger, hips moving 13 cm). Chase: RUNNER 20 cm at
+  5.58 s (a stumble's keyframe legs) and COP 2 32 cm at 6.5 s (braking), as listed in T3. The master
+  wide frames the gym's bench in front of the fighters' legs (a new `BACKLOG.md` bug). Gate on
+  snap-t3: typecheck and lint 0, `Test Files 96 passed (96)`, `Tests 1679 passed (1679)`; smoke
+  `6 passed`; the fork e2e set (9 specs, `--workers=1`): `83 passed (3.2m)`.
