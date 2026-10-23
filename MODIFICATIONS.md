@@ -1333,6 +1333,15 @@ Changes in this fork (2026):
   and `tests/unit/mocap-fights-solve.test.ts` (their keyframe-move cases now ask for the move over
   the idle, the pivot foot still and the kicking foot back on its spot, and a sweep and a tackle
   still crossfaded; the first two fail on d916477).
+- A bot on its first mark reads its first leg's speed (bot-slides T3; `src/engine/evaluate.ts`): at
+  the first mark the evaluator reported speed 0 even where the first leg sets off at once, so a
+  bot running from frame 0 (QA's chase runner) stood on frame 0 and crossfaded into its run, its
+  feet sliding 15–17 cm. Now a bot there reads the leg's speed as it sets off (a hold or an ease
+  out still reads 0; every other body as upstream). QA's Downtown chase on bots, seeds 7 / 3 / 21,
+  caught / escape, foot-slide runs over 15 cm, d916477 → now: 3 / 6 / 2 → 2 / 5 / 1 and 6 / 3 / 5
+  → 5 / 3 / 4 (the first frame's gone everywhere). Left: keyframe legs over the run loop (the
+  skid and stumble beats, 17–37 cm), run ↔ walk gait crossfades (18–32 cm) and one stop into a
+  standing pose (38 cm). Test: `tests/unit/bot-first-frame.test.ts` (new; fails on d916477).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

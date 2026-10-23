@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts); see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -92,6 +92,12 @@ interface Leg<M extends MarkBase> {
   path: Path
   /** Cumulative travel distance at the start of this leg. */
   distanceBefore: number
+}
+
+/** Fork (bot-slides): a leg's speed as it sets off (evaluateTrack's finite difference, from u = 0). */
+function departSpeed(leg: Leg<ActorMark>): number {
+  const du = 0.001
+  return (easedProgress(du, leg.from.easeOut, leg.to.easeIn) * leg.path.length) / (du * (leg.arriveTime - leg.departTime))
 }
 
 function buildLegs<M extends MarkBase>(marks: M[]): Leg<M>[] {
@@ -407,13 +413,16 @@ export class ShotEvaluator {
           : r.position
       // Fork (set-routines): a bot's gait loops on one foot phase (mocap/loop-phase.ts).
       const loopPhase = entity.assetId.startsWith('person.') ? loopPhaseAt(entity, legs, r.distanceTravelled, legPlays) : undefined
+      // Fork (bot-slides): a bot on its first mark as its first leg sets off reads that leg's speed (it read 0, so frame 0 stood and crossfaded into the gait).
+      const first = legs[0]
+      const speed = r.speed === 0 && loopPhase !== undefined && first && r.atMark?.time === first.from.time && Math.abs(first.departTime - time) < 1e-9 ? departSpeed(first) : r.speed
       entities.push({
         entityId: entity.id,
         position,
         heading,
         gait: locked ? locked.to.gait : r.leg && spec.travels ? gait : r.leg ? legGait(r.leg) : gait,
         distanceTravelled: r.distanceTravelled,
-        speed: r.speed,
+        speed,
         joints,
         ...(clip ? { clip } : {}),
         ...(loopPhase !== undefined ? { loopPhase } : {})

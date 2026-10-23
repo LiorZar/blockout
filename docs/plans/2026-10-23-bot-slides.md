@@ -98,3 +98,22 @@ on bots, seeds 7 / 3 / 21, both endings).
   frame after it the bodies overlap past a landed hit's 1 cm bar, so `separate()` pushes both
   9.3 cm at once (T1's fallback, as kicks3 on HEAD); Male grapples 2 more frames at 3.0–3.1 cm
   off the impacts (15.04–15.08). Left as a residual.
+- **T3** (QA's Downtown chase on bots, seeds 7 / 3 / 21, caught / escape;
+  `.maestro/bot-slides/skate-{head,t3f}-*.txt`), slide runs over 15 cm, d916477 → T3: caught
+  3 / 6 / 2 → 2 / 5 / 1, escape 6 / 3 / 5 → 5 / 3 / 4: the first frame's 15–17 cm runs are gone
+  everywhere (a bot on its first mark reads its first leg's speed, `evaluate.ts`;
+  `bot-first-frame.test.ts` fails on d916477). Left, 20 runs, by cause (marks around each run):
+  9 keyframe legs over the run loop (the skid and stumble beats, 17–37 cm), 10 run ↔ walk gait
+  crossfades (7 braking, 3 speeding back up, 18–32 cm: the two loops plant the same foot at spots
+  that differ by their strides; it needs a history-aware foot lock across the blend), 1 stop into a
+  standing pose (escape seed 3 COP 1 7.54–7.83 s, 38 cm, the crossfade gliding the feet into the
+  stance). Tried and reverted (both worse): stepping the planted foot over the gait crossfade (in a
+  run the other foot is up, so the step can't lift, 32 cm); holding planted feet under leg overlays
+  on gait loops (the hold engaging as a foot lands pulled it 25–28 cm in one frame).
+  set-routines' T1 and T2 targets hold: its routes (people, bots) and framing (bots) probes on the
+  T3 tree print exactly what they printed on its T3 (`routes-t3-*`, `framing-t3-bots`: no hip in a
+  solid or off the tile, root steps ≤ 0.223 m, other cast < 2.5 m from the lens 0 / 192).
+- **T4** (qa-fixes' "both feet slide, hips still" runs, KIRA 0.13–0.38, 1.29–1.46, 12.75–13.00,
+  13.92–14.08 s, the fight idle crossfading to and from the mirrored body block): none left on
+  d916477; run3's slide runs over 5 cm there: 0 (`fight-run3-head.txt`), and 0 on T2
+  (`fight-run3-t2f.txt`). Nothing to change.
