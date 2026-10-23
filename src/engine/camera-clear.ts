@@ -549,19 +549,20 @@ export function shotSubjects(scene: Scene, states: EntityState[]): ShotSubject[]
   return out
 }
 
-interface Sample {
+/** Fork (shot-clear): exported for move-clear.ts. */
+export interface Sample {
   t: number
   subjects: ShotSubject[]
   world: ViewWorld
 }
 
-const nameOfEntity = (scene: Scene): ((id: string) => string) => {
+export const nameOfEntity = (scene: Scene): ((id: string) => string) => {
   const names = new Map(scene.entities.map((e) => [e.id, e.label?.text || e.name]))
   return (id) => names.get(id) ?? id
 }
 
-/** Subjects and occluders of a shot at time t (cached). */
-function sampler(scene: Scene, shot: Shot, boxes: SetBox[]): (t: number) => Sample {
+/** Subjects and occluders of a shot at time t (cached). Fork (shot-clear): exported for move-clear.ts. */
+export function sampler(scene: Scene, shot: Shot, boxes: SetBox[]): (t: number) => Sample {
   const ev = new ShotEvaluator(scene, shot)
   const take = scene.blocking.find((b) => b.id === shot.blockingTakeId) ?? scene.blocking[0]
   const moving = new Set((take?.tracks ?? []).filter((tr) => tr.marks.length > 0).map((tr) => tr.entityId))
@@ -588,7 +589,7 @@ function spanTimes(t0: number, t1: number): number[] {
 }
 
 /** Fork (shot-clear): every frame of a span at `fps`. */
-function frameTimes(t0: number, t1: number, fps: number): number[] {
+export function frameTimes(t0: number, t1: number, fps: number): number[] {
   const out: number[] = []
   for (let f = Math.ceil(t0 * fps - 1e-6); f / fps <= t1 + 1e-9; f++) out.push(f / fps)
   return out

@@ -31,7 +31,7 @@ import { headingOf } from '@engine/path'
 import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
 import { groupShotPose, pickFramingSubjectIds } from '@engine/framing'
 import type { ViewOutcome } from '@engine/camera-clear'
-import { clearFollowMarks, clearFramingPose } from '../camera-view'
+import { clearFollowMarks, clearFramingPose, clearMoveMarks } from '../camera-view'
 import type { Entity, EntityState, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
 import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
@@ -1812,8 +1812,11 @@ export class SceneManager {
       duration
     })
     // Fork (fix-camera-set): a people-follow move keeps clear of the set and other cast (camera-view.ts).
+    // Fork (shot-clear): any other move is fitted to the set round its subject.
     const cleared =
-      preset.category === 'follow' && entity.assetId.startsWith('person.') ? clearFollowMarks(this.docScene, this.shot, specs, subject.id) : null
+      preset.category === 'follow' && entity.assetId.startsWith('person.')
+        ? clearFollowMarks(this.docScene, this.shot, specs, subject.id)
+        : clearMoveMarks(this.docScene, this.shot, specs, subject.id, preset.track, preset.name)
     const shotId = this.shot.id
     const marks = (cleared?.marks ?? specs).map((spec) => ({
       id: newId('cmark'),

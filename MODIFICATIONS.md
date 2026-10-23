@@ -1434,6 +1434,20 @@ Changes in this fork (2026):
   fighter's feet, at the 10 % line), and the lens never inside the set. A coverage call on bots
   takes 0.4–3.5 s, 6.1 s when no view holds on every frame (HEAD 0.05–3.3 s). Tests:
   `tests/unit/set-cover.test.ts`, `tests/unit/shot-clear-store.test.ts` (new).
+- Camera moves fitted to the set (shot-clear T2; `src/engine/move-clear.ts` (new),
+  `src/engine/camera-clear.ts`, `src/renderer/camera-view.ts`,
+  `src/renderer/viewport/SceneManager.ts`): only people-follow moves kept clear of the set, so an
+  orbit inside the alley kit rendered wall. `applyCameraMove` now fits every other preset round
+  its subject (`clearMove`): the whole move at once, so it keeps its shape, about the subject's
+  aim point at each mark's time: closer on a wider lens (≥ 12 mm), raised, its sweep from the
+  first mark cut to ¾ / ½ / ¼ and turned round the subject, the nearest fit whose lens stays out
+  of the set and whose subject's box the set covers no more than 20 % on every frame. A clear move
+  is unchanged; when no fit is clear the one clear on the most frames is kept and the tool result
+  and toast carry a warning (`apply_camera_move` `note` / `warning`). The 39 presets round a
+  person in the alley and downtown, from a camera 5 m in front and 5 m off 45° (156 moves, every
+  frame): moves with blocked frames and no warning, HEAD 49, now 0 (2 warn: the high drone orbit
+  can't clear the alley's 8 m walls). A fit takes ≤ 0.4 s, 1.9 s when none is clear. Test:
+  `tests/unit/move-clear.test.ts` (new).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

@@ -2,10 +2,12 @@
  * Clear camera views, renderer side (fork addition, fix-camera-set; see
  * MODIFICATIONS.md): hands the set's geometry (fight-obstacles.ts
  * `cameraBoxes`) to the pure search in src/engine/camera-clear.ts for shot
- * words, fight coverage, framing presets and people-follow moves.
+ * words, fight coverage, framing presets and people-follow moves, and (fork,
+ * shot-clear) to src/engine/move-clear.ts for every other camera move.
  */
 
 import { clearFixedPose, clearFollowMove, clearShotWords, type SetBox, type ViewOutcome } from '@engine/camera-clear'
+import { clearMove } from '@engine/move-clear'
 import type { CameraMarkSpec } from '@engine/camera-moves'
 import type { ShotSpec } from '@engine/shot'
 import type { Scene, Shot, V3 } from '@engine/types'
@@ -54,6 +56,11 @@ export function clearFramingPose(
   subjectIds: string[]
 ): ReturnType<typeof clearFixedPose> {
   return clearFixedPose(scene, shot, pose, subjectIds, setBoxes(scene, shot))
+}
+
+/** Fork (shot-clear): any other camera move fitted to the set round its subject (engine/move-clear.ts). */
+export function clearMoveMarks(scene: Scene, shot: Shot, specs: CameraMarkSpec[], subjectId: string, track: boolean, name: string): ReturnType<typeof clearMove> {
+  return clearMove(scene, shot, specs, subjectId, setBoxes(scene, shot), { track, name })
 }
 
 /** A people-follow camera move's marks kept clear of the set and other cast. */
