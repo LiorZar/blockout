@@ -53,4 +53,5 @@
 ## Issues
 
 - Report the rig override sign bug (fixed in the fork, see MODIFICATIONS.md) to upstream wassermanproductions/blockout — needs Lior's go before anything is posted.
+- Long exports over HTTP MCP outlive a client's request timeout (mocap-qa harness note, 2026-10-22): an 18.5 s bot fight exported under load took longer than Node fetch's 300 s headers timeout, so the MCP client gave up while the app kept exporting and refused every edit with "An export is already running." until it finished. Clara's own client wasn't tested. Options: `export_shot` returns at once with a job id the agent polls (`get_export`), or streams progress so the connection stays alive; the refusal could name the running export and its progress.
 - Mocap bots (phase 1 leftovers): the bots' fingers stay flat at rest, so a fist punch or a gun grip reads as an open hand until phase 2/3 brings clip poses; the AI reference analysis (`src/main/analyze.ts`) lists the bot ids even on a machine without the Mixamo library (a staged bot then shows as its studio mannequin).

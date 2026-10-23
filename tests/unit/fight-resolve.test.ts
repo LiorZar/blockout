@@ -150,6 +150,32 @@ describe('a staged fight fits in the shot (qa-fight bug 6)', () => {
     expect(report.warnings.some((w) => /Lengthened/.test(w))).toBe(false)
   })
 
+  it('stage and update both say when the fight runs past the shot, and the length that shows it all (qa-fixes, mocap-qa bug 8)', () => {
+    // A KO whose fall runs on past the blow: where the blow lands and the fight ends, in a roomy shot.
+    const beats = (parseFightScript('A jab cross to head -> hit, ko power 1', ['A', 'B']) as { beats: never[] }).beats
+    const roomy = st().stageFight({ beats, at: { x: 0, z: 0, heading: 0 } }).report
+    const blow = roomy.beats[0]!.impactTimes[1]!
+    expect(roomy.endT).toBeGreaterThan(blow + 0.6)
+    // A shot that ends between the two: every beat plays, so the shot stays as it is.
+    load()
+    const cut = Math.ceil((blow + 0.4) * 2) / 2
+    st().mutate('cut', (doc) => {
+      doc.scenes[0]!.shots[0]!.duration = cut
+    })
+    const { fightId, report } = st().stageFight({ beats, at: { x: 0, z: 0, heading: 0 } })
+    expect(shot().duration).toBe(cut)
+    expect(report.endT).toBeGreaterThan(cut)
+    const need = (Math.ceil((report.endT + 0.5) * 2) / 2).toFixed(1)
+    expect(report.warnings).toContain(`The fight ends at ${report.endT.toFixed(1)} s, after the shot's ${cut.toFixed(1)} s: set the shot to ${need} s to see it all`)
+    const again = st().updateFight(fightId, { exaggeration: 1.5 })
+    expect(again.warnings.some((w) => w.startsWith(`The fight ends at ${again.endT.toFixed(1)} s, after the shot's ${cut.toFixed(1)} s`))).toBe(true)
+    // A fight inside its shot says nothing of the kind.
+    st().mutate('roomy', (doc) => {
+      doc.scenes[0]!.shots[0]!.duration = 10
+    })
+    expect(st().updateFight(fightId, { exaggeration: 1.5 }).warnings.some((w) => /^The fight ends at/.test(w))).toBe(false)
+  })
+
   it('updateFight lengthens the shot for a longer script; a fight that fits leaves it alone', () => {
     const one = (parseFightScript('A jab cross to head -> hit', ['A', 'B']) as { beats: never[] }).beats
     const { fightId, report } = st().stageFight({ beats: one, at: { x: 0, z: 0, heading: 0 } })

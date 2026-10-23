@@ -658,6 +658,17 @@ function growShot(sc: Scene, sh: Shot, sized: Shot, fightId: string, report: Fig
   refightShot(sc, sh, fightId)
 }
 
+/**
+ * Fork (qa-fixes): a fight running on past the shot's end (its last reaction:
+ * the fit grows a shot only for a dropped beat) says so, with the length
+ * that shows it all.
+ */
+function notePastEnd(sh: Shot, report: FightSolution['report']): void {
+  if (report.endT <= sh.duration + 1e-6) return
+  const need = Math.min(MAX_FIT_DURATION, Math.ceil((report.endT + 0.5) * 2) / 2)
+  report.warnings.push(`The fight ends at ${report.endT.toFixed(1)} s, after the shot's ${sh.duration.toFixed(1)} s: set the shot to ${need.toFixed(1)} s to see it all`)
+}
+
 /** Tell the user which beats a shorter shot left out (after refightShot). */
 export function toastRefight(results: ReturnType<typeof refightShot>): void {
   const scene = useStore.getState().scene()
@@ -1356,6 +1367,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       sc.fights = [...(sc.fights ?? []), fight]
       writeFightTracks(take, fight.fighterIds, sol)
       if (sh) growShot(sc, sh, sized, fight.id, sol.report)
+      if (sh) notePastEnd(sh, sol.report)
       if (fight.coverage && sh) writeCoverage(sc, sh, fight, sol.report, fight.coverage, cameraLineSide(sc, sh, fight))
     })
     if (spawned.length > 0) set({ selection: { kind: 'entities', entityIds: spawned.map((e) => e.id) } })
@@ -1381,6 +1393,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       sc.fights = (sc.fights ?? []).map((f) => (f.id === fightId ? fight : f))
       writeFightTracks(take, fight.fighterIds, sol)
       if (sh) growShot(sc, sh, sized, fightId, sol.report)
+      if (sh) notePastEnd(sh, sol.report)
       if (patch.coverage && sh) writeCoverage(sc, sh, fight, sol.report, patch.coverage, cameraLineSide(sc, sh, fight))
     })
     return sol.report

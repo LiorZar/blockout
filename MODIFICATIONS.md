@@ -1168,6 +1168,12 @@ Changes in this fork (2026):
   again says it once. QA's chase (seed 7, caught, bots) went from 16 sentences with "RUNNER
   does a knocked down" and runs back and forth to 8, every cast member in the action. Test:
   `tests/unit/prompt-words.test.ts` (new; all 5 fail on 7d9e5c1's sources).
+- A fight that runs past its shot says so (qa-fixes, mocap-qa bug 8; `src/renderer/store.ts`):
+  `stage_fight` and `update_fight` share the fit rule (the shot grows only when a beat would
+  drop, so a last reaction may run past the end, as H3's 15 s cap needs); nothing said so:
+  QA's `update_fight` moved the fight's end to 20.85 s in an 18.5 s shot without a word. Both now
+  warn "The fight ends at 20.9 s, after the shot's 18.5 s: set the shot to 21.5 s to see it
+  all". Test: `tests/unit/fight-resolve.test.ts` (extended).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
