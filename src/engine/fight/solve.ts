@@ -195,6 +195,13 @@ const SEP_MARGIN = 0.005
 const SEP_RES = 0.005
 const SEP_MAX = 0.15
 const SEP_GAIN = 0.01
+/**
+ * Fork (bot-slides): a push eases in at most SEP_RATE from the blow (m/s, a
+ * few centimetres a frame), not all of it on the frame after it; a frame on
+ * the way in may sit SEP_NEAR in the other body (QA's bar is 3 cm).
+ */
+const SEP_RATE = 1
+const SEP_NEAR = 0.015
 /** Bots resting apart with a weapon held out (restGap) keep it this clear of the other (m). */
 const REST_CLEAR = 0.05
 /** At most this many more tries at a rest whose walk sweeps a weapon through the other (restDepth). */
@@ -2451,14 +2458,14 @@ export function solveFight(
             // Fork (fight-polish): a held weapon in the other body swings out first (a push only slides a shaft along itself).
             const sw = F.some((f) => f.held.length > 0) ? swingWeapons(F, T, next - 2 * SEP_BACK, fps, next - SEP_BACK) : null
             beatWarnings.push(...(sw?.notes ?? []).map((n) => `${label}: ${n} after blow ${i + 1}`))
-            jolts += separate(F, atk, def, T, next - 2 * SEP_BACK, away, fps, next - SEP_BACK, sw?.states).push
+            jolts += separate(F, atk, def, T, next - 2 * SEP_BACK, away, fps, next - SEP_BACK, sw?.states, outcomes[i] === 'hit' || outcomes[i] === 'ko').push
           }
           return
         }
         const last = def.marks[def.marks.length - 1]!
         const sw = F.some((f) => f.held.length > 0) ? swingWeapons(F, T, Math.min(T + SEP_WINDOW, Math.max(atkEnd, last.time)), fps) : null
         beatWarnings.push(...(sw?.notes ?? []).map((n) => `${label}: ${n} after blow ${i + 1}`))
-        const s = separate(F, atk, def, T, Math.min(T + SEP_WINDOW, Math.max(atkEnd, last.time)), away, fps, Infinity, sw?.states)
+        const s = separate(F, atk, def, T, Math.min(T + SEP_WINDOW, Math.max(atkEnd, last.time)), away, fps, Infinity, sw?.states, outcomes[i] === 'hit' || outcomes[i] === 'ko')
         if (s.push > 0) beatWarnings.push(`${label}: ${who} goes ${(s.push * 100).toFixed(0)} cm further back after the last blow${s.both ? `, and ${who === 'A' ? 'B' : 'A'} stops ${(s.push * 100).toFixed(0)} cm short,` : ''} so the bodies stay apart`)
       })
       if (jolts > 0) beatWarnings.push(`${label}: ${who} rocks back ${(jolts * 100).toFixed(0)} cm between blows so the bodies stay apart`)
@@ -3285,17 +3292,18 @@ function holdingBones(h: HeldWeapon): Set<number> {
  * into the attacker, a follow-through into the defender): the skins sampled
  * to `end` (every frame for SEP_CLOSE, then every SEP_STEP), and where they
  * sit more than SEP_TOL in each other, the defender's marks after T are
- * pushed back along `away`, ramped in by the first frame that overlapped,
- * by the least push (to within SEP_RES, at most SEP_MAX) that clears those
- * frames, plus SEP_MARGIN; when the defender alone can't get clear, the
- * attacker's own marks after T are held back as far. When nothing clears
- * them, the least push that does as well as SEP_MAX, if that helps by
- * SEP_GAIN. Before another blow (`back`,
+ * pushed back along `away`, ramped in by the first frame that overlapped
+ * (fork, bot-slides: at most SEP_RATE, the frames on the way in kept within
+ * SEP_NEAR), by the least push (to within SEP_RES, at most SEP_MAX) that
+ * clears those frames, plus SEP_MARGIN; when the defender alone can't get
+ * clear, the attacker's own marks after T are held back as far. When
+ * nothing clears them, the least push that does as well as SEP_MAX, if that
+ * helps by SEP_GAIN. Before another blow (`back`,
  * finite) the push holds to the last frame that overlapped and eases out by
  * `back`, so that blow lands where it was placed. Returns the push (m) and
  * whether the attacker was held back too.
  */
-function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, end: number, away: XZ, fps: number, back = Infinity, frames?: SepFrame[]): { push: number; both: boolean } {
+function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, end: number, away: XZ, fps: number, back = Infinity, frames?: SepFrame[], hit = false): { push: number; both: boolean } {
   // (Fork, fight-polish: or the frames swingWeapons evaluated, the marks unchanged since.)
   const ev = frames ? null : fightEvaluator(F, Math.max(end, Number.isFinite(back) ? back : 0) + 1, fps)
   const over: { t: number; sa: EntityState; sd: EntityState; d: number }[] = []
@@ -3311,41 +3319,51 @@ function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, 
   if (over.length === 0) return { push: 0, both: false }
   const first = over[0]!
   const last = over[over.length - 1]!
-  const share = rampShare(T, first.t, last.t, back)
+  // Fork (bot-slides): a push p is all in by the first frame that overlapped, or later at `rate` (m/s); it holds to the last. The frames on its
+  // way in may sit `near` in each other (a landed hit's no more than the rest).
+  let rate = SEP_RATE
+  const near = hit ? SEP_TOL : SEP_NEAR
+  const rise = (p: number): number => (Number.isFinite(rate) ? Math.max(first.t, T + p / rate) : first.t)
+  const shareOf = (p: number): ((t: number) => number) => rampShare(T, rise(p), Math.max(last.t, rise(p)), back)
   const marksAt = (f: Fighter, at: (o: (typeof over)[number]) => EntityState): void => {
     if (Number.isFinite(back)) markAtState(f, last.t, at(last))
     markAtState(f, first.t, at(first))
   }
   marksAt(def, (o) => o.sd)
-  const realized = (f: Fighter, t: number): number => realizedShare(f, t, share)
   const moved = (s: EntityState, d: XZ, p: number): EntityState => ({ ...s, position: { x: s.position.x + d.x * p, y: s.position.y, z: s.position.z + d.z * p } })
   const toward = { x: -away.x, z: -away.z }
-  // How deep the bodies still sit in each other on one of those frames, the defender pushed by p (and with `both`, the attacker held back by p).
-  const depthAt = ({ t, sa, sd }: (typeof over)[number], p: number, both: boolean): number =>
-    bodyOverlap(atk, both ? moved(sa, toward, p * realized(atk, t)) : sa, def, moved(sd, away, p * realized(def, t)), true)
-  const deepest = (p: number, both: boolean): number => Math.max(...over.map((o) => depthAt(o, p, both)))
+  // How far over its bar one of those frames still is, the defender pushed by p (and with `both`, the attacker held back by p): the bodies'
+  // depth in each other, past `near` on the push's way in, past SEP_TOL once it is all in.
+  const excess = ({ t, sa, sd }: (typeof over)[number], p: number, both: boolean): number => {
+    const share = shareOf(p)
+    const depth = bodyOverlap(atk, both ? moved(sa, toward, p * realizedShare(atk, t, share)) : sa, def, moved(sd, away, p * realizedShare(def, t, share)), true)
+    return depth - (t < rise(p) - 1e-9 ? near : SEP_TOL)
+  }
+  const worst = (p: number, both: boolean): number => Math.max(...over.map((o) => excess(o, p, both)))
+  // Eased only where that (the attacker giving way too, if need be) keeps every frame within its bar; else all of it at once, as before.
+  if (worst(SEP_MAX, false) > 0 && worst(SEP_MAX, true) > 0) rate = Infinity
   // Unpushed, as the frames were found.
-  const start = Math.max(...over.map((o) => o.d))
+  const start = Math.max(...over.map((o) => o.d)) - SEP_TOL
   let both = false
-  let most = deepest(SEP_MAX, false)
-  if (most > SEP_TOL) {
+  let most = worst(SEP_MAX, false)
+  if (most > 0) {
     // The attacker carrying on into the defender (a kick stepping through, a tackle): its own travel after the blow is held back too.
-    const held = deepest(SEP_MAX, true)
+    const held = worst(SEP_MAX, true)
     if (held < most - SEP_RES) {
       both = true
       marksAt(atk, (o) => o.sa)
-      most = deepest(SEP_MAX, true)
+      most = worst(SEP_MAX, true)
     }
   }
-  if (most > SEP_TOL && start - most < SEP_GAIN) return { push: 0, both: false }
-  const goal = most <= SEP_TOL ? SEP_TOL : most + SEP_RES
+  if (most > 0 && start - most < SEP_GAIN) return { push: 0, both: false }
+  const goal = most <= 0 ? 0 : most + SEP_RES
   let lo = 0
   let hi = SEP_MAX
   // Each push is tried on the deepest frames first and given up at the first one still over the goal (the last to fail goes first).
   const order = [...over].sort((a, b) => b.d - a.d)
   const fits = (p: number): boolean => {
     for (let k = 0; k < order.length; k++) {
-      if (depthAt(order[k]!, p, both) <= goal) continue
+      if (excess(order[k]!, p, both) <= goal) continue
       order.unshift(...order.splice(k, 1))
       return false
     }
@@ -3357,6 +3375,7 @@ function separate(F: [Fighter, Fighter], atk: Fighter, def: Fighter, T: number, 
     else lo = mid
   }
   const push = hi + SEP_MARGIN
+  const share = shareOf(push)
   // Each later mark moved by its share.
   const shift = (f: Fighter, dir: XZ): void => {
     for (const m of f.marks) {

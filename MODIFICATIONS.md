@@ -1288,6 +1288,19 @@ Changes in this fork (2026):
   `tests/unit/chase-blends.test.ts` and `tests/unit/loop-phase.test.ts` (new; 8 of 9 and 3 of 3
   fail on edf6dc0), `tests/unit/motion-floor.test.ts` (extended: a leg into a motion may run where
   upstream walks).
+- A bot fight's push after a blow eases in (bot-slides T1; `src/engine/fight/solve.ts`): after a
+  blow the solver keeps the two bots' skins apart (`separate`), and its push ramped from nothing at
+  the impact to all of it on the first frame that overlapped, which is the frame after the impact
+  when the blow follows through (a blocked jab, a front kick's foot): 8–9 cm of push in one frame,
+  so the hips snapped and both feet slid. Now the push eases in at most 1 m/s (`SEP_RATE`, 4.2 cm
+  a frame); a frame on its way in may sit 1.5 cm in the other body after a block (`SEP_NEAR`),
+  no more than 1 cm after a landed hit, and the attacker gives way too where the defender alone
+  can't keep that. Where easing can't keep every frame within its bar (a power-1 kick combo), the
+  push lands at once as before. QA's run3 fight (`.maestro/bot-slides/fight-run3-*.txt`), d916477
+  → now, hips step / snap (the step less the mean of its neighbours'): KIRA 0.83 s 9.1 / 8.7 →
+  4.9 / 2.4 cm, BRUNO 4.50 s 11.0 / 9.1 → 6.3 / 4.1 cm; contact 0.21 cm and the overlap within two
+  frames of every impact (≤ 2.03 cm, QA's bar 3 cm) unchanged. Test:
+  `tests/unit/fight-separate-ease.test.ts` (new, skinned fixture bots; fails on d916477).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
