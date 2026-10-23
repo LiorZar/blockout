@@ -25,12 +25,12 @@ import { generateSequence, choreographMotion } from '@engine/sequences'
 import { buildRoutine, mirrorJoints } from '@engine/choreography'
 import { mirrorForHolder } from '@engine/fight/moves'
 import { seatSpots } from '@engine/mocap/library-clips'
-import { mocapClipVersion } from '@engine/mocap/clip'
-import { mocapRig, mocapVersion, waitForMocap } from '@engine/mocap/registry'
+import { mocapRig, waitForMocap } from '@engine/mocap/registry'
 import { ACTION_PRESETS } from '@engine/action-presets'
 import { ShotEvaluator } from '@engine/evaluate'
 import type { ShotSpec } from '@engine/shot'
-import { GUARD_DISTANCE, solveFight, type FighterInput, type FightSolution } from '@engine/fight/solve'
+import { GUARD_DISTANCE, type FighterInput, type FightSolution } from '@engine/fight/solve'
+import { solveFightMemo } from '@engine/fight/solve-memo'
 import { nextLabelColor } from '@engine/palette'
 import { handFor, holdError, putInHand, setDown, weaponSpec, weaponsInHand } from '@engine/weapons'
 import { fightCoverage, type CoverageMode } from '@engine/fight/coverage'
@@ -513,16 +513,11 @@ function fightersOf(scene: Scene, ids: [string, string]): [Entity, Entity] {
 }
 
 /**
- * Mocap fights (fork): the last solutions, by everything a solve reads (the
- * fight, the fighters' inputs, the shot's timing, the props, the loaded bots
- * and clips). A bot's solve takes seconds, so reading a fight (get_fight,
- * the Fight Director's live report) must not solve it again; an edit that
- * changes an input misses. Each caller gets its own copy.
+ * Solve a fight of `scene` for `shot`'s timing (`extra`: weapons about to be put in the fighters' hands).
+ * Mocap fights (fork): a bot's solve takes seconds, so the solutions are remembered by everything a solve reads
+ * (fight-speed: in the engine, engine/fight/solve-memo.ts, shared with the prompt); reading a fight (get_fight, the
+ * Fight Director's live report) solves nothing again, an edit that changes an input misses. Each caller gets its own copy.
  */
-const SOLVES = new Map<string, FightSolution>()
-const SOLVES_KEPT = 16
-
-/** Solve a fight of `scene` for `shot`'s timing (`extra`: weapons about to be put in the fighters' hands). */
 export function solveInScene(
   scene: Scene,
   shot: Shot,
@@ -536,17 +531,7 @@ export function solveInScene(
   const inputs: [FighterInput, FighterInput] = [fighterInput(fighters[0], scene, extra), fighterInput(fighters[1], scene, extra)]
   const timing = { duration: shot.duration, fps: shot.fps }
   const opts = free ? { paths: true } : { obstacles: fightObstacles(scene, take) }
-  const key = JSON.stringify([fight, inputs, timing, opts, mocapVersion(), mocapClipVersion()])
-  const known = SOLVES.get(key)
-  if (known) {
-    SOLVES.delete(key)
-    SOLVES.set(key, known)
-    return structuredClone(known)
-  }
-  const sol = solveFight(fight, inputs, timing, opts)
-  if (SOLVES.size >= SOLVES_KEPT) SOLVES.delete(SOLVES.keys().next().value!)
-  SOLVES.set(key, structuredClone(sol))
-  return sol
+  return solveFightMemo(fight, inputs, timing, opts)
 }
 
 /** Set props (gap 8): the solver had to stop a push-back at a prop, or a path still runs into one. */

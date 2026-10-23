@@ -1342,6 +1342,16 @@ Changes in this fork (2026):
   → 5 / 3 / 4 (the first frame's gone everywhere). Left: keyframe legs over the run loop (the
   skid and stumble beats, 17–37 cm), run ↔ walk gait crossfades (18–32 cm) and one stop into a
   standing pose (38 cm). Test: `tests/unit/bot-first-frame.test.ts` (new; fails on d916477).
+- Fight solves remembered in the engine (fight-speed T1; `src/engine/fight/solve-memo.ts` new,
+  `src/renderer/store.ts`, `src/engine/prompt-scene.ts`; plan
+  `docs/plans/2026-10-23-fight-speed.md`): the store's memo of the last 16 fight solutions (by
+  the fight, the fighters' inputs, the shot's timing, the props, the loaded bots and clips) moves
+  into the engine as `solveFightMemo`, and the prompt's action section reads it too: the Deliver
+  panel's prompt solved every fight of the scene again on every edit (a bot fight: seconds a
+  time); now a fight solves once per change to its inputs, and in a scene without props the
+  prompt reads the staged fight's own solve (no props and an empty prop list are one key). The
+  solver is untouched: the 14 `mocap-fights-real` scripts both ways and QA's run3 solve to
+  byte-equal marks and reports. Test: `tests/unit/fight-solve-memo.test.ts` (new).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

@@ -24,7 +24,8 @@ import { assetSpec } from './assets'
 import { mirrorJoints } from './choreography'
 import { ShotEvaluator } from './evaluate'
 import { SHOT_MOVES, strikeImpacts } from './fight/moves'
-import { solveFight, type FighterInput } from './fight/solve'
+import type { FighterInput } from './fight/solve'
+import { solveFightMemo } from './fight/solve-memo'
 import { MOTION_PRESETS, type MotionPreset } from './motions'
 import { clipMotionName } from './mocap/library-clips'
 import { LABEL_COLOR_NAMES } from './palette'
@@ -335,9 +336,9 @@ function fightEvents(scene: Scene, shot: Shot): { events: ActionEvent[]; fighter
     const ents = fight.fighterIds.map((id) => scene.entities.find((e) => e.id === id))
     if (!ents[0] || !ents[1]) continue
     fight.fighterIds.forEach((id) => fighters.add(id))
-    let report: ReturnType<typeof solveFight>['report']
+    let report: ReturnType<typeof solveFightMemo>['report']
     try {
-      report = solveFight(fight, [fighterOf(ents[0], scene), fighterOf(ents[1], scene)], {
+      report = solveFightMemo(fight, [fighterOf(ents[0], scene), fighterOf(ents[1], scene)], {
         duration: shot.duration,
         fps: shot.fps
       }).report
