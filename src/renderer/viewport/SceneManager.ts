@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -2556,6 +2556,13 @@ export class SceneManager {
         excludedStates.push([v.root, v.root.visible])
         v.root.visible = false
       }
+      // Fork (qa-fixes): so does a set's blocking dressing (`userData.editorOnly`: the nightclub's light cones).
+      v.root.traverse((o) => {
+        if (o.userData.editorOnly && o.visible) {
+          excludedStates.push([o, true])
+          o.visible = false
+        }
+      })
     }
     // Editor chrome must never reach an export: selection boxes + gizmo.
     const restoreSelection = this.hideSelectionBoxes()

@@ -1146,6 +1146,15 @@ Changes in this fork (2026):
   worst toe slide while the hips travel 111 → 13 cm (the jab clip's own retreat); contact
   0.21 cm before and after. Test: `tests/unit/mocap-footwork.test.ts` (new; 7 of 8 fail
   on 7d9e5c1's sources).
+- The nightclub's light cones stay out of exports (qa-fixes, mocap-qa bug 6;
+  `src/renderer/viewport/builders.ts`, `src/renderer/viewport/SceneManager.ts`): the four
+  translucent coloured cones turning through the room washed a frame green whenever one
+  passed the lens, drew as solid cones in the depth pass, and went unnamed in the prompt, so
+  a video model could read them as pyramids. They are blocking dressing now: tagged
+  `userData.editorOnly`, which `renderFrameAt` hides in every pass (and puts back), so the
+  viewport keeps them. Test: `tests/e2e/export-editor-only.spec.ts` (new; a camera inside a
+  cone, clean and depth: 172,794 pixel values differed from the frame without the cones
+  before, none after).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264

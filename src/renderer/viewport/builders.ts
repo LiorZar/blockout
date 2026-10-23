@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots, mocap clip inputs; see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots, mocap clip inputs, the nightclub's light cones editor-only; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -3851,6 +3851,8 @@ function envNightclub(group: THREE.Group): EnvResult {
   group.add(booth)
   // 4 colored emissive cones from ceiling (MeshBasicMaterial, transparent).
   const coneGroup = grp(0, 0, 0)
+  // Fork (qa-fixes): blocking dressing only; exports leave them out (SceneManager.renderFrameAt).
+  coneGroup.userData.editorOnly = true
   group.add(coneGroup)
   const colors = [0xff3040, 0x3060ff, 0x30ff60, 0xff30ff]
   const spots: [number, number][] = [
