@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts), lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off; see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts) solved from the lens asked for, lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -624,7 +624,8 @@ export class ShotEvaluator {
 
   /** Solve one shot mark from the live entity states; null when it can't (deleted subject …). */
   private solveShotMark(m: CameraMark, entities: EntityState[]): SolvedShot | null {
-    return m.shot ? this.solveShotSpec(m.shot, m.focalLength, entities) : null
+    // Fork (shot-clear): a mark keeps the solved focal length, its view's `closer` already in it; solve from the lens asked for.
+    return m.shot ? this.solveShotSpec(m.shot, m.focalLength / (m.shot.view?.closer ?? 1), entities) : null
   }
 
   /** Solve shot words against the blocking at time t (null when a subject is missing). */

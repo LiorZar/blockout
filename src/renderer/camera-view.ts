@@ -11,6 +11,11 @@ import type { ShotSpec } from '@engine/shot'
 import type { Scene, Shot, V3 } from '@engine/types'
 import { cameraBoxes } from './fight-obstacles'
 
+export { baseLens } from '@engine/camera-clear' // fork (shot-clear)
+
+/** Fork (shot-clear): how long fight coverage takes to move into a framing (fight/coverage.ts MOVE_S). */
+const COVERAGE_MOVE_S = 0.4
+
 export function setBoxes(scene: Scene, shot: Shot): SetBox[] {
   return cameraBoxes(scene, scene.blocking.find((b) => b.id === shot.blockingTakeId) ?? scene.blocking[0])
 }
@@ -22,10 +27,23 @@ export function clearShotSpec(scene: Scene, shot: Shot, spec: ShotSpec, time: nu
   return clearShotWords(scene, shot, spec, [time, next], focalLength, setBoxes(scene, shot))
 }
 
-/** Fight coverage's `clear` option: each framing clear over its span, the set read once. */
+/**
+ * Fight coverage's `clear` option: each framing clear over its span, the set read once.
+ * Fork (shot-clear): each framing is checked from the start of the move into it (coverage moves over the
+ * MOVE_S before a framing's time, fight/coverage.ts), when the camera is already on its way to it. An
+ * over-the-shoulder beat with no clear view (it can only rise: a bus shelter's roof over the shoulder) becomes
+ * the medium two-shot on the same side of the line, which can come closer, rise or swing.
+ */
 export function shotWordsClearer(scene: Scene, shot: Shot, focalLength: number): (spec: ShotSpec, span: [number, number]) => ShotSpec {
   const boxes = setBoxes(scene, shot)
-  return (spec, span) => clearShotWords(scene, shot, spec, [span[0], Math.min(span[1], shot.duration)], focalLength, boxes).spec
+  return (spec, span) => {
+    const s: [number, number] = [Math.max(0, span[0] - COVERAGE_MOVE_S), Math.min(span[1], shot.duration)]
+    const asked = clearShotWords(scene, shot, spec, s, focalLength, boxes).spec
+    if (!spec.over || !spec.lineIds || !asked.view?.noClearView) return asked
+    const two: ShotSpec = { size: 'MS', subjectIds: [...spec.lineIds], side: 'line', lineIds: spec.lineIds, ...(spec.lineSide ? { lineSide: spec.lineSide } : {}) }
+    const alt = clearShotWords(scene, shot, two, s, focalLength, boxes).spec
+    return alt.view?.noClearView ? asked : alt
+  }
 }
 
 /** A framing preset's fixed pose with a clear view of `subjectIds` over the shot. */

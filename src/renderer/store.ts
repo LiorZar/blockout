@@ -39,7 +39,7 @@ import { clearShift } from '@engine/fight/obstacles'
 import { fightObstacles } from './fight-obstacles'
 import { offThread, planningRun } from './fight-offthread'
 import { routineSet } from './routine-set'
-import { clearShotSpec, shotWordsClearer } from './camera-view'
+import { baseLens, clearShotSpec, shotWordsClearer } from './camera-view'
 import type { BlockingTake, FightBeat, FightDoc } from '@engine/types'
 
 export type Mode = 'stage' | 'shoot' | 'deliver'
@@ -482,7 +482,7 @@ function fightReach(scene: Scene, fight: FightDoc): [number, number] {
 /** Replace the shot camera's marks with coverage of a fight (solved poses stored as fallback). */
 function writeCoverage(scene: Scene, shot: Shot, fight: FightDoc, report: FightSolution['report'], mode: CoverageMode, lineSide: 1 | -1): number {
   const cam = shot.camera
-  const focal = [...cam.marks].sort((a, b) => a.time - b.time).at(-1)?.focalLength ?? 35
+  const focal = baseLens(cam.marks) // fork (shot-clear): the lens asked for, not the last framing's
   const ev = new ShotEvaluator(scene, shot)
   const clear = shotWordsClearer(scene, shot, focal) // fork (fix-camera-set): coverage keeps a clear view
   cam.marks = fightCoverage(fight, report, mode, lineSide, { reach: fightReach(scene, fight), clear }).map((m) => {
@@ -1317,7 +1317,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
     const tol = 1 / Math.max(1, shot.fps) + 1e-9
     const existing = shot.camera.marks.find((m) => Math.abs(m.time - t) <= tol)
     const ordered = [...shot.camera.marks].sort((a, b) => a.time - b.time)
-    const focal = spec.lens ?? existing?.focalLength ?? ordered[ordered.length - 1]?.focalLength ?? 35
+    const focal = spec.lens ?? baseLens(ordered, existing) // fork (shot-clear): the lens asked for, not the last framing's
     // Fork (fix-camera-set): a blocked view takes the nearest clear one (engine/camera-clear.ts).
     if (spec.subjectIds.every((id) => scene.entities.some((e) => e.id === id))) spec = clearShotSpec(scene, shot, spec, t, focal).spec
     const solved = new ShotEvaluator(scene, shot).solveShotAt(spec, t, focal)

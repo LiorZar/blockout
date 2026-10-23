@@ -13,18 +13,23 @@
  * alternative — closer on a wider lens (same frame size), higher, then swung
  * round the subject — and says so; framed subjects never block each other.
  *
+ * Fork (shot-clear): with the camera's frame, a view also counts the share
+ * of each framed subject's projected box that a set piece covers in front of
+ * it (`setCover`): the gym's bench in front of the fighters' feet. Shot words
+ * and framing presets keep it at MAX_SET_COVER or under on every sample.
+ *
  * PURE: no DOM / three.js / Electron, no randomness. It runs when a mark is
  * made; shot words keep the outcome in `ShotSpec.view` for the per-frame solve.
  */
 
 import { assetSpec, entityHeight } from './assets'
-import { horizontalFov, verticalFov } from './camera'
+import { ASPECT_RATIOS, horizontalFov, verticalFov } from './camera'
 import type { CameraMarkSpec } from './camera-moves'
 import { ShotEvaluator } from './evaluate'
 import { headingOf } from './path'
 import { solveShot, turnXZ, type ShotSpec, type ShotSubject, type ShotView } from './shot'
 import { personDims, poseEffectors, toWorld } from './skeleton'
-import type { CameraMark, EntityState, Scene, Shot, V3 } from './types'
+import type { AspectId, CameraMark, EntityState, Scene, SensorId, Shot, V3 } from './types'
 import { trackAim } from './track-aim'
 
 /** A piece of the set: an oriented floor box (heading as `object.rotation.y`) from y0 to y1. */
@@ -174,6 +179,17 @@ export function castWorld(subjects: ShotSubject[], moving: ReadonlySet<string>, 
 
 /** Points a camera must see on a subject, weighted: a person's head, chest and pelvis; a thing's middle and top. */
 export function subjectTargets(s: ShotSubject): { p: V3; w: number }[] {
+  // Fork (shot-clear): a sample's subjects are checked against every variant; pose them once.
+  const hit = targetCache.get(s)
+  if (hit) return hit
+  const out = targetsOf(s)
+  targetCache.set(s, out)
+  return out
+}
+
+const targetCache = new WeakMap<ShotSubject, { p: V3; w: number }[]>()
+
+function targetsOf(s: ShotSubject): { p: V3; w: number }[] {
   if (isPerson(s)) {
     const fx = poseEffectors(personDims(s.assetId, s.params), s.joints, s.clip)
     const w = (p: V3): V3 => toWorld(p, s.position, s.heading, s.scale)
@@ -190,6 +206,153 @@ export function subjectTargets(s: ShotSubject): { p: V3; w: number }[] {
   ]
 }
 
+// ---------------------------------------------------------------------------
+// Set cover (fork, shot-clear)
+// ---------------------------------------------------------------------------
+
+/** A set piece may cover this share of a framed subject's projected box (shot words, framing presets). */
+export const MAX_SET_COVER = 0.1
+
+/** Where a camera looks and how wide: pan, tilt and the tangents of the frame's half angles. */
+export interface ViewFrame {
+  pan: number
+  tilt: number
+  tanH: number
+  tanV: number
+}
+
+/** The pan and tilt that aim from `from` at `to`. */
+export function aimAt(from: V3, to: V3): { pan: number; tilt: number } {
+  return aimAngles(from, to)
+}
+
+export function viewFrame(aim: { pan: number; tilt: number }, lens: number, sensorId: SensorId, aspect: AspectId): ViewFrame {
+  const tanV = Math.tan(verticalFov(sensorId, lens, aspect) / 2)
+  return { pan: aim.pan, tilt: aim.tilt, tanH: tanV * ASPECT_RATIOS[aspect], tanV }
+}
+
+const NO_COVER = { share: 0, by: null }
+/** The grid of rays over a projected box. */
+const COVER_NX = 12
+const COVER_NY = 16
+
+const coverCache = new WeakMap<ShotSubject, { pts: V3[]; pad: number; mid: V3 }>()
+
+/** A subject's outline points (a person's posed rig, a thing's box corners), their pad and its middle. */
+function coverPoints(s: ShotSubject): { pts: V3[]; pad: number; mid: V3 } {
+  const hit = coverCache.get(s)
+  if (hit) return hit
+  let out: { pts: V3[]; pad: number; mid: V3 }
+  if (isPerson(s)) {
+    const dims = personDims(s.assetId, s.params)
+    const fx = poseEffectors(dims, s.joints, s.clip)
+    const w = (p: V3): V3 => toWorld(p, s.position, s.heading, s.scale)
+    out = { pts: Object.values(fx).map(w), pad: dims.bodyW * 0.5 * s.scale, mid: w(fx.chest) }
+  }
+  else {
+    const spec = assetSpec(s.assetId)
+    const hx = spec.footprint * 0.5 * s.scale
+    const hz = spec.footprint * s.scale
+    const h = spec.height * s.scale
+    const pts: V3[] = []
+    for (const x of [-hx, hx]) for (const y of [0, h]) for (const z of [-hz, hz]) pts.push(toWorld({ x, y, z }, s.position, s.heading, 1))
+    out = { pts, pad: Math.min(hx, hz), mid: { x: s.position.x, y: s.position.y + h * 0.5, z: s.position.z } }
+  }
+  coverCache.set(s, out)
+  return out
+}
+
+/**
+ * The share of a subject's projected box (its outline points padded, clipped
+ * to the frame) that set boxes cover in front of it: rays from the lens over a
+ * grid of the box, each stopped at the subject's middle less its pad; a ray
+ * that meets a box (entities in `ignore` don't count) is covered. `by`: the
+ * first box met.
+ */
+export function setCover(cam: V3, frame: ViewFrame, s: ShotSubject, boxes: SetBox[], ignore: ReadonlySet<string>): { share: number; by: string | null } {
+  const sp = Math.sin(frame.pan)
+  const cp = Math.cos(frame.pan)
+  const st = Math.sin(frame.tilt)
+  const ct = Math.cos(frame.tilt)
+  const fwd = { x: -sp * ct, y: st, z: -cp * ct }
+  const right = { x: cp, y: 0, z: -sp }
+  const up = { x: sp * st, y: ct, z: cp * st }
+  const depthOf = (p: V3): number => (p.x - cam.x) * fwd.x + (p.y - cam.y) * fwd.y + (p.z - cam.z) * fwd.z
+  const ndcX = (p: V3, z: number): number => ((p.x - cam.x) * right.x + (p.z - cam.z) * right.z) / (z * frame.tanH)
+  const ndcY = (p: V3, z: number): number => ((p.x - cam.x) * up.x + (p.y - cam.y) * up.y + (p.z - cam.z) * up.z) / (z * frame.tanV)
+  const { pts, pad, mid } = coverPoints(s)
+  let x0 = Infinity
+  let x1 = -Infinity
+  let y0 = Infinity
+  let y1 = -Infinity
+  for (const p of pts) {
+    const z = depthOf(p)
+    if (z <= 0.05) continue
+    const x = ndcX(p, z)
+    const y = ndcY(p, z)
+    x0 = Math.min(x0, x - pad / (z * frame.tanH))
+    x1 = Math.max(x1, x + pad / (z * frame.tanH))
+    y0 = Math.min(y0, y - pad / (z * frame.tanV))
+    y1 = Math.max(y1, y + pad / (z * frame.tanV))
+  }
+  x0 = Math.max(-1, x0)
+  x1 = Math.min(1, x1)
+  y0 = Math.max(-1, y0)
+  y1 = Math.min(1, y1)
+  const depth = depthOf(mid) - pad
+  if (!(x1 > x0 && y1 > y0) || depth <= 0.05) return NO_COVER
+  // Only boxes that reach in front of the subject and overlap its box on screen.
+  const near: SetBox[] = []
+  for (const b of boxes) {
+    if (ignore.has(b.entityId)) continue
+    const c = Math.cos(b.heading)
+    const sn = Math.sin(b.heading)
+    let zMin = Infinity
+    let behind = false
+    let bx0 = Infinity
+    let bx1 = -Infinity
+    let by0 = Infinity
+    let by1 = -Infinity
+    for (const lx of [-b.hx, b.hx])
+      for (const lz of [-b.hz, b.hz])
+        for (const y of [b.y0, b.y1]) {
+          const p = { x: b.x + lx * c + lz * sn, y, z: b.z - lx * sn + lz * c }
+          const z = depthOf(p)
+          zMin = Math.min(zMin, z)
+          if (z <= 0.05) {
+            behind = true
+            continue
+          }
+          bx0 = Math.min(bx0, ndcX(p, z))
+          bx1 = Math.max(bx1, ndcX(p, z))
+          by0 = Math.min(by0, ndcY(p, z))
+          by1 = Math.max(by1, ndcY(p, z))
+        }
+    if (zMin >= depth) continue
+    if (!behind && (bx1 < x0 || bx0 > x1 || by1 < y0 || by0 > y1)) continue
+    near.push(b)
+  }
+  if (near.length === 0) return NO_COVER
+  let covered = 0
+  let by: string | null = null
+  for (let i = 0; i < COVER_NX; i++)
+    for (let j = 0; j < COVER_NY; j++) {
+      const x = (x0 + ((i + 0.5) / COVER_NX) * (x1 - x0)) * frame.tanH
+      const y = (y0 + ((j + 0.5) / COVER_NY) * (y1 - y0)) * frame.tanV
+      const end = {
+        x: cam.x + (fwd.x + right.x * x + up.x * y) * depth,
+        y: cam.y + (fwd.y + up.y * y) * depth,
+        z: cam.z + (fwd.z + right.z * x + up.z * y) * depth
+      }
+      const b = near.find((box) => segmentHitsBox(box, cam, end))
+      if (b) {
+        covered++
+        by ??= b.name
+      }
+    }
+  return { share: covered / (COVER_NX * COVER_NY), by }
+}
+
 export interface ViewCheck {
   /** What the camera is inside of, or null. */
   inside: string | null
@@ -197,9 +360,14 @@ export interface ViewCheck {
   visible: number
   /** What hides it, or null. */
   blocker: string | null
+  /** Fork (shot-clear), with the camera's frame: the most any set piece covers of a framed subject's projected box. */
+  cover?: number
+  /** What covers it, or null. */
+  coverBy?: string | null
 }
 
-export function checkView(cam: V3, framed: ShotSubject[], world: ViewWorld, ignore: ReadonlySet<string>): ViewCheck {
+/** Fork (shot-clear): with `frame`, the check also measures the set's cover of each framed subject (setCover). */
+export function checkView(cam: V3, framed: ShotSubject[], world: ViewWorld, ignore: ReadonlySet<string>, frame?: ViewFrame): ViewCheck {
   const inside = insideOf(cam, world)
   let visible = 1
   let blocker: string | null = null
@@ -216,10 +384,18 @@ export function checkView(cam: V3, framed: ShotSubject[], world: ViewWorld, igno
       blocker = hid
     }
   }
-  return { inside, visible, blocker }
+  if (!frame) return { inside, visible, blocker }
+  let cover = 0
+  let coverBy: string | null = null
+  for (const s of framed) {
+    const c = setCover(cam, frame, s, world.boxes, ignore)
+    if (c.share > cover) [cover, coverBy] = [c.share, c.by]
+  }
+  return { inside, visible, blocker, cover, coverBy }
 }
 
-const clearCheck = (c: ViewCheck, minVisible = MIN_VISIBLE): boolean => !c.inside && c.visible >= minVisible - 1e-9
+const clearCheck = (c: ViewCheck, minVisible = MIN_VISIBLE, maxCover = MAX_SET_COVER): boolean =>
+  !c.inside && c.visible >= minVisible - 1e-9 && (c.cover ?? 0) <= maxCover + 1e-9
 
 // ---------------------------------------------------------------------------
 // Alternatives
@@ -294,14 +470,18 @@ export interface ViewChoice {
  * away from the previous choice costs ¾ as much, so a moving camera eases back
  * rather than jumping). When none is clear: the least blocked one.
  * `minVisible`: how much of each subject must show (default head and chest).
+ * Fork (shot-clear): `maxCover`, how much of a subject's box the set may
+ * cover, holds on every sample (the 90 % share is for the rest).
  */
 export function chooseView(
   check: (v: ViewVariant) => ViewCheck[],
   variants: ViewVariant[],
   prev?: ViewVariant,
-  minVisible = MIN_VISIBLE
+  minVisible = MIN_VISIBLE,
+  maxCover = MAX_SET_COVER
 ): ViewChoice {
-  const clearCheck = (c: ViewCheck): boolean => !c.inside && c.visible >= minVisible - 1e-9
+  const clearCheck = (c: ViewCheck): boolean => !c.inside && c.visible >= minVisible - 1e-9 && (c.cover ?? 0) <= maxCover + 1e-9
+  const overCover = (c: ViewCheck): boolean => (c.cover ?? 0) > maxCover + 1e-9
   const ordered = prev
     ? variants
         .map((v, i) => ({ v, i, cost: variantCost(v) + 0.75 * variantDistance(v, prev) }))
@@ -310,17 +490,28 @@ export function chooseView(
     : variants
   const askedChecks = check(ZERO)
   const problem = askedChecks.find((c) => !clearCheck(c))
-  const blocker = problem ? (problem.inside ?? problem.blocker) : null
-  let best: { variant: ViewVariant; share: number; inside: number; visible: number } | null = null
+  // Fork (shot-clear): a view that fails only on the set's cover is blocked by what covers it.
+  const coverOnly = !!problem && !problem.inside && problem.visible >= minVisible - 1e-9
+  const blocker = problem ? (coverOnly ? (problem.coverBy ?? null) : (problem.inside ?? problem.blocker)) : null
+  let best: { variant: ViewVariant; share: number; inside: number; visible: number; cover: number } | null = null
   for (const variant of ordered) {
     const checks = isZeroVariant(variant) ? askedChecks : check(variant)
     if (checks.length === 0) return { variant, clear: true, share: 1, blocker }
     const inside = checks.filter((c) => c.inside).length
     const share = checks.filter(clearCheck).length / checks.length
-    if (inside === 0 && share >= MIN_CLEAR_SHARE - 1e-9) return { variant, clear: true, share, blocker }
+    if (inside === 0 && share >= MIN_CLEAR_SHARE - 1e-9 && !checks.some(overCover)) return { variant, clear: true, share, blocker }
     const visible = checks.reduce((s, c) => s + (c.inside ? 0 : c.visible), 0) / checks.length
-    if (!best || inside < best.inside || (inside === best.inside && (share > best.share + 1e-9 || (Math.abs(share - best.share) <= 1e-9 && visible > best.visible + 1e-9))))
-      best = { variant, share, inside, visible }
+    const cover = checks.reduce((s, c) => s + (c.cover ?? 0), 0) / checks.length
+    // Fork (shot-clear): the least blocked view is clear on the most samples, then inside something on the fewest: a
+    // view that grazes a wall on one sample beats one that keeps off the walls and sees only wall.
+    if (
+      !best ||
+      share > best.share + 1e-9 ||
+      (Math.abs(share - best.share) <= 1e-9 &&
+        (inside < best.inside ||
+          (inside === best.inside && (visible > best.visible + 1e-9 || (Math.abs(visible - best.visible) <= 1e-9 && cover < best.cover - 1e-9)))))
+    )
+      best = { variant, share, inside, visible, cover }
   }
   return { variant: best?.variant ?? ZERO, clear: false, share: best?.share ?? 0, blocker }
 }
@@ -396,6 +587,45 @@ function spanTimes(t0: number, t1: number): number[] {
   return Array.from({ length: n }, (_, i) => t0 + ((t1 - t0) * i) / (n - 1))
 }
 
+/** Fork (shot-clear): every frame of a span at `fps`. */
+function frameTimes(t0: number, t1: number, fps: number): number[] {
+  const out: number[] = []
+  for (let f = Math.ceil(t0 * fps - 1e-6); f / fps <= t1 + 1e-9; f++) out.push(f / fps)
+  return out
+}
+
+/**
+ * Fork (shot-clear): chooseView over the sample `times`, then the choice on
+ * every frame: a frame where the camera is inside something or the set covers
+ * a subject (a fighter's step swings a held framing into a wall between two
+ * samples) joins the samples and the search runs again.
+ */
+export function chooseOverFrames(checkAt: (t: number, v: ViewVariant) => ViewCheck, times: number[], frames: number[], variants: ViewVariant[]): ViewChoice {
+  const fails = (v: ViewVariant, t: number): boolean => {
+    const c = checkAt(t, v)
+    return !!c.inside || (c.cover ?? 0) > MAX_SET_COVER + 1e-9
+  }
+  let ts = times
+  let choice = chooseView((v) => ts.map((t) => checkAt(t, v)), variants)
+  for (let pass = 0; pass < 4 && choice.clear; pass++) {
+    const bad = frames.filter((t) => fails(choice.variant, t))
+    if (bad.length === 0) return choice
+    ts = [...ts, ...bad].sort((a, b) => a - b)
+    choice = chooseView((v) => ts.map((t) => checkAt(t, v)), variants)
+  }
+  if (choice.clear && !frames.some((t) => fails(choice.variant, t))) return choice
+  // No view holds on every frame: of the samples' pick and a coarse grid of the variants, the one clear on the most
+  // frames (every third), else the nearest. The samples alone kept a view that sat in a wall between them.
+  const grid = frames.filter((_, i) => i % 3 === 0)
+  const coarse = (v: ViewVariant): boolean => [0, 20, 40, 60, 90, 120, 180].includes(Math.abs(v.turnDeg)) && [0, 1, 2.5].includes(v.raise) && [1, 0.7, 0.45].includes(v.closer)
+  let best = { variant: choice.variant, share: -1 }
+  for (const v of [choice.variant, ...variants.filter((x) => coarse(x) && x !== choice.variant)]) {
+    const share = grid.filter((t) => clearCheck(checkAt(t, v))).length / Math.max(1, grid.length)
+    if (share > best.share + 1e-9 || (Math.abs(share - best.share) <= 1e-9 && variantCost(v) < variantCost(best.variant) - 1e-9)) best = { variant: v, share }
+  }
+  return { ...choice, variant: best.variant, clear: false, share: best.share }
+}
+
 const OPEN: ViewCheck = { inside: null, visible: 1, blocker: null }
 
 export interface ViewOutcome {
@@ -414,6 +644,30 @@ function outcome(subject: string, choice: ViewChoice, lens: number): ViewOutcome
   if (how) out.note = `The view of ${subject} was blocked${choice.blocker ? ` by ${choice.blocker}` : ''}: ${how}.`
   if (!choice.clear) out.warning = `No clear view of ${subject}${choice.blocker ? ` past ${choice.blocker}` : ''}: kept the least blocked view.`
   return out
+}
+
+/**
+ * Fork (shot-clear): the lens new shot words start from. A mark gives back the
+ * lens it was asked for, not what a clear view or a shoulder made of it: a
+ * plain mark its own, shot words their `lens`, else their focal length over
+ * the view's `closer`; an over-the-shoulder mark with no lens picked its own
+ * and says nothing. `prefer` (the mark being re-framed) first, then the latest
+ * mark that says, else 35 mm. Fight coverage re-run on its own marks would
+ * otherwise start from the last framing's lens (an over-the-shoulder 68 mm put
+ * an alley's wide two-shot 14 m back, behind a wall).
+ */
+export function baseLens(marks: CameraMark[], prefer?: CameraMark): number {
+  const asked = (m: CameraMark): number | null =>
+    !m.shot ? m.focalLength : m.shot.lens !== undefined ? m.shot.lens : m.shot.over ? null : m.focalLength / (m.shot.view?.closer ?? 1)
+  if (prefer) {
+    const a = asked(prefer)
+    if (a !== null) return a
+  }
+  for (const m of [...marks].sort((a, b) => b.time - a.time)) {
+    const a = asked(m)
+    if (a !== null) return a
+  }
+  return 35
 }
 
 /** A shot words mark's note or warning, read back from its stored view (`lens`: the asked-for lens). */
@@ -450,21 +704,23 @@ export function clearShotWords(
   const line = (base.side ?? (base.subjectIds.length > 1 ? 'line' : 'frontRight')) === 'line'
   const variants = viewVariants({ lens, turns: !ots && !overhead, raise: !overhead, closer: !ots, maxTurnDeg: line ? 60 : 180 })
   const at = sampler(scene, shot, boxes)
-  const samples = spanTimes(span[0], Math.max(span[0], span[1])).map(at)
+  const t1 = Math.max(span[0], span[1])
   const ignore = new Set([...base.subjectIds, ...(base.over ? [base.over.entityId] : [])])
   const setup = { sensorId: shot.camera.sensorId, aspect: shot.aspect, focalLength }
-  const check = (v: ViewVariant): ViewCheck[] =>
-    samples.map((s) => {
-      const framed = base.subjectIds.map((id) => s.subjects.find((x) => x.id === id)).filter((x): x is ShotSubject => !!x)
-      if (framed.length < base.subjectIds.length) return OPEN
-      try {
-        const view: ShotView = isZeroVariant(v) ? {} : { turnDeg: v.turnDeg, raise: v.raise, closer: v.closer }
-        return checkView(solveShot({ ...base, view }, s.subjects, setup).position, framed, s.world, ignore)
-      } catch {
-        return OPEN
-      }
-    })
-  const choice = chooseView(check, variants)
+  const checkAt = (t: number, v: ViewVariant): ViewCheck => {
+    const s = at(t)
+    const framed = base.subjectIds.map((id) => s.subjects.find((x) => x.id === id)).filter((x): x is ShotSubject => !!x)
+    if (framed.length < base.subjectIds.length) return OPEN
+    try {
+      const view: ShotView = isZeroVariant(v) ? {} : { turnDeg: v.turnDeg, raise: v.raise, closer: v.closer }
+      const solved = solveShot({ ...base, view }, s.subjects, setup)
+      // Fork (shot-clear): and the set kept out of the sightline (setCover).
+      return checkView(solved.position, framed, s.world, ignore, viewFrame(solved, solved.focalLength, shot.camera.sensorId, shot.aspect))
+    } catch {
+      return OPEN
+    }
+  }
+  const choice = chooseOverFrames(checkAt, spanTimes(span[0], t1), frameTimes(span[0], t1, shot.fps || 24), variants)
   if (choice.clear && isZeroVariant(choice.variant)) return { spec: base }
   const v = choice.variant
   const view: ShotView = {
@@ -491,16 +747,16 @@ export function clearFixedPose(
   opts: { maxTurnDeg?: number } = {}
 ): { position: V3; focalLength: number; variant: ViewVariant; clear: boolean } & ViewOutcome {
   const at = sampler(scene, shot, boxes)
-  const samples = spanTimes(0, shot.duration).map(at)
   const ignore = new Set(subjectIds)
-  const check = (v: ViewVariant): ViewCheck[] => {
+  const checkAt = (t: number, v: ViewVariant): ViewCheck => {
     const cam = variantPosition(pose.position, pose.look, v)
-    return samples.map((s) => {
-      const framed = subjectIds.map((id) => s.subjects.find((x) => x.id === id)).filter((x): x is ShotSubject => !!x)
-      return framed.length === 0 ? OPEN : checkView(cam, framed, s.world, ignore)
-    })
+    const frame = viewFrame(aimAngles(cam, pose.look), pose.focalLength * v.closer, shot.camera.sensorId, shot.aspect) // fork (shot-clear)
+    const s = at(t)
+    const framed = subjectIds.map((id) => s.subjects.find((x) => x.id === id)).filter((x): x is ShotSubject => !!x)
+    return framed.length === 0 ? OPEN : checkView(cam, framed, s.world, ignore, frame)
   }
-  const choice = chooseView(check, viewVariants({ lens: pose.focalLength, maxTurnDeg: opts.maxTurnDeg }))
+  const variants = viewVariants({ lens: pose.focalLength, maxTurnDeg: opts.maxTurnDeg })
+  const choice = chooseOverFrames(checkAt, spanTimes(0, shot.duration), frameTimes(0, shot.duration, shot.fps || 24), variants)
   return {
     position: variantPosition(pose.position, pose.look, choice.variant),
     focalLength: pose.focalLength * choice.variant.closer,

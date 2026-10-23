@@ -1407,6 +1407,33 @@ Changes in this fork (2026):
   depth-only exports from playhead 2 and 8 and the depth after the clean pass were 3 different
   files, now byte-identical. Test: `tests/e2e/mocap-bots.spec.ts` (a bot fight exports the same
   depth from any playhead, with or without the clean pass before it).
+- Fight coverage keeps the set out of the sightline (shot-clear T1; `src/engine/camera-clear.ts`,
+  `src/renderer/camera-view.ts`, `src/renderer/store.ts`, `src/engine/evaluate.ts`): the gym's
+  master wide framed the black bench in front of the fighters' feet, because a view only checked
+  rays to the head, chest and pelvis. A view now also measures `setCover`: the share of each
+  framed subject's projected box (its posed rig points padded half a body width, clipped to the
+  frame) that a set box covers in front of it, by a 12 × 16 grid of rays. Shot words
+  (`frame_shot`, every `fight_coverage` mode) and framing presets reject a view whose cover is
+  over 10 % on any sample, and the view a search picks is then checked on every frame of its span
+  (a frame it fails joins the samples and the search runs again: a fighter's step swung a held
+  framing into the alley wall between two samples). Coverage framings are checked from the start
+  of the 0.4 s move into them; a coverage over-the-shoulder beat with no clear view (it can only
+  rise; the bus shelter's roof) becomes the MS two-shot on the same side; when no view holds on
+  every frame, the one clear on the most frames is kept (it was the one never inside a wall's
+  margin on the samples, which kept a wide two-shot behind the alley wall); and coverage and
+  `frame_shot` start from the lens the camera was asked for (`baseLens`), not the last framing's
+  (one coverage run's over-the-shoulder 68 mm put the next run's wide two-shot 14 m back, outside
+  the alley). A shot words mark moved closer on a wider lens now plays as asked: the mark keeps
+  the solved focal length, `closer` already in it, and the per-frame solve took that as its lens
+  and applied `closer` again (0.55 played as 0.30: a wide two-shot on 11 mm with the near fighter
+  filling the frame); `solveShotMark` divides it back out. QA's run3 fight (bots) in the gym at
+  (0, −2), along the alley at (0, 3) and by the downtown bus shelter, 4 modes × 2 sides, every
+  frame at 24 fps: runs with frames where a set piece covers over 10 % of a fighter's box, HEAD 11
+  of 24 (gym master right 128/360 frames, alley follow right 301/360 of solid wall, the lens
+  inside the gym's mirror for 3), now 4 of 24, each one frame at 10.3 % (the dumpster at a downed
+  fighter's feet, at the 10 % line), and the lens never inside the set. A coverage call on bots
+  takes 0.4–3.5 s, 6.1 s when no view holds on every frame (HEAD 0.05–3.3 s). Tests:
+  `tests/unit/set-cover.test.ts`, `tests/unit/shot-clear-store.test.ts` (new).
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
