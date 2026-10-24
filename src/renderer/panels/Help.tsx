@@ -508,9 +508,9 @@ const TASKS: { area: string; items: Task[] }[] = [
 
 const SHORTCUTS: [string, string][] = [
   // Fork (Lior's test): the navigation scheme in viewport/navigation.ts.
-  ['Middle-drag', 'Orbit the view (the left button selects)'],
+  ['Middle-drag', 'Orbit the view (the left button selects; a modifier switches it mid-drag)'],
   ['Wheel', 'Zoom the view'],
-  [`${ALT} + middle-drag`, 'Pan the view across the floor'],
+  [`${ALT} / ${MOD} + middle-drag`, 'Pan the view across the floor'],
   ['⇧ + middle-drag', 'Move the view up / down'],
   ['W A S D / Q E', 'Fly the view, Q / E down / up (pointer over the viewport; ⇧ faster)'],
   ['Space', 'Play / pause the shot'],

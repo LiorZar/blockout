@@ -2,9 +2,11 @@
  * Fork (Lior's test, 2026-10-24): the viewport's one navigation scheme, so the
  * left button is free to pick.
  *
- * The middle button moves the editor view: a drag orbits, Alt + drag pans
- * across the floor, Shift + drag moves the view up and down (the scene follows
- * the cursor, like the pan), and the wheel zooms (OrbitControls' own). W A S D
+ * The middle button moves the editor view: a drag orbits, Alt (or Ctrl) +
+ * drag pans across the floor, Shift + drag moves the view up and down (the
+ * scene follows the cursor, like the pan), and the wheel zooms (OrbitControls'
+ * own). The modifiers are read on every move, so pressing or releasing one
+ * mid-drag switches what the drag does without letting go of the button. W A S D
  * fly across the floor and Q / E down and up while the pointer is over the
  * viewport, faster with Shift. The right button does nothing.
  *
@@ -35,6 +37,21 @@ const MIN_CAMERA_Y = 0.1
 
 const UP = new THREE.Vector3(0, 1, 0)
 
+/** OrbitControls' own orbit and pan steps (not in its typings), so a middle-drag moves like its drags, damping included. */
+interface OrbitSteps {
+  _rotateLeft(angle: number): void
+  _rotateUp(angle: number): void
+  _pan(deltaX: number, deltaY: number): void
+}
+
+export type DragMode = 'orbit' | 'pan' | 'lift'
+
+/** What a middle-drag does with the modifiers held right now. */
+export function dragMode(e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }): DragMode {
+  if (e.altKey || e.ctrlKey || e.metaKey) return 'pan'
+  return e.shiftKey ? 'lift' : 'orbit'
+}
+
 export interface NavigationHooks {
   /** The free camera is being recorded as the shot. */
   recordingCamera(): boolean
@@ -60,7 +77,7 @@ export class ViewNavigation {
   private readonly keys = new Set<string>()
   private fast = false
   private hovered = false
-  private lift: { pointerId: number; y: number } | null = null
+  private middle: { pointerId: number; x: number; y: number } | null = null
 
   constructor(
     canvas: HTMLCanvasElement,
@@ -72,8 +89,7 @@ export class ViewNavigation {
     this.camera = camera
     this.controls = controls
     this.hooks = hooks
-    controls.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: null }
-    controls.screenSpacePanning = false
+    controls.mouseButtons = { LEFT: null, MIDDLE: null, RIGHT: null }
     // Capture on the window: this runs before OrbitControls' own pointerdown
     // on the canvas, so each press sets the mapping that press uses.
     window.addEventListener('pointerdown', this.onPointerDown, true)
@@ -140,31 +156,51 @@ export class ViewNavigation {
   private onPointerDown = (e: PointerEvent): void => {
     if (e.target !== this.canvas) return
     const recording = this.hooks.recordingCamera()
-    const middle = e.button === 1
-    const lift = middle && e.shiftKey && !e.altKey
+    // The middle button is never OrbitControls': onPointerMove drives it.
     this.controls.mouseButtons = {
       LEFT: recording ? THREE.MOUSE.ROTATE : null,
-      MIDDLE: lift ? null : e.altKey ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
+      MIDDLE: null,
       RIGHT: recording ? THREE.MOUSE.PAN : null
     }
-    // A middle-button pan stays on the floor; a recording's right-drag pans the screen, as upstream.
-    this.controls.screenSpacePanning = !middle
-    if (middle) e.preventDefault() // no middle-click autoscroll
-    if (lift) this.lift = { pointerId: e.pointerId, y: e.clientY }
+    if (e.button !== 1) return
+    e.preventDefault() // no middle-click autoscroll
+    this.middle = { pointerId: e.pointerId, x: e.clientX, y: e.clientY }
   }
 
   private onPointerMove = (e: PointerEvent): void => {
-    if (!this.lift || e.pointerId !== this.lift.pointerId) return
-    const dy = e.clientY - this.lift.y
-    this.lift.y = e.clientY
-    const dist = this.camera.position.distanceTo(this.controls.target)
-    const perPixel =
-      (2 * dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)) / Math.max(1, this.canvas.clientHeight)
-    this.raise(dy * perPixel)
+    const m = this.middle
+    if (!m || e.pointerId !== m.pointerId || !this.controls.enabled) return
+    const dx = e.clientX - m.x
+    const dy = e.clientY - m.y
+    m.x = e.clientX
+    m.y = e.clientY
+    const height = Math.max(1, this.canvas.clientHeight)
+    const steps = this.controls as unknown as OrbitSteps
+    switch (dragMode(e)) {
+      case 'orbit': {
+        const perPixel = (2 * Math.PI * this.controls.rotateSpeed) / height // OrbitControls': height for both
+        steps._rotateLeft(dx * perPixel)
+        steps._rotateUp(dy * perPixel)
+        break
+      }
+      case 'pan': {
+        // Across the floor; a recording's right-drag pans the screen, as upstream.
+        const screen = this.controls.screenSpacePanning
+        this.controls.screenSpacePanning = false
+        steps._pan(dx * this.controls.panSpeed, dy * this.controls.panSpeed)
+        this.controls.screenSpacePanning = screen
+        break
+      }
+      case 'lift': {
+        const dist = this.camera.position.distanceTo(this.controls.target)
+        this.raise((dy * 2 * dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)) / height)
+        break
+      }
+    }
   }
 
   private onPointerUp = (e: PointerEvent): void => {
-    if (this.lift && e.pointerId === this.lift.pointerId) this.lift = null
+    if (this.middle && e.pointerId === this.middle.pointerId) this.middle = null
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
@@ -181,7 +217,7 @@ export class ViewNavigation {
   private onBlur = (): void => {
     this.keys.clear()
     this.fast = false
-    this.lift = null
+    this.middle = null
   }
 
   private onEnter = (): void => {

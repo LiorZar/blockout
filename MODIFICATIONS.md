@@ -1647,7 +1647,8 @@ Changes in this fork (2026):
   `src/renderer/viewport/navigation.ts` (new), `src/renderer/viewport/SceneManager.ts`, `src/renderer/layout/narrow.tsx`,
   `src/renderer/App.tsx`, `src/renderer/narrow.css`, `src/renderer/panels/Help.tsx`, `tests/e2e/navigation.spec.ts`
   (new), `tests/e2e/narrow-layout.spec.ts`): the left button only picks now. The middle button moves the editor view
-  (drag orbits, Alt + drag pans across the floor, Shift + drag moves up and down), the wheel zooms, and W A S D / Q E
+  (drag orbits, Alt or Ctrl + drag pans across the floor, Shift + drag moves up and down; the modifiers are read on
+  every move, so pressing or releasing one mid-drag switches the drag), the wheel zooms, and W A S D / Q E
   fly while the pointer is over the viewport (Shift faster); a camera recording keeps upstream's left-drag orbit and
   right-drag pan as well. Upstream used three's OrbitControls defaults (left orbits, middle dollies, right pans).
   Every panel folds from a titlebar toggle at any width (the left and right panels, the Shoot timeline, the Deliver

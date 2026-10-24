@@ -1,8 +1,9 @@
 /**
  * e2e for the fork's viewport navigation (Lior's test, 2026-10-24;
  * src/renderer/viewport/navigation.ts), with a real mouse and keyboard: the
- * left button only picks, middle-drag orbits, Alt + middle-drag pans across
- * the floor, Shift + middle-drag moves the view up and down, the wheel zooms,
+ * left button only picks, middle-drag orbits, Alt (or Ctrl) + middle-drag pans
+ * across the floor, Shift + middle-drag moves the view up and down, a modifier
+ * pressed or released mid-drag switches between them, the wheel zooms,
  * W A S D / Q E fly while the pointer is over the viewport, and a drag of the
  * shot camera's body moves the shot camera live (the PiP follows the drag).
  * Screenshots go to $BLOCKOUT_VISUAL_DIR when it is set.
@@ -155,6 +156,55 @@ test('Shift + middle-drag moves the view up and down, never under the floor', as
   const lowest = await view()
   expect(lowest.target.y).toBeGreaterThanOrEqual(-1e-9)
   expect(lowest.cam.y).toBeGreaterThanOrEqual(0.1 - 1e-9)
+})
+
+test('a modifier pressed or released mid-drag switches between orbit, pan and up / down', async () => {
+  await resetView()
+  const az = (v: View): number => Math.atan2(v.cam.x - v.target.x, v.cam.z - v.target.z)
+  const c = await center()
+  let x = c.x
+  let y = c.y
+  const move = async (dx: number, dy: number): Promise<View> => {
+    x += dx
+    y += dy
+    await page.mouse.move(x, y, { steps: 12 })
+    await page.waitForTimeout(600) // damping settles, the button still held
+    return view()
+  }
+  // A settled view still carries ~1% of a step's damping: "still" is under a centimetre.
+  const STILL = 0.01
+  await page.mouse.move(x, y)
+  await page.mouse.down({ button: 'middle' })
+  const start = await view()
+
+  const orbited = await move(120, 0)
+  expect(len(sub(orbited.target, start.target))).toBeLessThan(STILL)
+  expect(Math.abs(az(orbited) - az(start))).toBeGreaterThan(0.2)
+
+  for (const key of ['Alt', 'Control']) {
+    const before = await view()
+    await page.keyboard.down(key)
+    const panned = await move(key === 'Alt' ? 120 : -120, 40)
+    await page.keyboard.up(key)
+    const moved = sub(panned.target, before.target)
+    expect(Math.hypot(moved.x, moved.z), `${key} pans`).toBeGreaterThan(0.3)
+    expect(Math.abs(moved.y)).toBeLessThan(1e-6)
+    expect(Math.abs(az(panned) - az(before))).toBeLessThan(0.01)
+  }
+
+  const level = await view()
+  await page.keyboard.down('Shift')
+  const raised = await move(0, 100)
+  await page.keyboard.up('Shift')
+  const lifted = sub(raised.target, level.target)
+  expect(lifted.y).toBeGreaterThan(0.3)
+  expect(Math.hypot(lifted.x, lifted.z)).toBeLessThan(STILL)
+
+  const again = await move(-120, 0) // every modifier released: it orbits again
+  expect(len(sub(again.target, raised.target))).toBeLessThan(STILL)
+  expect(Math.abs(az(again) - az(raised))).toBeGreaterThan(0.2)
+  await page.mouse.up({ button: 'middle' })
+  await page.waitForTimeout(600)
 })
 
 test('W A S D / Q E fly over the viewport, not while typing or off it', async () => {

@@ -47,6 +47,7 @@
 - Laying a camera move on the open road can take seconds: 0.44 s on average and 6.8 s at worst over the 39 presets on a car chase's lead (street-kit T2), when shot-clear's fit finds no clear variant and runs its fallback search over every frame (static moves the cars drive through, orbits inside the street walls). Cull the set boxes to the move's reach, or stop the fallback early.
 - ~~Dragging the shot camera's body with the gizmo leaves the camera preview (PiP) on the old view until the drag ends; it should follow the drag live (Lior's test, 2026-10-24).~~ DONE (the shot camera rides the body while it is dragged; `navigation.spec.ts`)
 - ~~A gizmo drag dies when the Mixamo library finishes loading under it (`swapMocapVisuals` → `syncFromStore` → `syncSelection` detaches the gizmo; found while gating Lior's fixes, `interaction.spec.ts` failed every run against the real library).~~ DONE (a re-sync keeps a drag on the same object)
+- ~~A middle-drag reads its modifier only on the press: holding or releasing Alt / Shift mid-drag doesn't switch between orbit, pan and up / down, and Ctrl + middle-drag pans only through OrbitControls' own fallback (Lior's test, 2026-10-24).~~ DONE (the middle button is navigation.ts's own, its mode read on every move; Ctrl pans like Alt; `navigation.spec.ts`)
 
 ## Features
 
