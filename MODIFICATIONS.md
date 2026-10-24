@@ -1643,6 +1643,19 @@ Changes in this fork (2026):
   bots' hips cache on the first view solve). Tests: `tests/unit/fight-offthread.test.ts` (no view solved on the main
   thread, marks equal), `tests/unit/coverage-memo.test.ts`. In the built app: not measured.
 
+- Viewport navigation, folding panels and a live camera preview (Lior's own test, 2026-10-24;
+  `src/renderer/viewport/navigation.ts` (new), `src/renderer/viewport/SceneManager.ts`, `src/renderer/layout/narrow.tsx`,
+  `src/renderer/App.tsx`, `src/renderer/narrow.css`, `src/renderer/panels/Help.tsx`, `tests/e2e/navigation.spec.ts`
+  (new), `tests/e2e/narrow-layout.spec.ts`): the left button only picks now. The middle button moves the editor view
+  (drag orbits, Alt + drag pans across the floor, Shift + drag moves up and down), the wheel zooms, and W A S D / Q E
+  fly while the pointer is over the viewport (Shift faster); a camera recording keeps upstream's left-drag orbit and
+  right-drag pan as well. Upstream used three's OrbitControls defaults (left orbits, middle dollies, right pans).
+  Every panel folds from a titlebar toggle at any width (the left and right panels, the Shoot timeline, the Deliver
+  panel), so docked beside Clara the window can show only the stage; the narrow layout's overlays are unchanged and
+  the toggles are small pane icons instead of glyphs. While the shot camera's body is dragged, the shot camera rides
+  it, so the PiP follows the drag instead of jumping on release. A re-sync during a gizmo drag (the Mixamo library
+  finishing its load) no longer detaches the gizmo and kills the drag. Help lists the navigation.
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.

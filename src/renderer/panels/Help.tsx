@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's viewport navigation in 2026; see MODIFICATIONS.md.
 /**
  * Help overlay, redesigned for a filmmaker skimming (not reading):
  *   • Quick start — six visual cards, the whole app at a glance.
@@ -507,6 +507,12 @@ const TASKS: { area: string; items: Task[] }[] = [
 /* ------------------------------- Shortcuts -------------------------------- */
 
 const SHORTCUTS: [string, string][] = [
+  // Fork (Lior's test): the navigation scheme in viewport/navigation.ts.
+  ['Middle-drag', 'Orbit the view (the left button selects)'],
+  ['Wheel', 'Zoom the view'],
+  [`${ALT} + middle-drag`, 'Pan the view across the floor'],
+  ['⇧ + middle-drag', 'Move the view up / down'],
+  ['W A S D / Q E', 'Fly the view, Q / E down / up (pointer over the viewport; ⇧ faster)'],
   ['Space', 'Play / pause the shot'],
   ['M', 'Drop marks for the selection (click the floor)'],
   ['C', 'Look through the shot camera'],

@@ -12,6 +12,7 @@
 
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { ViewNavigation } from './navigation'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { Sky } from 'three/examples/jsm/objects/Sky.js'
@@ -90,6 +91,8 @@ export class SceneManager {
   /** Free navigation camera. */
   private freeCam: THREE.PerspectiveCamera
   private controls: OrbitControls
+  /** Fork (Lior's test): the middle-button and WASD navigation over `controls`. */
+  private nav: ViewNavigation
   /** The shot camera — what gets exported. */
   readonly shotCam: THREE.PerspectiveCamera
 
@@ -234,6 +237,13 @@ export class SceneManager {
     this.controls.dampingFactor = 0.12
     this.controls.maxPolarAngle = Math.PI / 2 - 0.02
     this.controls.target.set(0, 1, 0)
+    this.nav = new ViewNavigation(canvas, this.freeCam, this.controls, {
+      recordingCamera: () => this.currentState().recording && this.recTarget === 'camera',
+      freeView: () => {
+        const s = this.currentState()
+        return !s.lookThrough && s.mode !== 'deliver'
+      }
+    })
 
     // Ground: soft grid (editor chrome — lives in overlay so exports never
     // include it) + shadow-catching plane (stays: contact shadows read well)
@@ -382,6 +392,7 @@ export class SceneManager {
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
     this.canvas.removeEventListener('wheel', this.onWheel)
     window.removeEventListener('keydown', this.onKeyDown)
+    this.nav.dispose()
     this.controls.dispose()
     this.transform.dispose()
     this.viewHelper?.dispose()
@@ -1130,7 +1141,9 @@ export class SceneManager {
   private syncSelection(): void {
     const s = this.currentState()
     const obj = this.selectedObject()
-    this.transform.detach()
+    // Fork (Lior's test): a re-sync in the middle of a gizmo drag (the mocap library landing, say) keeps the drag on
+    // the same object alive; a detach would drop its axis and stop it.
+    if (!(this.transform.dragging && obj !== null && this.transform.object === obj)) this.transform.detach()
     this.selectionBox.visible = false
     for (const box of this.extraSelectionBoxes) {
       this.scene.remove(box)
@@ -2141,8 +2154,14 @@ export class SceneManager {
 
     // Shot camera
     const c = state.camera
-    this.shotCam.position.set(c.position.x, c.position.y, c.position.z)
-    this.shotCam.rotation.set(c.tilt, c.pan, c.roll, 'YXZ')
+    // Fork (Lior's test): while the camera body is dragged, the shot camera rides the drag, so the PiP shows it live.
+    if (this.transform.dragging && this.transform.object === this.cameraBody) {
+      this.shotCam.position.copy(this.cameraBody.position)
+      this.shotCam.quaternion.copy(this.cameraBody.quaternion)
+    } else {
+      this.shotCam.position.set(c.position.x, c.position.y, c.position.z)
+      this.shotCam.rotation.set(c.tilt, c.pan, c.roll, 'YXZ')
+    }
     this.shotCam.fov = c.vfov * RAD2DEG
     this.shotCam.aspect = ASPECT_RATIOS[this.shot.aspect]
     this.shotCam.updateProjectionMatrix()
@@ -2298,6 +2317,7 @@ export class SceneManager {
       s.setTime(t)
     }
     this.applyTime(s.time)
+    this.nav.step(dt)
     this.controls.update()
     if (this.viewHelper?.animating) this.viewHelper.update(dt)
 

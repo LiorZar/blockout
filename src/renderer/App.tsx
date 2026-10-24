@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support, the fork's Clara button and narrow layout, and one viewport across the modes in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's Clara button and narrow layout, one viewport across the modes, and panels that fold away in 2026; see MODIFICATIONS.md.
 /**
  * App shell: welcome screen, titlebar with the three-mode switch, the
  * Stage/Shoot/Deliver layouts, global keyboard map, and autosave.
@@ -217,7 +217,9 @@ export function App(): JSX.Element {
   const narrow = useNarrowLayout()
   const panels = useOverlayPanels(narrow)
   const appClass = `app ${PLATFORM_CLASS}${narrow ? ' narrow' : ''}`
-  const panelToggles = narrow && mode !== 'deliver'
+  // Fork (Lior's test): every panel folds away from a titlebar toggle, at any width.
+  const sidePanels = mode !== 'deliver'
+  const mainClass = `main${narrow ? '' : `${panels.left ? '' : ' no-left'}${panels.right ? '' : ' no-right'}`}`
 
   useAutosave()
   useKeyboard()
@@ -246,7 +248,7 @@ export function App(): JSX.Element {
   return (
     <div className={appClass}>
       <div className="titlebar">
-        {panelToggles && <PanelToggle side="left" panels={panels} />}
+        {sidePanels && <PanelToggle side="left" panels={panels} />}
         <span className="app-name">BLOCKOUT</span>
         <span className="doc-name" style={{ color: 'var(--text-faint)', fontSize: 12 }}>
           {doc.name}
@@ -274,19 +276,20 @@ export function App(): JSX.Element {
           {narrow ? '?' : '? Help'}
         </button>
         <ClaraButton />
-        {panelToggles && <PanelToggle side="right" panels={panels} />}
+        {mode === 'shoot' && <PanelToggle side="timeline" panels={panels} />}
+        <PanelToggle side={sidePanels ? 'right' : 'deliver'} panels={panels} />
       </div>
 
       {mode === 'deliver' ? (
-        <div className="deliver-layout">
+        <div className={`deliver-layout${panels.deliver ? '' : ' no-panel'}`}>
           <div className="deliver-preview">
             <ViewportSlot />
           </div>
           <DeliverPanel />
         </div>
       ) : (
-        <div className="main">
-          <div className={`panel${panels.left ? ' open' : ''}`}>
+        <div className={mainClass}>
+          <div className={`panel${panels.left ? ' open' : ' collapsed'}`}>
             <ProjectRail />
             {mode === 'stage' && <Library />}
             <Credits compact />
@@ -295,9 +298,13 @@ export function App(): JSX.Element {
             <div className="viewport-wrap">
               <ViewportSlot />
             </div>
-            {mode === 'shoot' && <Timeline />}
+            {mode === 'shoot' && (
+              <div className={`timeline-slot${panels.timeline ? '' : ' collapsed'}`}>
+                <Timeline />
+              </div>
+            )}
           </div>
-          <div className={`panel right${panels.right ? ' open' : ''}`}>
+          <div className={`panel right${panels.right ? ' open' : ' collapsed'}`}>
             <Inspector />
           </div>
         </div>

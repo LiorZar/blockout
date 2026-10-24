@@ -3,7 +3,9 @@
  * docked beside Clara, Blockout is 650–950 px wide. Below the breakpoint the
  * viewport takes the full width, the side panels become overlays opened from
  * two titlebar toggles, and the titlebar stays on one line. At 1400 px
- * nothing changes. Screenshots go to $BLOCKOUT_VISUAL_DIR when it is set.
+ * the layout is as before. At any width every panel folds away from its
+ * titlebar toggle (Lior's test, 2026-10-24). Screenshots go to
+ * $BLOCKOUT_VISUAL_DIR when it is set.
  */
 
 import { _electron as electron, test, expect, type ElectronApplication, type Page } from '@playwright/test'
@@ -76,6 +78,8 @@ async function expectReachable(selector: string, text: string): Promise<void> {
 
 const leftToggle = (): ReturnType<Page['getByRole']> => page.getByRole('button', { name: 'Scenes & library panel' })
 const rightToggle = (): ReturnType<Page['getByRole']> => page.getByRole('button', { name: 'Inspector panel' })
+const timelineToggle = (): ReturnType<Page['getByRole']> => page.getByRole('button', { name: 'Timeline panel' })
+const deliverToggle = (): ReturnType<Page['getByRole']> => page.getByRole('button', { name: 'Deliver panel' })
 
 test.beforeAll(async () => {
   const dir = mkdtempSync(join(tmpdir(), 'blockout narrow-'))
@@ -108,6 +112,7 @@ for (const w of NARROW_WIDTHS) {
       await expectOneLineTitlebar()
       await expectReachable('.titlebar button', '?')
       if ('win32' === process.platform) await expectReachable('.titlebar button', 'Clara')
+      await expect(timelineToggle()).toHaveCount('shoot' === mode ? 1 : 0)
       await snap(`${mode}-${w}`)
 
       await leftToggle().click()
@@ -139,11 +144,17 @@ for (const w of NARROW_WIDTHS) {
     await setMode('deliver')
     await expect(leftToggle()).toHaveCount(0)
     await expect(rightToggle()).toHaveCount(0)
+    await expect(deliverToggle()).toHaveAttribute('aria-pressed', 'true')
     const preview = await width('.deliver-preview')
     expect(preview / w).toBeGreaterThanOrEqual(0.55)
     expect(preview).toBeGreaterThan(await width('.deliver-panel'))
     await expectOneLineTitlebar()
     await snap(`deliver-${w}`)
+    await deliverToggle().click()
+    await expect(page.locator('.deliver-panel')).toBeHidden()
+    expect(await width('.deliver-preview')).toBe(w)
+    await deliverToggle().click()
+    await expect(page.locator('.deliver-panel')).toBeVisible()
     await setMode('stage')
   })
 }
@@ -182,8 +193,8 @@ test(`${WIDE_WIDTH} px: the docked layout is unchanged`, async () => {
   for (const mode of ['stage', 'shoot'] as const) {
     await setMode(mode)
     await expect(page.locator('.app')).not.toHaveClass(/\bnarrow\b/)
-    await expect(leftToggle()).toHaveCount(0)
-    await expect(rightToggle()).toHaveCount(0)
+    await expect(leftToggle()).toHaveAttribute('aria-pressed', 'true')
+    await expect(rightToggle()).toHaveAttribute('aria-pressed', 'true')
     expect(await width('.main > .panel')).toBe(200)
     expect(await width('.main > .panel.right')).toBe(264)
     expect(await width('.viewport-wrap')).toBe(WIDE_WIDTH - 464)
@@ -195,5 +206,37 @@ test(`${WIDE_WIDTH} px: the docked layout is unchanged`, async () => {
   await setMode('deliver')
   expect(await width('.deliver-panel')).toBe(380)
   await snap(`deliver-${WIDE_WIDTH}`)
+  await setMode('stage')
+})
+
+test(`${WIDE_WIDTH} px: every panel folds away and the stage takes the window`, async () => {
+  await resize(WIDE_WIDTH)
+  await setMode('shoot')
+  const before = (await page.locator('.viewport-wrap').boundingBox())!
+  await leftToggle().click()
+  await expect(page.locator('.main > .panel').first()).toBeHidden()
+  expect(await width('.viewport-wrap')).toBe(WIDE_WIDTH - 264)
+  await rightToggle().click()
+  await expect(page.locator('.main > .panel.right')).toBeHidden()
+  expect(await width('.viewport-wrap')).toBe(WIDE_WIDTH)
+  await timelineToggle().click()
+  await expect(page.locator('.timeline')).toBeHidden()
+  const stageOnly = (await page.locator('.viewport-wrap').boundingBox())!
+  expect(stageOnly.height).toBeGreaterThan(before.height + 100)
+  await expectOneLineTitlebar()
+  await snap(`shoot-${WIDE_WIDTH}-stage-only`)
+  // The folds hold across the modes; Deliver's panel folds on its own.
+  await setMode('stage')
+  expect(await width('.viewport-wrap')).toBe(WIDE_WIDTH)
+  await setMode('deliver')
+  await deliverToggle().click()
+  expect(await width('.deliver-preview')).toBe(WIDE_WIDTH)
+  await snap(`deliver-${WIDE_WIDTH}-folded`)
+  await deliverToggle().click()
+  expect(await width('.deliver-panel')).toBe(380)
+  await setMode('shoot')
+  for (const toggle of [leftToggle(), rightToggle(), timelineToggle()]) await toggle.click()
+  await expect(page.locator('.timeline')).toBeVisible()
+  expect(await width('.viewport-wrap')).toBe(WIDE_WIDTH - 464)
   await setMode('stage')
 })
