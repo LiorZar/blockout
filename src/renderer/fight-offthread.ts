@@ -16,9 +16,8 @@
  * Without a worker (Vitest, a failed one) the solves run here, as before.
  */
 
-import type { CoverageMark } from '@engine/fight/coverage'
 import type { CoverageArgs } from '@engine/fight/coverage-clear'
-import { coveringElsewhere, rememberCoverage } from '@engine/fight/coverage-memo'
+import { coveringElsewhere, rememberCoverage, type CoveredMark } from '@engine/fight/coverage-memo'
 import type { FightSolution } from '@engine/fight/solve'
 import { rememberFightSolve, solvingElsewhere, type FightSolveArgs } from '@engine/fight/solve-memo'
 import type { MocapClipSource } from '@engine/mocap/clip'
@@ -27,7 +26,7 @@ import type { MocapSource } from '@engine/mocap/rig'
 /** A bot or clip the engine registered, for the worker to register too. */
 export type MocapRegistration = { kind: 'body'; assetId: string; src: MocapSource } | { kind: 'clip'; id: string; src: MocapClipSource }
 export type FightWorkerRequest = MocapRegistration | { kind: 'solve'; id: number; args: FightSolveArgs } | { kind: 'cover'; id: number; args: CoverageArgs }
-export type FightWorkerReply = { id: number; sol?: FightSolution; cover?: CoverageMark[]; error?: string }
+export type FightWorkerReply = { id: number; sol?: FightSolution; cover?: CoveredMark[]; error?: string }
 /** Fork (main-thread): work for the worker, by its memo key: a fight solve, or a fight's coverage (engine/fight/coverage-memo.ts). */
 type Job = { kind: 'solve'; key: string; args: FightSolveArgs } | { kind: 'cover'; key: string; args: CoverageArgs }
 
@@ -41,7 +40,7 @@ const waiting = new Map<number, (reply: FightWorkerReply | null) => void>()
 /** A stand-in for the worker (tests). */
 let stand: ((args: FightSolveArgs) => Promise<FightSolution | null>) | null = null
 /** Fork (main-thread): a stand-in for the worker's coverage (tests); with only `stand`, coverage is worked out here. */
-let coverStand: ((args: CoverageArgs) => Promise<CoverageMark[] | null>) | null = null
+let coverStand: ((args: CoverageArgs) => Promise<CoveredMark[] | null>) | null = null
 let planning = false
 /** Solves (and coverage) asked of the worker and not answered yet, by memo key (one solve each, however many ask). */
 const inFlight = new Map<string, Promise<boolean>>()
@@ -86,7 +85,7 @@ export function setFightSolver(fn: ((args: FightSolveArgs) => Promise<FightSolut
 }
 
 /** Tests (fork, main-thread): work coverage out with `fn` instead of the worker (null: the worker, or here beside a stand-in solver). */
-export function setCoverageWorker(fn: ((args: CoverageArgs) => Promise<CoverageMark[] | null>) | null): void {
+export function setCoverageWorker(fn: ((args: CoverageArgs) => Promise<CoveredMark[] | null>) | null): void {
   coverStand = fn
   refused.clear()
 }

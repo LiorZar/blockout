@@ -3,10 +3,12 @@
  * MODIFICATIONS.md). renderer/fight-offthread.ts relays every bot and clip
  * the renderer registers, in order, and asks for solves: each is the
  * engine's solveFight, here instead of on the main thread. Fork
- * (main-thread): and for a fight's coverage, the engine's clearCoverage.
+ * (main-thread): and for a fight's coverage, the engine's clearCoverage and
+ * its marks' views.
  */
 
 import { clearCoverage } from '@engine/fight/coverage-clear'
+import { withViews } from '@engine/fight/coverage-memo'
 import { solveFight } from '@engine/fight/solve'
 import { registerMocapClip } from '@engine/mocap/clip'
 import { registerMocapBody } from '@engine/mocap/registry'
@@ -36,7 +38,7 @@ ctx.onmessage = (e) => {
     return
   }
   try {
-    ctx.postMessage(m.kind === 'solve' ? { id: m.id, sol: solveFight(...m.args) } : { id: m.id, cover: clearCoverage(...m.args) })
+    ctx.postMessage(m.kind === 'solve' ? { id: m.id, sol: solveFight(...m.args) } : { id: m.id, cover: withViews(m.args, clearCoverage(...m.args)) })
   } catch (err) {
     ctx.postMessage({ id: m.id, error: message(err) })
   }

@@ -1630,6 +1630,19 @@ Changes in this fork (2026):
   longer, none over 15 cm; QA's run3 fight: report and bones as T2's. A leg the loop has planted no longer follows
   the beat's stride (the keys were written for the standing rig). Test: `tests/unit/plant-lock.test.ts` (extended).
 
+- One viewport across the modes (main-thread T4; `src/renderer/viewport/ViewportSlot.tsx` (new),
+  `src/renderer/App.tsx`, `tests/e2e/fight-worker.spec.ts`): switching to Deliver built a whole new SceneManager
+  (a 241–473 ms task on a staged bot fight: program links, shadow map setup, `syncFromStore`). The Viewport now
+  renders once into a host element and each mode's layout holds a slot the host moves into (`display: contents`, the
+  layout unchanged), so the switch keeps the same SceneManager: no task over 50 ms from the switch to the prompt
+  (`.maestro/main-thread/diag.spec.ts`, load 48–88 %). Side effect: the free camera keeps its view across Deliver.
+  The fight-worker e2e asserts the same SceneManager across the switch.
+- Fight coverage's camera views solved in the worker (main-thread; `src/engine/fight/coverage-memo.ts`,
+  `src/renderer/fight-offthread.ts`, `src/renderer/fight-worker.ts`, `src/renderer/store.ts`): the coverage memo
+  carries each mark's solved view, so the main thread solves none when a coverage commits (it paid ~56 ms filling the
+  bots' hips cache on the first view solve). Tests: `tests/unit/fight-offthread.test.ts` (no view solved on the main
+  thread, marks equal), `tests/unit/coverage-memo.test.ts`. In the built app: not measured.
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.

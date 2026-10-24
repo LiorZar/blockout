@@ -493,11 +493,11 @@ function fightReach(scene: Scene, fight: FightDoc): [number, number] {
 function writeCoverage(scene: Scene, shot: Shot, fight: FightDoc, report: FightSolution['report'], mode: CoverageMode, lineSide: 1 | -1): number {
   const cam = shot.camera
   const focal = baseLens(cam.marks) // fork (shot-clear): the lens asked for, not the last framing's
-  // Fork (fix-camera-set): coverage keeps a clear view. Fork (main-thread): worked out once per input, in the fight worker under offThread.
+  // Fork (fix-camera-set): coverage keeps a clear view. Fork (main-thread): worked out once per input, each mark's view
+  // solved with it, in the fight worker under offThread.
   const covered = clearCoverageMemo(scene, shot, fight, report, mode, lineSide, { reach: fightReach(scene, fight), focalLength: focal, boxes: setBoxes(scene, shot) })
-  const ev = new ShotEvaluator(scene, shot)
   cam.marks = covered.map((m) => {
-    const solved = ev.solveShotAt(m.shot, m.time, focal)
+    const solved = m.solved
     const mark = createCameraMark(solved ? { ...solved.position } : { x: 0, y: 1.6, z: 5 }, m.time, solved?.pan ?? 0, solved?.tilt ?? 0, solved?.focalLength ?? focal)
     mark.roll = solved?.roll ?? 0
     mark.easeIn = m.easeIn

@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support, the fork's Clara button and narrow layout in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support, the fork's Clara button and narrow layout, and one viewport across the modes in 2026; see MODIFICATIONS.md.
 /**
  * App shell: welcome screen, titlebar with the three-mode switch, the
  * Stage/Shoot/Deliver layouts, global keyboard map, and autosave.
@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect } from 'react'
 import { useStore, currentProjectJson } from './store'
-import { Viewport } from './viewport/Viewport'
+import { ViewportPortal, ViewportSlot } from './viewport/ViewportSlot' // fork (main-thread): one Viewport across the modes
 import { Library } from './panels/Library'
 import { Inspector } from './panels/Inspector'
 import { ProjectRail } from './panels/ProjectRail'
@@ -280,7 +280,7 @@ export function App(): JSX.Element {
       {mode === 'deliver' ? (
         <div className="deliver-layout">
           <div className="deliver-preview">
-            <Viewport />
+            <ViewportSlot />
           </div>
           <DeliverPanel />
         </div>
@@ -293,7 +293,7 @@ export function App(): JSX.Element {
           </div>
           <div className="center-column">
             <div className="viewport-wrap">
-              <Viewport />
+              <ViewportSlot />
             </div>
             {mode === 'shoot' && <Timeline />}
           </div>
@@ -302,6 +302,7 @@ export function App(): JSX.Element {
           </div>
         </div>
       )}
+      <ViewportPortal />
       <Toasts />
       <HelpOverlay />
       <BlockingCoach />

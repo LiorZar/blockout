@@ -252,6 +252,8 @@ test.describe('bot fight solves off the main thread', () => {
     await page.evaluate(() => {
       const w = window as unknown as { __fwSolving: boolean; __blockout: { store: { getState(): { setMode(m: string): void } } } }
       w.__fwSolving = false
+      // Fork (main-thread T4): the viewport the switch starts from.
+      ;(w as unknown as { __fwScene: unknown }).__fwScene = (window as unknown as { __blockout_scene: unknown }).__blockout_scene
       new MutationObserver(() => {
         if (document.querySelector('.prompt-box')?.textContent?.includes('Solving the fight')) w.__fwSolving = true
       }).observe(document.body, { childList: true, subtree: true, characterData: true })
@@ -261,11 +263,14 @@ test.describe('bot fight solves off the main thread', () => {
     const rec = await page.evaluate((from) => {
       const w = window as unknown as { __fwSolving: boolean; __fw: { long: { start: number; ms: number }[]; done: boolean } }
       w.__fw.done = true
-      return { solving: w.__fwSolving, long: w.__fw.long.filter((x) => x.start >= from).map((x) => x.ms) }
+      const same = (w as unknown as { __fwScene: unknown }).__fwScene === (window as unknown as { __blockout_scene: unknown }).__blockout_scene
+      return { solving: w.__fwSolving, long: w.__fw.long.filter((x) => x.start >= from).map((x) => x.ms), same }
     }, t0)
-    // (Those tasks are the Deliver view's: its scene rebuilt, a shader's first use, the bots' bounds every frame.)
     console.log(`[fight-worker] Deliver prompt: tasks over 50 ms from the switch to the prompt ${rec.long.map((x) => x.toFixed(0)).join(' ') || 'none'}`)
     expect(rec.solving, 'the prompt waited for the worker').toBe(true)
     expect(logs.filter((l) => l.startsWith('[fight]')), 'the worker says nothing went wrong').toEqual([])
+    // Fork (main-thread T4): Deliver shows the same viewport (no scene, context or shaders built again).
+    expect(rec.same, 'the viewport lives on across the switch').toBe(true)
+    expect(Math.max(0, ...rec.long), 'the longest main-thread task from the switch to the prompt').toBeLessThanOrEqual(LONG_TASK)
   })
 })

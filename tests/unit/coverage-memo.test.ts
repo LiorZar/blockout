@@ -19,7 +19,7 @@ vi.mock('@engine/fight/coverage-clear', async (importOriginal) => {
 })
 
 const { clearCoverage } = await import('@engine/fight/coverage-clear')
-const { clearCoverageMemo, coverageKey } = await import('@engine/fight/coverage-memo')
+const { clearCoverageMemo, coverageKey, withViews } = await import('@engine/fight/coverage-memo')
 const { useStore, solveInScene } = await import('@renderer/store')
 const { setBoxes } = await import('@renderer/camera-view')
 
@@ -56,7 +56,8 @@ describe('remembered fight coverage', { timeout: 60_000 }, () => {
     const again = clearCoverageMemo(...structuredClone(a))
     expect(covers.n).toBe(1)
     expect(again[0]!.shot.size).not.toBe('ECU')
-    expect(JSON.stringify(again)).toBe(JSON.stringify(clearCoverage(...a)))
+    expect(JSON.stringify(again)).toBe(JSON.stringify(withViews(a, clearCoverage(...a))))
+    expect(again.every((m) => m.solved)).toBe(true)
   })
 
   it('works it out again when the shot, the set, the mode, the side or the lens change', () => {

@@ -43,6 +43,15 @@ call's camera marks dumped; `diag.spec.ts` drives a snapshot's built app). Every
    `computeBoundingBox`, so no approximate hull: the same arithmetic in the same order over each distinct vertex
    (FBX repeats each point per face), bind-space positions and nonzero weights packed once per skin, and an affine
    bone's divide by exactly 1 skipped (x·1 is x). Checked against three's own on the real bots and the fixture.
+8. **T4: one Viewport, kept mounted, instead of a cheaper SceneManager constructor.** Deliver's task was a whole new
+   SceneManager (first render's program links 125 ms, shadow map setup, `syncFromStore` 32 ms, TransformControls 9,
+   WebGLRenderer 8). The Viewport renders once into a host element (a portal); each mode's place holds a slot the host
+   moves into (`display: contents`, the layout unchanged). Side effect: the free camera keeps its view across Deliver
+   (it reset to (9, 7, 9) before).
+9. **Coverage: the marks' views are solved with the framings, in the worker.** Skipping the view solve in offThread's
+   planning run (the first form of this unit) only moved the cost: the 56 ms was the bots' per-clip hips cache
+   (`hipsShare`) filling on the session's first view solve, which the real run then paid. The coverage memo carries
+   each mark's solved view (`withViews`), so the main thread solves none in either run.
 
 ## Tasks and targets
 
@@ -122,3 +131,21 @@ call's camera marks dumped; `diag.spec.ts` drives a snapshot's built app). Every
     encoder's later frames drift from it (frame 30: 19.5k pixels ≤ 44 levels); the metadata are equal, and a box
     is three's to the bit on every call, so it can't tell two exports apart. The whole `mocap-bots.spec.ts` after:
     T3 2/2 passed (13 passed each), HEAD without T3 3/3; with the first two runs, T3 3/5.
+- **Coverage commit** (MCP `fight_coverage` on the staged combos fight, `diag.spec.ts`, the commit task, ms):
+  - Before (`t3e` ×2, `t3f`, load 32–93 %): master left 112 / 114 / 125, the other modes 62–72. Aligned profile:
+    offThread's planning run solving the marks' views (56 ms, `solveShotAt` → footwork `stepLegs` → `hipsShare`),
+    then the real run's commit.
+  - First form, a planning run solves no view (`cova` ×2, load 68–76 %): master left 106 / 192, the others 53–112.
+    Profiles: `hipsShare` 35–72 ms now in the real run (0 samples in any staging: nothing fills it before the first
+    view solve). Gate `Test Files 108 passed (108)`, smoke `6 passed`, the fork e2e set `89 passed`, the export equal
+    to T1's (8d1a3b01…, fa74c7ab…). Not kept (call 9).
+  - Kept form, views solved with the framings in the worker: `tests/unit/fight-offthread.test.ts` (failed first: 3 views
+    solved on the main thread; now 0, the marks equal the main thread's own) and `coverage-memo.test.ts`: `Test Files
+    2 passed (2)`. In the built app: not measured (the run was stopped; crd3's closing gate covers the gate, smoke and
+    e2e set).
+- **T4** (a staged bot fight, then Deliver; `diag.spec.ts` deliver; tasks over 50 ms from the switch to the prompt):
+  - Before (`base`, `t1e`, `t2a`/`c`/`d`, `t3a`–`d`): one task, 241–473 ms; the fight-worker e2e 257–450 ms.
+  - After (`t4a`, `t4b` ×2, load 48–88 %): none, and none after the prompt; the fight-worker e2e (`t4a`): none, `5
+    passed`, and it now asserts it (same SceneManager across the switch, longest task ≤ its long-task bound).
+  - On `fcfb08d` + the coverage unit's first form + T4 (`t4b-heavy.log`): gate `Test Files 108 passed (108)`, smoke
+    `6 passed`; the fork e2e set: not measured (stopped at its 62nd test, none failed to there).

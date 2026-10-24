@@ -4,18 +4,31 @@
  * every frame they drive (coverage-clear.ts), a few hundred ms on a bot
  * fight; a store action runs twice under offThread (its planning run, then
  * the real one), and the fight worker works a coverage out by the same key
- * (renderer/fight-offthread.ts, as solve-memo.ts does for solves).
+ * (renderer/fight-offthread.ts, as solve-memo.ts does for solves), each
+ * mark's solved view with it (the camera mark the store lays).
  *
  * PURE and deterministic: the marks are a function of their key. Not on the
  * `state(t)` path.
  */
 
+import { ShotEvaluator } from '../evaluate'
 import { mocapClipVersion } from '../mocap/clip'
 import { mocapVersion } from '../mocap/registry'
+import type { SolvedShot } from '../shot'
 import type { CoverageMark } from './coverage'
 import { clearCoverage, type CoverageArgs } from './coverage-clear'
 
-const COVERS = new Map<string, CoverageMark[]>()
+/** A coverage mark and its view solved at the lens asked for (`solveShotAt`; null when it can't be): what the store lays. */
+export type CoveredMark = CoverageMark & { solved: SolvedShot | null }
+
+/** Each of a coverage's marks with its view solved, on the scene and shot it was worked out for. */
+export function withViews(args: CoverageArgs, marks: CoverageMark[]): CoveredMark[] {
+  const [scene, shot, , , , , input] = args
+  const ev = new ShotEvaluator(scene, shot)
+  return marks.map((m) => ({ ...m, solved: ev.solveShotAt(m.shot, m.time, input.focalLength) }))
+}
+
+const COVERS = new Map<string, CoveredMark[]>()
 const KEPT = 16
 
 /**
@@ -30,7 +43,7 @@ export function coverageKey(...args: CoverageArgs): string {
 const withoutId = (m: unknown): unknown => (m && typeof m === 'object' ? Object.fromEntries(Object.entries(m).filter(([k]) => k !== 'id')) : m)
 
 /** A copy of the coverage remembered under `key`, if there is one. */
-export function knownCoverage(key: string): CoverageMark[] | undefined {
+export function knownCoverage(key: string): CoveredMark[] | undefined {
   const known = COVERS.get(key)
   if (!known) return undefined
   COVERS.delete(key)
@@ -39,7 +52,7 @@ export function knownCoverage(key: string): CoverageMark[] | undefined {
 }
 
 /** Remember a coverage under `key` (a copy: the caller keeps its own). */
-export function rememberCoverage(key: string, marks: CoverageMark[]): void {
+export function rememberCoverage(key: string, marks: CoveredMark[]): void {
   COVERS.delete(key)
   if (COVERS.size >= KEPT) COVERS.delete(COVERS.keys().next().value!)
   COVERS.set(key, structuredClone(marks))
@@ -59,13 +72,13 @@ export function coveringElsewhere<T>(miss: (key: string, args: CoverageArgs) => 
   }
 }
 
-/** clearCoverage, remembered: the same inputs are worked out once. */
-export function clearCoverageMemo(...args: CoverageArgs): CoverageMark[] {
+/** clearCoverage and its marks' views, remembered: the same inputs are worked out once. */
+export function clearCoverageMemo(...args: CoverageArgs): CoveredMark[] {
   const key = coverageKey(...args)
   const known = knownCoverage(key)
   if (known) return known
   if (elsewhere) elsewhere(key, args)
-  const marks = clearCoverage(...args)
+  const marks = withViews(args, clearCoverage(...args))
   rememberCoverage(key, marks)
   return marks
 }

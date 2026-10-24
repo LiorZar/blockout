@@ -38,6 +38,7 @@ vi.mock('@engine/fight/coverage-clear', async (importOriginal) => {
 
 const { refightShot, routineFightStaged, stageFightOffThread, updateFightOffThread, useStore } = await import('@renderer/store')
 const { offThread, readSoon, setCoverageWorker, setFightSolver } = await import('@renderer/fight-offthread')
+const { withViews } = await import('@engine/fight/coverage-memo')
 const { generatePrompt } = await import('@engine/prompt')
 const { getProfile } = await import('@engine/profiles')
 
@@ -280,7 +281,7 @@ describe('reads that solve fights, off the main thread', { timeout: 60_000 }, ()
 
 describe('a fight coverage off the main thread (fork, main-thread)', { timeout: 60_000 }, () => {
   const input = { beats: beatsOf('A jab to head -> hit\nB hook to head -> block'), at: { x: 0, z: -2, heading: 0 }, assets: [MALE, FEMALE] as [string, string] }
-  const there = { n: 0 }
+  const there = { n: 0, busy: false }
   /** The shot camera's marks, entity ids as labels (each staging makes its own ids). */
   const camera = (): string => {
     let out = JSON.stringify(st().shot()!.camera.marks.map(({ id: _id, ...m }) => m))
@@ -293,7 +294,12 @@ describe('a fight coverage off the main thread (fork, main-thread)', { timeout: 
     setCoverageWorker(async (args) => {
       there.n++
       await new Promise((r) => setTimeout(r, 1))
-      return covers.real!(...args) as Awaited<ReturnType<Parameters<typeof setCoverageWorker>[0] & object>>
+      there.busy = true
+      try {
+        return withViews(args, covers.real!(...args) as Parameters<typeof withViews>[1])
+      } finally {
+        there.busy = false
+      }
     })
   })
 
@@ -324,6 +330,32 @@ describe('a fight coverage off the main thread (fork, main-thread)', { timeout: 
     expect(covers.n).toBe(here)
     expect(there.n).toBe(1)
     expect(st().shot()!.camera.marks.length).toBeGreaterThan(0)
+  })
+
+  // Fork (main-thread): the worker solves each coverage mark's view with its framings: the main thread solves none.
+  it("offThread solves no coverage mark's view on the main thread (the worker does), to the same marks", async () => {
+    const { fightId } = st().stageFight(input)
+    const { ShotEvaluator } = await import('@engine/evaluate')
+    const real = ShotEvaluator.prototype.solveShotAt
+    const calls = { here: 0, there: 0 }
+    const spy = vi.spyOn(ShotEvaluator.prototype, 'solveShotAt').mockImplementation(function (this: InstanceType<typeof ShotEvaluator>, ...args) {
+      if (there.busy) calls.there++
+      else calls.here++
+      return real.apply(this, args)
+    })
+    try {
+      await offThread(() => st().coverFight(fightId, 'punch-in', 'right'))
+    } finally {
+      spy.mockRestore()
+    }
+    expect(calls.here).toBe(0)
+    expect(calls.there).toBeGreaterThan(0)
+    const off = camera()
+    setCoverageWorker(null)
+    fresh()
+    const again = st().stageFight(input)
+    st().coverFight(again.fightId, 'punch-in', 'right')
+    expect(camera()).toBe(off)
   })
 
   it('a stand-in solver alone leaves the coverage to the main thread, as before', async () => {
