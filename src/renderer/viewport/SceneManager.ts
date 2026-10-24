@@ -1,4 +1,4 @@
-// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports, a night fill on the cast, a depth range measured on the frame's own matrices, marks sharing their resources and the overlay's shaders compiled ahead) in 2026; see MODIFICATIONS.md.
+// Modified for the fork (explicit framing subjects, selection chrome in exports, held weapons, armed placement over the gizmo, a ground and sky behind the action, clear camera views for framings and follow moves, mocap bots and their clips, flush-proof export renders, editor-only set dressing kept out of exports, the viewport's look shared with exports, a night fill on the cast, a depth range measured on the frame's own matrices, marks sharing their resources and the overlay's shaders compiled ahead, a bot's planted feet held through its crossfades) in 2026; see MODIFICATIONS.md.
 /**
  * SceneManager — the imperative three.js world behind the Viewport.
  *
@@ -2265,7 +2265,9 @@ export class SceneManager {
       const spec = weaponSpec(e.assetId)
       if (spec) weapons.push({ spec, hand: e.heldBy.hand, scale: e.transform.scale })
     }
-    botInput(visual.entity, es, input, { inputAt, fights: scene.fights, held, weapons })
+    // Fork (chase-feet): the plant lock's earlier states (mocap/scene.ts), its grid kept per document (the evaluator).
+    const stateAt = (t: number): EntityState | null => statesAt(Math.min(Math.max(0, t), shot.duration)).find((x) => x.entityId === es.entityId) ?? null
+    botInput(visual.entity, es, input, { inputAt, stateAt, memo: ev, fights: scene.fights, held, weapons })
   }
 
   private isHeldWeapon(obj: THREE.Object3D): boolean {

@@ -1,4 +1,4 @@
-// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots, mocap clip inputs, the nightclub's light cones editor-only, the open road; see MODIFICATIONS.md.
+// Modified in this fork (2026): person rig proportions from engine skeleton.ts, joint-override and gait signs fixed, studio mannequins, weapon builders hook, gaits grounded on the floor (engine floor.ts), motion root channels on the pelvis, mocap bots, mocap clip inputs, the nightclub's light cones editor-only, the open road, a bot's plant-lock samples and lift; see MODIFICATIONS.md.
 /**
  * Procedural grey-box builders for the Blockout viewport.
  *
@@ -17,6 +17,7 @@ import { bodyShape, lowestY, type BodyShape } from '@engine/floor'
 import { GAITS } from '@engine/gaits'
 import { isMocapAsset, MOCAP_STAND_IN } from '@engine/mocap/registry'
 import { buildMocapPerson } from '../mocap/body'
+import type { PlantInput } from '../mocap/scene'
 import { dressMannequin } from './mannequin-mesh'
 import { buildWeapon, isWeaponModel, onFloor } from './weapon-builders'
 import { OPEN_ROAD, roadLength } from '@engine/road-kit'
@@ -53,6 +54,10 @@ export interface AnimInput {
   seated?: boolean
   /** Fork (shot-clear): that seat's top, metres over the body's floor in its own size (`MarkClip.seat`). */
   seat?: number
+  /** Fork (chase-feet): a bot's planted feet held through a crossfade: the window's samples (`mocap/scene.ts`). */
+  plant?: PlantInput
+  /** Fork (chase-feet): how far a bot's root is lifted over the ground (m; a vault): its legs are off the floor (`swing-legs.ts`). */
+  lift?: number
 }
 
 export interface BuiltAsset {

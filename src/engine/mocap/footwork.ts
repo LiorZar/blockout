@@ -106,8 +106,8 @@ function footLowY(m: MocapDims, q: 0 | 1, ankle: V3, gFoot: Quat, gToe: Quat): n
   return low
 }
 
-/** Turn a leg (thigh, shin) so its ankle is at T (or as near as the leg reaches, along the floor), the foot and toe at their rotations. */
-function reachLeg(G: Quat[], P: V3[], leg: (typeof LEGS)[number], T: V3, gFoot: Quat, gToe: Quat): void {
+/** Turn a leg (thigh, shin) so its ankle is at T (or as near as the leg reaches, along the floor), the foot and toe at their rotations (fork chase-feet: the plant lock's too, `plant-lock.ts`). */
+export function reachLeg(G: Quat[], P: V3[], leg: (typeof LEGS)[number], T: V3, gFoot: Quat, gToe: Quat): void {
   const [thigh, shin, foot, toe] = leg
   const H = P[thigh]!
   const K = P[shin]!

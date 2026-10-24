@@ -28,8 +28,10 @@ import { bodyShape } from '@engine/floor'
 import { blendPoses, chain, clipSample, groundPose, mocapClip, mocapClipPose, poseLocals, poseLowY, sampleLocals, withExtras } from '@engine/mocap/clip'
 import { boneWorld, mocapPose, poseFramesOf, type MocapPose, type RigLocals } from '@engine/mocap/fk'
 import { clipWarp, gaitClipId, gaitPose as gaitClipPose } from '@engine/mocap/gait-clips'
+import { plantCorrection, plantMoves, plantPose, plantSample, type PlantSample } from '@engine/mocap/plant-lock'
 import { qconj, qeuler, qmul, qrot, qslerp, vadd, type Quat } from '@engine/mocap/quat'
 import { BONE_INDEX, FRAME_BONE, MOCAP_BONES } from '@engine/mocap/rig'
+import { swingGaitPose } from '@engine/mocap/swing-legs'
 import { personDims, type Bone } from '@engine/skeleton'
 import type { ClipState, GaitId } from '@engine/types'
 import type { AnimInput, BuiltAsset, PersonJoints } from '../viewport/builders'
@@ -502,6 +504,8 @@ export function buildMocapPerson(
     const id = movesBody(ov) && STILL_GAITS.has(input.gait) ? undefined : gaitClipId(assetId, input.gait, input.speed, input.seated)
     const clip = id ? mocapClip(id) : undefined
     if (id && clip) {
+      // Fork (chase-feet): a travelling loop's planted feet stay put under a beat's leg channels.
+      if (TRAVEL_GAITS.has(input.gait)) return { pose: swingGaitPose(m, clip, clipWarp(m, clip, assetId), input.distance / ((input.scale ?? 1) * m.k), input.time, ov, (input.lift ?? 0) / (input.scale ?? 1)).pose }
       // Fork (shot-clear): a sit over a seat prop rests on its top.
       const g = gaitClipPose(m, clip, clipWarp(m, clip, assetId), input.distance / ((input.scale ?? 1) * m.k), input.time, ov, input.seated ? input.seat : undefined)
       return { pose: g.pose, ...(TRAVEL_GAITS.has(input.gait) ? {} : { loop: { id, t: g.t } }) }
@@ -522,12 +526,34 @@ export function buildMocapPerson(
     if (c) g = mix(g, { pose: mocapClipPose(m, { ...c, w: 1 }, input.overrides)! }, w)
     return g
   }
+  // Fork (chase-feet): each plant-lock sample's feet, per document (`AnimInput.plant.memo`).
+  const plantFeet = new WeakMap<object, Map<number, PlantSample | null>>()
+  /** Fork (chase-feet): the pose with its planted feet held through a crossfade (`mocap/plant-lock.ts`, `scene.ts`). */
+  const planted = (r: Posed, input: AnimInput): Posed => {
+    const p = input.plant
+    if (!p) return r
+    let feet = plantFeet.get(p.memo)
+    if (!feet) plantFeet.set(p.memo, (feet = new Map()))
+    const samples: PlantSample[] = []
+    for (let k = p.k0; k <= p.k1; k++) {
+      let s = feet.get(k)
+      if (s === undefined) {
+        const g = p.sample(k)
+        s = g ? { ...plantSample(m, resolve(g.input).pose, g.at, k / p.rate), mixed: g.mixed, still: g.still } : null
+        feet.set(k, s)
+      }
+      if (s) samples.push(s)
+    }
+    samples.push({ ...plantSample(m, r.pose, p.at, input.time), mixed: p.mixed, still: p.still })
+    const shift = plantCorrection(samples, m.k)
+    return plantMoves(shift) ? { pose: plantPose(m, r.pose, shift, p.at.heading) } : r
+  }
 
   let last: { pose: MocapPose; rig: boolean } = { pose: mocapPose(m, rigLocals()), rig: true }
   // held-weapons: the pose as shown, its arms steadied (mocapSteady) on top, for the hold rule (hold.ts).
   let steadied: MocapPose | null = null
   const animate = (input: AnimInput): void => {
-    const r = resolve(input)
+    const r = planted(resolve(input), input)
     steadied = null
     if (r.rig) {
       // Phase 1: the hidden rig as posed (its root carries the gait's grounding).

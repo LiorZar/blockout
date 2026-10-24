@@ -411,7 +411,7 @@ describe.skipIf(!HAS_LIBRARY)('held weapons on the real library (held-weapons; s
           for (let k = 0; k < 48; k += 4) {
             const time = k / 24
             const input = { gait, phase: 0, speed, distance: speed * time, time, ...(ov ? { overrides: ov } : {}) }
-            botInput(entity, { entityId: 'p' } as EntityState, input, { inputAt: () => null, held: new Set([hand]), weapons })
+            botInput(entity, { entityId: 'p', position: { x: 0, y: 0, z: 0 } } as EntityState, input, { inputAt: () => null, held: new Set([hand]), weapons })
             b.animate!(input)
             if (gait === 'walk' || gait === 'jog' || gait === 'run') {
               steadyArm(b.group, hand, input.overrides)

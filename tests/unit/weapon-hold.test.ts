@@ -297,7 +297,7 @@ describe('a bot moves its holding arm off its body where no turn frees the weapo
       const dims = personDims(id)
       const b = buildAsset(id)
       const entity = { id: 'p', assetId: id, transform: { position: { x: 0, y: 0, z: 0 }, rotationY: 0, scale: 1 } } as unknown as Entity
-      const es = { entityId: 'p' } as unknown as EntityState
+      const es = { entityId: 'p', position: { x: 0, y: 0, z: 0 } } as unknown as EntityState
       // Where the renderer draws the sword, how deep in the pose it shows.
       const shown = (weapons: { spec: typeof sword; hand: Hand; scale: number }[], t: number): { d: number; moved: boolean } => {
         const input: AnimInput = { ...STAND, gait: 'crouch', time: t }

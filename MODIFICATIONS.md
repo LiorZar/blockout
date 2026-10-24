@@ -1587,6 +1587,49 @@ Changes in this fork (2026):
   150 ms (a loaded run). Tests: `tests/unit/bot-bounds.test.ts` (the box against three's, and a skin whose points
   repeat), e2e `fight-worker.spec.ts`.
 
+- A bot's planted feet stay put through a gait crossfade (chase-feet T1; `src/engine/mocap/plant-lock.ts` (new),
+  `src/engine/mocap/footwork.ts`, `src/renderer/mocap/scene.ts`, `src/renderer/mocap/body.ts`,
+  `src/renderer/viewport/builders.ts`, `src/renderer/viewport/SceneManager.ts`): a bot braking from a run to a walk (or
+  speeding back up) crossfades two loops that have the same foot down at spots their strides put apart, and the blend
+  dragged that foot 18–32 cm along the floor. Around a crossfade into a travelling loop, and up to 1.05 s after it, the
+  feet are held: `scene.ts` samples the bot's earlier inputs on a fixed 96 Hz grid from the window's first crossfade
+  (a function of the document, not of the frame drawn before; each sample worked out once per document, under the
+  camera-less evaluator SceneManager passes as `memo`, a crossfade's change found once between the grid samples either
+  side), `body.ts` poses each sample with the `resolve` it draws with (`AnimInput.plant`), and `plantCorrection` walks
+  them: while a foot's toe or sole is within 2 cm of the floor, its correction cancels the travel of the joint it
+  stands on, so it can't jump as it lands; once it lifts, the correction eases out over 0.2 s of its swing. A held foot
+  the leg can't reach with the hips sunk up to 8 cm, or one let go of while down (a still pose, or 0.8 s past the last
+  crossfade), steps off in a lifted arc over 0.2 s. Two-bone leg IK (`footwork.ts` `reachLeg`, now exported), the
+  foot's turn kept; not on a bot holding a weapon. QA's Downtown chase on bots (seeds 7 / 3 / 21, caught and escape,
+  `.maestro/chase-feet/skate.probe.ts`): the 10 crossfade slide runs of 18–32 cm → none over 5 cm; slide runs over
+  5 cm 68 → 45, none new or longer; a planted toe's largest one-frame move inside a crossfade window 4.8 cm (the stop
+  into a standing pose, T2's, unchanged at 7.1); QA's run3 fight: the same report (contacts, overlap, slide runs), the
+  bones moved on 11 frames by up to 5.3 cm where a mark clip fades in over a gait crossfade. A bot inside
+  a window costs ~0.5–1 ms a frame more (the probe, CPU load 62–90 %). Test: `tests/unit/plant-lock.test.ts` (new).
+
+- A bot steps into a standing pose instead of gliding its feet there (chase-feet T2; `src/engine/mocap/plant-lock.ts`,
+  `src/renderer/mocap/scene.ts`): a walk fading into a standing pose (the idle, or a keyframe stand such as the escape's
+  hands on hips) blended each planted foot from its stride spot to its spot in the stance, up to 38 cm. The plant lock
+  now runs around every gait crossfade, and where the pose stands still a held foot more than 1 cm off its spot steps to
+  it (a 0.2 s lifted arc) once the other foot is down and not stepping, the one further off first; past 0.8 s after
+  the last crossfade it steps whatever the other foot does. QA's Downtown chase on bots: escape seed 3 COP 1 7.54–7.83 s
+  38 cm → 4.8 cm (the trailing foot held, then stepping up once the other lands), seeds 7 / 21 COP 1's stops 14 → under
+  5 cm; slide runs over 5 cm 45 → 42 (none new or longer than HEAD's); a planted toe's largest one-frame move inside a
+  window 4.8 cm; QA's run3 fight: the same report, the bones moved on 20 frames by up to 6.9 cm (mark clips fading in
+  over a gait crossfade). Test: `tests/unit/plant-lock.test.ts` (extended).
+
+- A bot's planted feet stay put under a keyframe beat riding its run (chase-feet T3; `src/engine/mocap/swing-legs.ts`
+  (new), `src/engine/mocap/plant-lock.ts` (`boneLow` exported), `src/renderer/mocap/body.ts`,
+  `src/renderer/mocap/scene.ts`, `src/renderer/viewport/builders.ts` (`AnimInput.lift`)): the chase's skid, stumble and
+  vault put their hip and knee channels on top of the run loop's legs, and on a planted foot that dragged it 17–37 cm.
+  A travelling loop under leg channels now shows the beat's pose (its crouch, torso, arms, a swinging leg's tuck) with
+  each foot where the loop has it as far as that foot is on the floor (all the way below 3 cm, none above 15 cm),
+  reached with two-bone leg IK, the hips sinking where the beat holds them higher than that leg reaches; a root lifted
+  15 cm or more over the ground (the vault over its obstacle) keeps the beat's whole legs, as before. QA's Downtown
+  chase on bots: the 9 leg-overlay slide runs → none over 5 cm; slide runs over 5 cm 42 → 4 (HEAD 68), none new or
+  longer, none over 15 cm; QA's run3 fight: report and bones as T2's. A leg the loop has planted no longer follows
+  the beat's stride (the keys were written for the standing rig). Test: `tests/unit/plant-lock.test.ts` (extended).
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.
