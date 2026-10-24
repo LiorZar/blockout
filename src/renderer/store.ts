@@ -1,4 +1,4 @@
-// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies, mocap clip runs and mocap fights (solve cache, staging busy state), routines on the set, a car chase on its open road; see MODIFICATIONS.md.
+// Modified in this fork (2026): shot words, Fight Director, held-weapon actions, clear camera views, routine bodies, mocap clip runs and mocap fights (solve cache, staging busy state), routines on the set, a car chase on its open road, mark curve handles; see MODIFICATIONS.md.
 /**
  * Application state (zustand). One store owns the document, selection,
  * playback, and undo. All document mutations flow through mutate(), which
@@ -143,6 +143,8 @@ interface BlockoutState {
   selectAllMarks(): void
   /** Delete the marks in the current mark/marks selection. */
   deleteSelectedMarks(): void
+  /** Fork (Lior's test): a mark's curve handle in the current shot (null: automatic again); a drag is one undo step. */
+  setMarkHandle(markId: string, handle: V3 | null): void
   setHelpOpen(open: boolean): void
   setShowMarks(on: boolean): void
   setShowPaths(on: boolean): void
@@ -907,6 +909,18 @@ export const useStore = create<BlockoutState>((set, get) => ({
     })
     set({ selection: null })
     get().toast(n > 1 ? `Deleted ${n} marks.` : 'Mark deleted.', 'info')
+  },
+  setMarkHandle(markId, handle) {
+    const { sceneId, shotId } = get()
+    get().mutate(handle ? 'curve handle' : 'automatic curve', (doc) => {
+      const scene = doc.scenes.find((sc) => sc.id === sceneId)
+      const shot = scene?.shots.find((sh) => sh.id === shotId)
+      const take = scene?.blocking.find((b) => b.id === shot?.blockingTakeId)
+      const m = [...(shot?.camera.marks ?? []), ...(take?.tracks.flatMap((t) => t.marks) ?? [])].find((x) => x.id === markId)
+      if (!m) return
+      if (handle) m.handle = { x: handle.x, y: handle.y, z: handle.z }
+      else delete m.handle
+    })
   },
   setHelpOpen: (helpOpen) => set({ helpOpen }),
   setShowMarks: (showMarks) => set({ showMarks }),

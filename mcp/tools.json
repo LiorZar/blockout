@@ -199,7 +199,7 @@
   {
     "name": "add_actor_mark",
     "title": "Add an actor mark",
-    "description": "Drop a timeline mark for an actor entity: at time t (seconds) the actor is at x,z. Chain marks to choreograph a walk. gait sets the movement style between marks.",
+    "description": "Drop a timeline mark for an actor entity: at time t (seconds) the actor is at x,z. Chain marks to choreograph a walk. gait sets the movement style between marks. handle and via curve the path into and through the mark.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -228,6 +228,58 @@
             "stand"
           ],
           "description": "Movement style approaching this mark."
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "z": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "z"
+              ],
+              "additionalProperties": false,
+              "description": "Curve handle in meters, from the mark: the path passes the mark heading along it (leaving toward mark + handle, arriving from mark - handle); a longer handle bends wider. Without one the legs run straight into the mark. y defaults to 0."
+            },
+            {
+              "type": "null",
+              "description": "Clear the handle: straight legs again."
+            }
+          ]
+        },
+        "via": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              },
+              "z": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "z"
+            ],
+            "additionalProperties": false,
+            "description": "A point in meters; y defaults to the mark's height."
+          },
+          "description": "Points the path passes through on its way from the previous mark to this one (a curve through them). [] clears them."
         }
       },
       "required": [
@@ -242,7 +294,7 @@
   {
     "name": "add_camera_mark",
     "title": "Add a camera mark",
-    "description": "Drop a camera mark at time t: camera at x,y,z (meters, y is height) looking with panDeg (counter-clockwise seen from above: 0 faces -Z, 90 faces -X) and tiltDeg (positive looks up, negative down). focalLength in mm on Super 35 (24 wide, 35 normal, 50-85 tight).",
+    "description": "Drop a camera mark at time t: camera at x,y,z (meters, y is height) looking with panDeg (counter-clockwise seen from above: 0 faces -Z, 90 faces -X) and tiltDeg (positive looks up, negative down). focalLength in mm on Super 35 (24 wide, 35 normal, 50-85 tight). handle and via curve the camera path into and through the mark.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -273,6 +325,58 @@
         "focalLength": {
           "type": "number",
           "description": "Optional focal length in mm (Super 35)."
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "z": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "z"
+              ],
+              "additionalProperties": false,
+              "description": "Curve handle in meters, from the mark: the path passes the mark heading along it (leaving toward mark + handle, arriving from mark - handle); a longer handle bends wider. Without one the legs run straight into the mark. y defaults to 0."
+            },
+            {
+              "type": "null",
+              "description": "Clear the handle: straight legs again."
+            }
+          ]
+        },
+        "via": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              },
+              "z": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "z"
+            ],
+            "additionalProperties": false,
+            "description": "A point in meters; y defaults to the mark's height."
+          },
+          "description": "Points the path passes through on its way from the previous mark to this one (a curve through them). [] clears them."
         }
       },
       "required": [
@@ -1606,7 +1710,7 @@
   {
     "name": "update_mark",
     "title": "Edit a timeline mark",
-    "description": "Change one mark. Omitted fields are unchanged; time is kept inside the shot. Camera marks take panDeg/tiltDeg/rollDeg/focalLength/focusDistance; actor marks take gait. Mark ids come from list_marks. A camera mark framed by shot words (it has a shot, from frame_shot) is re-solved every frame, so its pose (x/y/z/panDeg/tiltDeg/rollDeg, and focalLength when the words set the lens or an over-the-shoulder) needs release: true first; time, hold and eases don't.",
+    "description": "Change one mark. Omitted fields are unchanged; time is kept inside the shot. Camera marks take panDeg/tiltDeg/rollDeg/focalLength/focusDistance; actor marks take gait. Mark ids come from list_marks. A camera mark framed by shot words (it has a shot, from frame_shot) is re-solved every frame, so its pose (x/y/z/panDeg/tiltDeg/rollDeg, and focalLength when the words set the lens or an over-the-shoulder) needs release: true first; time, hold and eases don't. handle and via curve the path (null / [] straighten it).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1684,6 +1788,58 @@
         "release": {
           "type": "boolean",
           "description": "Camera marks framed by shot words: true freezes the current framing into a plain mark (drops the words), then applies the other fields. Undo brings the words back."
+        },
+        "handle": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number"
+                },
+                "y": {
+                  "type": "number"
+                },
+                "z": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "x",
+                "z"
+              ],
+              "additionalProperties": false,
+              "description": "Curve handle in meters, from the mark: the path passes the mark heading along it (leaving toward mark + handle, arriving from mark - handle); a longer handle bends wider. Without one the legs run straight into the mark. y defaults to 0."
+            },
+            {
+              "type": "null",
+              "description": "Clear the handle: straight legs again."
+            }
+          ]
+        },
+        "via": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              },
+              "z": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "x",
+              "z"
+            ],
+            "additionalProperties": false,
+            "description": "A point in meters; y defaults to the mark's height."
+          },
+          "description": "Points the path passes through on its way from the previous mark to this one (a curve through them). [] clears them."
         }
       },
       "required": [

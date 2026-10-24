@@ -1,4 +1,4 @@
-// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons), ActorMark.clip / EntityState.clip (mocap clips), ClipState.step (bot footwork), EntityState.loopPhase (bot foot phase), MarkClip.as; see MODIFICATIONS.md.
+// Modified in this fork (2026): CameraMark.shot (live shot words), Scene.fights, ActorMark.lockFacing, ActorMark.posedMove, Entity.heldBy (weapons), ActorMark.clip / EntityState.clip (mocap clips), ClipState.step (bot footwork), EntityState.loopPhase (bot foot phase), MarkClip.as, MarkBase.handle (curve handles); see MODIFICATIONS.md.
 /**
  * Blockout document model.
  *
@@ -135,6 +135,12 @@ export interface MarkBase {
    * (catmull-rom through prev → via… → this).
    */
   via?: V3[]
+  /**
+   * Fork (Lior's test): this mark's curve handle, from the mark to its
+   * outgoing Bezier control point (the incoming one mirrors it, so the path
+   * stays smooth through the mark). Unset, the legs meet the mark as before.
+   */
+  handle?: V3
 }
 
 export interface ActorMark extends MarkBase {

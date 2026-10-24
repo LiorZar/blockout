@@ -1657,6 +1657,19 @@ Changes in this fork (2026):
   it, so the PiP follows the drag instead of jumping on release. A re-sync during a gizmo drag (the Mixamo library
   finishing its load) no longer detaches the gizmo and kills the drag. Help lists the navigation.
 
+- Curved paths (Lior's own test, 2026-10-24; `src/engine/types.ts` (`MarkBase.handle`), `src/engine/path.ts`,
+  `src/engine/evaluate.ts`, `src/renderer/viewport/curve-handles.ts` (new), `src/renderer/viewport/SceneManager.ts`,
+  `src/renderer/store.ts` (`setMarkHandle`), `src/renderer/control/handler.ts`, `mcp/tools.json`, `src/renderer/panels/Help.tsx`,
+  `tests/unit/path-handles.test.ts`, `tests/e2e/curve-handles.spec.ts` (new)): a mark can carry a curve handle, the
+  offset of its outgoing Bezier control point (the incoming one mirrors it), so the path passes the mark smoothly along
+  it. A leg's segment at a handled mark is the same centripetal Catmull-Rom curve written as a cubic Bezier with that
+  end's control point replaced; a mark without a handle travels exactly as upstream (straight legs between marks, or
+  Catmull-Rom through `via` points). The selected performer's or camera's marks show knobs (dim where the handle is
+  automatic): a left-drag bends the path live, one undo step a drag; a double-click makes the mark automatic again;
+  the knobs stay out of exports and the top-down diagram. MCP: `handle` and `via` on `add_actor_mark`,
+  `add_camera_mark` and `update_mark` (`null` / `[]` clear them), reported by `list_marks`. Upstream has `via` in its
+  data but no way to set it.
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.

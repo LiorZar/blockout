@@ -1,4 +1,4 @@
-// Modified in this fork (2026): live shot marks (shot-track.ts) solved from the lens asked for, lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off, the entity states alone (evaluateEntities), speed warnings that know what a vehicle can do; see MODIFICATIONS.md.
+// Modified in this fork (2026): live shot marks (shot-track.ts) solved from the lens asked for, lockFacing actor marks, held weapons, posed moves stay on the floor (floor.ts), root angles on the shortest arc, mocap clip marks (mocap/clip-marks.ts), the speed on a mark's arrival, bot footwork windows (the legs handed to clipStateAt), a tracked person aimed at its posed body when low (track-aim.ts), a leg into a posed move on the gait it departs with, a bot's foot phase (mocap/loop-phase.ts), a bot's speed as its first leg sets off, the entity states alone (evaluateEntities), speed warnings that know what a vehicle can do, legs bent by mark handles; see MODIFICATIONS.md.
 /**
  * The heart of Blockout: state(t).
  *
@@ -113,7 +113,7 @@ function buildLegs<M extends MarkBase>(marks: M[]): Leg<M>[] {
     const departTime = Math.min(from.time + from.hold, Math.max(from.time, to.time - 0.1))
     const arriveTime = Math.max(to.time, departTime + 0.001)
     const points: V3[] = [from.position, ...(to.via ?? []), to.position]
-    const path = new Path(points)
+    const path = new Path(points, undefined, { out: from.handle, in: to.handle })
     legs.push({ from, to, departTime, arriveTime, path, distanceBefore })
     distanceBefore += path.length
   }

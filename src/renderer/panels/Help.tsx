@@ -513,6 +513,7 @@ const SHORTCUTS: [string, string][] = [
   [`${ALT} / ${MOD} + middle-drag`, 'Pan the view across the floor'],
   ['⇧ + middle-drag', 'Move the view up / down'],
   ['W A S D / Q E', 'Fly the view, Q / E down / up (pointer over the viewport; ⇧ faster)'],
+  ['Drag a path knob', 'Curve the path of the selected performer or camera through that mark (double-click the knob: straight again)'],
   ['Space', 'Play / pause the shot'],
   ['M', 'Drop marks for the selection (click the floor)'],
   ['C', 'Look through the shot camera'],

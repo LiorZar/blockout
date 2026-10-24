@@ -13,6 +13,7 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { ViewNavigation } from './navigation'
+import { CurveHandles } from './curve-handles'
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { Sky } from 'three/examples/jsm/objects/Sky.js'
@@ -93,6 +94,8 @@ export class SceneManager {
   private controls: OrbitControls
   /** Fork (Lior's test): the middle-button and WASD navigation over `controls`. */
   private nav: ViewNavigation
+  /** Fork (Lior's test): curve-handle knobs on the selected lane's marks. */
+  private handles: CurveHandles
   /** The shot camera — what gets exported. */
   readonly shotCam: THREE.PerspectiveCamera
 
@@ -244,6 +247,10 @@ export class SceneManager {
         return !s.lookThrough && s.mode !== 'deliver'
       }
     })
+    this.handles = new CurveHandles(canvas, {
+      camera: () => (this.currentState().lookThrough ? this.shotCam : this.freeCam),
+      setHandle: (markId, handle) => this.currentState().setMarkHandle(markId, handle)
+    })
 
     // Ground: soft grid (editor chrome — lives in overlay so exports never
     // include it) + shadow-catching plane (stays: contact shadows read well)
@@ -298,6 +305,7 @@ export class SceneManager {
     // Marks + paths live in their own toggleable sub-groups of the overlay.
     this.overlay.add(this.marksGroup)
     this.overlay.add(this.pathsGroup)
+    this.overlay.add(this.handles.group)
     this.overlay.add(this.cameraBody)
     this.scene.add(this.overlay)
 
@@ -393,6 +401,7 @@ export class SceneManager {
     this.canvas.removeEventListener('wheel', this.onWheel)
     window.removeEventListener('keydown', this.onKeyDown)
     this.nav.dispose()
+    this.handles.dispose()
     this.controls.dispose()
     this.transform.dispose()
     this.viewHelper?.dispose()
@@ -765,6 +774,7 @@ export class SceneManager {
     const s = this.currentState()
     this.marksGroup.visible = s.showMarks
     this.pathsGroup.visible = s.showPaths
+    this.handles.group.visible = s.showPaths
   }
 
   /**
@@ -788,6 +798,7 @@ export class SceneManager {
       })
     }
     this.selectionPathObjects = []
+    this.handles.rebuild(null, new THREE.Color())
     if (!this.evaluator || !this.docScene || !this.shot) return
 
     // Which lane is selected? (entity id or 'camera')
@@ -829,6 +840,7 @@ export class SceneManager {
       : (this.docScene.blocking
           .find((b) => b.id === this.shot!.blockingTakeId)
           ?.tracks.find((t) => t.entityId === laneId)?.marks ?? [])
+    this.handles.rebuild(marks, color) // fork (Lior's test)
     for (const mark of [...marks].sort((a, b) => a.time - b.time)) {
       const sprite = sharedLabelSprite(`t=${mark.time.toFixed(1)}s`, isCam ? '#7dd3fc' : (path?.color ?? '#f5a524')) // fork (main-thread)
       sprite.position.set(mark.position.x, mark.position.y + 0.55, mark.position.z)
@@ -992,6 +1004,9 @@ export class SceneManager {
       }
       return
     }
+
+    // Fork (Lior's test): a curve-handle knob of the selected lane takes the press.
+    if (this.handles.grab(e)) return
 
     // 2) Mark dropping
     if (s.droppingMarks && s.selection) {
@@ -2686,6 +2701,8 @@ export class SceneManager {
     const scansWas = this.scansGroup.visible
     const marksWas = this.marksGroup.visible
     const pathsWas = this.pathsGroup.visible
+    const handlesWas = this.handles.group.visible
+    this.handles.group.visible = false
     this.overlay.visible = true
     this.cameraBody.visible = true
     this.scansGroup.visible = false
@@ -2719,5 +2736,6 @@ export class SceneManager {
     this.scansGroup.visible = scansWas
     this.marksGroup.visible = marksWas
     this.pathsGroup.visible = pathsWas
+    this.handles.group.visible = handlesWas
   }
 }

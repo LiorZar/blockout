@@ -1,4 +1,4 @@
-// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots, their clips and their fights, routines on the set, car chases on an open road) in 2026; see MODIFICATIONS.md.
+// Modified for cross-platform Windows support and the fork's MCP tools (incl. shot words, Fight Director, held weapons, mocap bots, their clips and their fights, routines on the set, car chases on an open road, curved mark paths) in 2026; see MODIFICATIONS.md.
 /**
  * Renderer side of the agent control server (see src/main/control.ts and
  * mcp/blockout-mcp.mjs). External agents — Claude Code, Codex, Hermes, any
@@ -56,6 +56,40 @@ const bool = (p: Params, k: string): boolean | undefined =>
   typeof p[k] === 'boolean' ? (p[k] as boolean) : undefined
 const strList = (p: Params, k: string): string[] =>
   Array.isArray(p[k]) ? (p[k] as unknown[]).filter((v): v is string => typeof v === 'string') : []
+
+/** Fork (Lior's test): a {x, y?, z} point in meters; y defaults to `y`. */
+function pointParam(v: unknown, y: number, what: string): V3 {
+  const o = (v ?? {}) as Record<string, unknown>
+  const n = (k: string): number | undefined => (typeof o[k] === 'number' && isFinite(o[k] as number) ? (o[k] as number) : undefined)
+  const x = n('x')
+  const z = n('z')
+  if (typeof v !== 'object' || v === null || x === undefined || z === undefined) {
+    throw new Error(`${what} must be {x, z} (y optional), in meters.`)
+  }
+  return { x, y: n('y') ?? y, z }
+}
+
+/** Fork (Lior's test): a mark's `handle` param: undefined when absent, null to clear it. */
+function handleParam(p: Params): V3 | null | undefined {
+  if (p.handle === undefined) return undefined
+  if (p.handle === null) return null
+  return pointParam(p.handle, 0, 'handle')
+}
+
+/** Fork (Lior's test): a mark's `via` param: undefined when absent, [] to clear it. */
+function viaParam(p: Params, y: number): V3[] | undefined {
+  if (p.via === undefined) return undefined
+  if (!Array.isArray(p.via)) throw new Error('via must be a list of {x, z} points (y optional), in meters.')
+  return p.via.map((v, i) => pointParam(v, y, `via[${i}]`))
+}
+
+/** Fork (Lior's test): write a mark's curve params (handle null / via [] make it straight again). */
+function applyCurve(m: CameraMark | ActorMark, handle: V3 | null | undefined, via: V3[] | undefined): void {
+  if (handle === null) delete m.handle
+  else if (handle) m.handle = handle
+  if (via && via.length > 0) m.via = via
+  else if (via) delete m.via
+}
 
 const toRad = (deg: number): number => (deg * Math.PI) / 180
 const toDeg = (rad: number): number => Math.round((rad * 180) / Math.PI)
@@ -169,7 +203,9 @@ function markSummary(m: CameraMark | ActorMark): unknown {
     z: m.position.z,
     hold: m.hold,
     easeIn: m.easeIn,
-    easeOut: m.easeOut
+    easeOut: m.easeOut,
+    ...(m.handle ? { handle: m.handle } : {}), // fork (Lior's test): curved paths
+    ...(m.via ? { via: m.via } : {})
   }
   if ('pan' in m) {
     return {
@@ -707,6 +743,8 @@ async function execute(action: string, params: Params): Promise<unknown> {
       const z = flt(params, 'z') ?? 0
       const y = flt(params, 'y') ?? 0
       const gait = (str(params, 'gait') ?? 'walk') as GaitId
+      const handle = handleParam(params)
+      const via = viaParam(params, y)
       let ok = false
       s.mutate('agent: actor mark', (doc) => {
         const scene = doc.scenes.find((sc) => sc.id === useStore.getState().sceneId)
@@ -718,7 +756,9 @@ async function execute(action: string, params: Params): Promise<unknown> {
           track = { entityId, marks: [] }
           take.tracks.push(track)
         }
-        track.marks.push(createActorMark({ x, y, z }, time, gait))
+        const mark = createActorMark({ x, y, z }, time, gait)
+        applyCurve(mark, handle, via)
+        track.marks.push(mark)
         ok = true
       })
       if (!ok) throw new Error(`No entity "${entityId}" in the current scene — call get_state for ids.`)
@@ -734,6 +774,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         toRad(flt(params, 'tiltDeg') ?? 0),
         flt(params, 'focalLength') ?? 35
       )
+      applyCurve(mark, handleParam(params), viaParam(params, mark.position.y))
       s.mutate('agent: camera mark', (doc) => {
         const scene = doc.scenes.find((sc) => sc.id === useStore.getState().sceneId)
         const shot = scene?.shots.find((sh) => sh.id === useStore.getState().shotId)
@@ -1455,6 +1496,9 @@ async function execute(action: string, params: Params): Promise<unknown> {
         }
       }
       const frozen = words && release ? new ShotEvaluator(scene0, s.shot()!).solveShotAt(words, framed!.time, framed!.focalLength) : null
+      const handle = handleParam(params)
+      const mark0 = lane0.marks.find((x) => x.id === markId)!
+      const via = viaParam(params, flt(params, 'y') ?? mark0.position.y)
       let result: unknown
       mutateActive(words && release ? 'agent: release shot words' : 'agent: update mark', (scene, shot) => {
         const lane = resolveLane(scene, shot, laneId)
@@ -1483,6 +1527,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         if (easeIn !== undefined) m.easeIn = clamp(easeIn, 0, 1)
         const easeOut = flt(params, 'easeOut')
         if (easeOut !== undefined) m.easeOut = clamp(easeOut, 0, 1)
+        applyCurve(m, handle, via)
         if (lane.kind === 'actor' && gait !== undefined) (m as ActorMark).gait = gait
         if (lane.kind === 'camera') {
           const cm = m as CameraMark

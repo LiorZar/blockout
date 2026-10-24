@@ -1,3 +1,4 @@
+// Modified in this fork (2026): leg-end curve handles (PathHandles); see MODIFICATIONS.md.
 /**
  * Paths between marks: centripetal Catmull-Rom through
  * [previous mark, ...via points, next mark], arc-length parameterized so
@@ -69,6 +70,72 @@ function catmullRom(seg: Segment, t: number): V3 {
   return lerpV(b1, b2, t1, t2, tt)
 }
 
+/**
+ * Fork (Lior's test): a centripetal Catmull-Rom segment as a cubic Bezier
+ * (the same curve: Barry-Goldman's pyramid is the Hermite with these end
+ * tangents), so a mark's handle can replace one end's control point.
+ */
+function bezierControls(seg: Segment): [V3, V3] {
+  const { p0, p1, p2, p3 } = seg
+  const d01 = Math.pow(Math.max(dist(p0, p1), 1e-6), 0.5)
+  const d12 = Math.pow(Math.max(dist(p1, p2), 1e-6), 0.5)
+  const d23 = Math.pow(Math.max(dist(p2, p3), 1e-6), 0.5)
+  const tangent = (a: V3, b: V3, c: V3, dab: number, dbc: number): V3 => {
+    const k = d12 / 3
+    const f = (axis: 'x' | 'y' | 'z'): number =>
+      k * ((b[axis] - a[axis]) / dab - (c[axis] - a[axis]) / (dab + dbc) + (c[axis] - b[axis]) / dbc)
+    return { x: f('x'), y: f('y'), z: f('z') }
+  }
+  const m1 = tangent(p0, p1, p2, d01, d12)
+  const m2 = tangent(p1, p2, p3, d12, d23)
+  return [
+    { x: p1.x + m1.x, y: p1.y + m1.y, z: p1.z + m1.z },
+    { x: p2.x - m2.x, y: p2.y - m2.y, z: p2.z - m2.z }
+  ]
+}
+
+function bezier(a: V3, c1: V3, c2: V3, b: V3, t: number): V3 {
+  const s = 1 - t
+  const w0 = s * s * s
+  const w1 = 3 * s * s * t
+  const w2 = 3 * s * t * t
+  const w3 = t * t * t
+  return {
+    x: w0 * a.x + w1 * c1.x + w2 * c2.x + w3 * b.x,
+    y: w0 * a.y + w1 * c1.y + w2 * c2.y + w3 * b.y,
+    z: w0 * a.z + w1 * c1.z + w2 * c2.z + w3 * b.z
+  }
+}
+
+/** Fork (Lior's test): the curve handles of a leg's two marks (MarkBase.handle). */
+export interface PathHandles {
+  /** The departure mark's handle: the leg leaves toward mark + out. */
+  out?: V3
+  /** The arrival mark's handle: the leg arrives from mark - in. */
+  in?: V3
+}
+
+/**
+ * Fork (Lior's test): the handles a leg's two marks act with when they have
+ * none (offsets of the leg's own end control points), where the viewport
+ * draws an unset handle.
+ */
+export function autoHandles(points: V3[]): { out: V3; in: V3 } {
+  const pts = points.length >= 2 ? points : [points[0] ?? v3(), points[0] ?? v3()]
+  const seg = (i: number): Segment => {
+    const p1 = pts[i]!
+    const p2 = pts[i + 1]!
+    const p0 = pts[i - 1] ?? { x: p1.x + (p1.x - p2.x), y: p1.y + (p1.y - p2.y), z: p1.z + (p1.z - p2.z) }
+    const p3 = pts[i + 2] ?? { x: p2.x + (p2.x - p1.x), y: p2.y + (p2.y - p1.y), z: p2.z + (p2.z - p1.z) }
+    return { p0, p1, p2, p3 }
+  }
+  const first = pts[0]!
+  const last = pts[pts.length - 1]!
+  const c1 = bezierControls(seg(0))[0]
+  const c2 = bezierControls(seg(pts.length - 2))[1]
+  return { out: sub(c1, first), in: sub(last, c2) }
+}
+
 export class Path {
   private points: V3[]
   private samples: V3[] = []
@@ -78,8 +145,9 @@ export class Path {
   /**
    * @param points ordered control points the path passes through
    *               (departure mark, via…, arrival mark)
+   * @param handles  fork: curve handles at the departure / arrival mark
    */
-  constructor(points: V3[], samplesPerSegment = 32) {
+  constructor(points: V3[], samplesPerSegment = 32, handles: PathHandles = {}) {
     this.points = points.length >= 2 ? points : [points[0] ?? v3(), points[0] ?? v3()]
     const pts = this.points
     const segs: Segment[] = []
@@ -97,8 +165,18 @@ export class Path {
     for (let s = 0; s < segs.length; s++) {
       const seg = segs[s]!
       const from = s === 0 ? 0 : 1 // avoid duplicating shared endpoints
+      // Fork: a handle replaces its end's control point; a segment without one is upstream's.
+      const out = s === 0 ? handles.out : undefined
+      const into = s === segs.length - 1 ? handles.in : undefined
+      let controls: [V3, V3] | null = null
+      if (out || into) {
+        controls = bezierControls(seg)
+        if (out) controls[0] = { x: seg.p1.x + out.x, y: seg.p1.y + out.y, z: seg.p1.z + out.z }
+        if (into) controls[1] = { x: seg.p2.x - into.x, y: seg.p2.y - into.y, z: seg.p2.z - into.z }
+      }
       for (let k = from; k <= samplesPerSegment; k++) {
-        const p = catmullRom(seg, k / samplesPerSegment)
+        const t = k / samplesPerSegment
+        const p = controls ? bezier(seg.p1, controls[0], controls[1], seg.p2, t) : catmullRom(seg, t)
         if (prev) acc += dist(prev, p)
         this.samples.push(p)
         this.cumulative.push(acc)
