@@ -30,7 +30,7 @@ import {
 } from '@engine/camera'
 import { entityHeight } from '@engine/assets'
 import { headingOf } from '@engine/path'
-import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
+import { findPreset } from '@engine/camera-moves'
 import { groupShotPose, pickFramingSubjectIds } from '@engine/framing'
 import type { ViewOutcome } from '@engine/camera-clear'
 import { clearFramingPose } from '../camera-view'
@@ -1813,7 +1813,7 @@ export class SceneManager {
    */
   applyCameraMove(presetId: string, subjectId?: string): ViewOutcome | undefined {
     const s = this.currentState()
-    const preset = CAMERA_MOVE_PRESETS.find((p) => p.id === presetId)
+    const preset = findPreset(presetId) // fork (shared-camera-moves): an old id or a shared move id
     if (!preset || !this.shot || !this.evaluator || !this.docScene) return
     const subjects = subjectId ? this.framingSubjects(1, [subjectId]) : this.framingSubjects(1)
     const subject = subjects[0]

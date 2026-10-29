@@ -125,7 +125,7 @@ claude mcp add blockout -- node /ABSOLUTE/PATH/TO/blockout/mcp/blockout-mcp.mjs
 | `list_action_presets` / `apply_action_preset` | — / `entityId, presetId` | Motion-path presets for non-character performers (plane, heli, bird, car chase, debris); lay one on an entity, replacing its marks |
 | `list_sequence_styles` | — | Styles per `spawn_sequence` type |
 | `spawn_sequence` | `type, count, style?, x?, z?, headingDeg?` | Stage a crowd sequence — `dance` / `fight` / `footChase` / `carChase` — performers + choreography |
-| `list_camera_moves` / `apply_camera_move` | — / `presetId, entityId?` | Classic camera-move presets; generate one's camera marks around a subject (replaces camera marks) |
+| `list_camera_moves` / `apply_camera_move` | — / `presetId, entityId?` | Camera moves (fork: the 42 ids and names shared with Ebook Studio, `src/engine/camera-moves.json`, plus variants; old ids are aliases); generate one's camera marks around a subject (replaces camera marks) |
 | `set_track_subject` | `entityId?` | Aim-lock the camera on an entity (none = off) |
 | `list_choreography_options` | — | Choreography vocabulary: kinds, styles, formations, endings |
 | `spawn_choreography` | `kind, performers, durationS?, style?, formation?, canon?, mirror?, formationChange?, ending?, bpm?, seed?, x?, z?, headingDeg?` | Stage a dance/fight/chase — fresh performers + their per-beat blocking |

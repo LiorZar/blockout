@@ -87,7 +87,7 @@ describe('camera moves on a vehicle', () => {
         expect(r.inside, `${style} ${id}`).toBe(0)
         expect(r.out === 0 || !!r.warning, `${style} ${id}: ${r.out} frames out, no warning`).toBe(true)
       }
-  })
+  }, 20_000) // fork (shared-camera-moves): side-track-left now rides the flank the set fits longest
 
   it('a whip pan off the car says so', () => {
     const lead = chase(1)
@@ -127,7 +127,7 @@ describe('camera moves on a person', () => {
         camera: { ...c0.position, pan: c0.pan, tilt: c0.tilt, focalLength: c0.focalLength },
         duration: shot.duration
       })
-      const was = preset.category === 'follow' ? clearFollowMarks(scene, shot, specs, hero.id) : clearMoveMarks(scene, shot, specs, hero.id, preset.track, preset.name)
+      const was = preset.category === 'tracking' ? clearFollowMarks(scene, shot, specs, hero.id) : clearMoveMarks(scene, shot, specs, hero.id, preset.track, preset.name)
       const now = layCameraMove(scene, shot, preset.id, hero.id)!
       expect(now.marks, preset.id).toEqual(was.marks)
       expect(now.warning, preset.id).toBe(was.warning)

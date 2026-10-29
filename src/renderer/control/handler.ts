@@ -986,27 +986,27 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (subjectId && !s.scene()?.entities.some((e) => e.id === subjectId)) {
         throw new Error(`No entity "${subjectId}" in the current scene — call get_state for ids.`)
       }
-      const { CAMERA_MOVE_PRESETS } = await import('@engine/camera-moves')
-      if (!CAMERA_MOVE_PRESETS.some((p) => p.id === presetId)) {
+      // Fork (shared-camera-moves): a preset id, an old id (PRESET_ALIASES) or a shared move id.
+      const { cameraMoveListing, findPreset } = await import('@engine/camera-moves')
+      const preset = findPreset(presetId)
+      if (!preset) {
+        const shared = cameraMoveListing().find((m) => m.id === presetId)
         throw new Error(
-          `Unknown presetId "${presetId}". Valid: ${CAMERA_MOVE_PRESETS.map((p) => p.id).join(', ')}`
+          shared
+            ? `${shared.name} ("${presetId}") has no Blockout preset yet.`
+            : `Unknown presetId "${presetId}". Valid: ${cameraMoveListing().map((m) => m.id).join(', ')}`
         )
       }
       const rigBefore = s.shot()?.camera.rig // fork (street-kit T5)
       const view = requireManager().applyCameraMove(presetId, subjectId) // fork (fix-camera-set): note / warning
       const rig = useStore.getState().shot()?.camera.rig
-      return { applied: presetId, ...view, ...(rig && rig !== rigBefore ? { rig } : {}) }
+      return { applied: presetId, move: preset.move, ...view, ...(rig && rig !== rigBefore ? { rig } : {}) }
     }
 
     case 'list_camera_moves': {
-      const { CAMERA_MOVE_PRESETS } = await import('@engine/camera-moves')
-      return CAMERA_MOVE_PRESETS.map((p) => ({
-        id: p.id,
-        name: p.name,
-        category: p.category,
-        description: p.description,
-        track: p.track
-      }))
+      // Fork (shared-camera-moves): every move shared with Ebook Studio, in its table's order, each followed by its variants.
+      const { cameraMoveListing } = await import('@engine/camera-moves')
+      return cameraMoveListing()
     }
 
     case 'set_track_subject': {

@@ -1227,7 +1227,7 @@
   {
     "name": "list_camera_moves",
     "title": "List camera moves",
-    "description": "List the classic camera-move presets (orbits, cranes, drone follows, vertigo dolly-zoom, whip pan…) with ids, categories, and descriptions. Call before apply_camera_move.",
+    "description": "List the camera moves: every move shared with Ebook Studio (its 42 ids, names and categories, the same words as Ebook's brief camera.movement), in that table's order, each followed by Blockout's variants of it (move names the shared move a variant is). blockout says how Blockout stages a row: preset (a camera path), rig (a camera rig) or prompt (only named in the prompt). Call before apply_camera_move.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -1240,13 +1240,13 @@
   {
     "name": "apply_camera_move",
     "title": "Move the camera",
-    "description": "Apply a classic camera-move preset to the active shot camera: generates a full set of camera marks over the shot built around a subject, riding along if the subject moves (e.g. drone-follow a flying plane). Track-style moves also enable aim-lock. Replaces the camera's existing marks. A follow move on a person (follow-behind, lead-the-subject, side tracks …) keeps the camera out of walls and bodies with the person in view past the set and other cast, moving or adding marks where needed; the result's note says how, and a warning says when no clear view exists for part of the shot. A follow or aerial move on a moving vehicle sets a rig that keeps up (Car mount, or Drone in the air; returns rig) while the rig is still the default Sticks.",
+    "description": "Apply a camera move to the active shot camera: generates a full set of camera marks over the shot built around a subject, riding along if the subject moves (e.g. drone-follow a flying plane). Track-style moves also enable aim-lock. Replaces the camera's existing marks. A tracking move on a person (follow, lead, side tracks …) keeps the camera out of walls and bodies with the person in view past the set and other cast, moving or adding marks where needed; the result's note says how, and a warning says when no clear view exists for part of the shot. A tracking or aerial move on a moving vehicle sets a rig that keeps up (Car mount, or Drone in the air; returns rig) while the rig is still the default Sticks. Returns move, the shared move laid.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "presetId": {
           "type": "string",
-          "description": "Preset id from list_camera_moves (e.g. \"orbit-180\", \"follow-behind\", \"vertigo-dolly-zoom\")."
+          "description": "A move id from list_camera_moves: a shared move (e.g. \"dolly-in\", \"orbit\", \"follow\", \"dolly-zoom\"; Ebook's brief camera.movement passes straight in) or a variant (\"creep-in-low\"). Old ids (\"slow-push-in\", \"orbit-180\", \"follow-behind\" …) still work and lay the same marks."
         },
         "entityId": {
           "type": "string",

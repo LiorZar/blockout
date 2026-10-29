@@ -91,7 +91,7 @@ describe('fitting a move', () => {
 })
 
 describe('camera moves in a set keep the subject in view', () => {
-  for (const presetId of ['orbit-360', 'orbit-90-right', 'crane-up-reveal', 'slow-push-in'])
+  for (const presetId of ['orbit-360', 'arc-left', 'crane-up', 'dolly-in'])
     it(`${presetId} in an alley: the lens stays out of the walls and they cover at most a fifth of the hero, or it warns`, () => {
       const { scene, shot } = staged()
       const specs = laid(scene, shot, presetId)
@@ -125,7 +125,7 @@ describe('camera moves in a set keep the subject in view', () => {
       { entityId: 'kit', name: 'the closet', x: -0.8, z: 0, hx: 0.05, hz: 0.8, heading: 0, y0: 0, y1: 8 },
       { entityId: 'kit', name: 'the closet', x: 0.8, z: 0, hx: 0.05, hz: 0.8, heading: 0, y0: 0, y1: 8 }
     ]
-    const r = clearMove(scene, shot, laid(scene, shot, 'orbit-90-right'), 'hero', closet, { track: true, name: 'Orbit 90° Right' })
-    expect(r.warning).toMatch(/^Orbit 90° Right can't keep HERO in view here past the closet: \d+% of the move is still blocked\.$/)
+    const r = clearMove(scene, shot, laid(scene, shot, 'arc-left'), 'hero', closet, { track: true, name: 'Arc left' })
+    expect(r.warning).toMatch(/^Arc left can't keep HERO in view here past the closet: \d+% of the move is still blocked\.$/)
   })
 })

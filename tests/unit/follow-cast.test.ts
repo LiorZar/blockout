@@ -43,7 +43,7 @@ describe('follow cameras keep the other cast out of the lens', () => {
       } as unknown as Scene
       const shot = { id: 'shot', name: 's', duration: 8, fps: FPS, aspect: '16:9', blockingTakeId: 'take', camera: { sensorId: 'super35', rig: 'sticks', rigIntensity: 0, seed: 1, marks: [] } } as unknown as Shot
       const ev0 = new ShotEvaluator(scene, shot)
-      const marks = CAMERA_MOVE_PRESETS.find((p) => p.id === 'follow-behind')!.generate({
+      const marks = CAMERA_MOVE_PRESETS.find((p) => p.id === 'follow')!.generate({
         subjectAt: (t) => {
           const s = ev0.evaluate(Math.min(Math.max(t, 0), 8)).entities.find((e) => e.entityId === 'e0')!
           return { ...s.position, heading: s.heading }

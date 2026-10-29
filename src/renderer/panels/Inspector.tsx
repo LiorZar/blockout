@@ -15,6 +15,7 @@ import { GAITS } from '@engine/gaits'
 import { RIGS } from '@engine/rigs'
 import { MOTION_PRESETS, type MotionPreset } from '@engine/motions'
 import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
+import { SHARED_MOVE_CATEGORIES } from '@engine/camera-move-names'
 import { pickFramingSubjectIds } from '@engine/framing'
 import { ACTION_PRESETS } from '@engine/action-presets'
 import { ShotEvaluator } from '@engine/evaluate'
@@ -1585,11 +1586,12 @@ function CameraPoseSection({ scene, shot }: { scene: Scene; shot: Shot }): JSX.E
  * the aim lock.
  */
 function CameraMovesSection({ scene }: { scene: Scene }): JSX.Element {
-  const [presetId, setPresetId] = useState(CAMERA_MOVE_PRESETS[0]!.id)
+  const [presetId, setPresetId] = useState('dolly-in')
   const selection = useStore((s) => s.selection)
   const preset = CAMERA_MOVE_PRESETS.find((p) => p.id === presetId)
 
-  const categories = [...new Set(CAMERA_MOVE_PRESETS.map((p) => p.category))]
+  // Fork (shared-camera-moves): grouped and named as in the move table shared with Ebook Studio.
+  const categories = SHARED_MOVE_CATEGORIES.filter((c) => CAMERA_MOVE_PRESETS.some((p) => p.category === c.id))
   // Fork: the same pick as SceneManager.applyCameraMove (a selected set kit is skipped while there is cast).
   const hintId = pickFramingSubjectIds(scene.entities, selectedEntityIds(selection), 1)[0]
   const subjectHint = scene.entities.find((e) => e.id === hintId)
@@ -1604,8 +1606,8 @@ function CameraMovesSection({ scene }: { scene: Scene }): JSX.Element {
         </label>
         <select value={presetId} onChange={(e) => setPresetId(e.target.value)}>
           {categories.map((cat) => (
-            <optgroup key={cat} label={cat.toUpperCase()}>
-              {CAMERA_MOVE_PRESETS.filter((p) => p.category === cat).map((p) => (
+            <optgroup key={cat.id} label={cat.name.toUpperCase()}>
+              {CAMERA_MOVE_PRESETS.filter((p) => p.category === cat.id).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>

@@ -1670,6 +1670,21 @@ Changes in this fork (2026):
   `add_camera_mark` and `update_mark` (`null` / `[]` clear them), reported by `list_marks`. Upstream has `via` in its
   data but no way to set it.
 
+- Camera-move names shared with Ebook Studio (shared-camera-moves, docs/plans/2026-10-29-shared-camera-moves.md;
+  `src/engine/camera-moves.json` (new, a byte-identical copy of Ebook's `desktop/src/shared/camera/camera-moves.json`),
+  `src/engine/camera-move-names.ts` (new), `src/engine/camera-moves.ts`, `src/renderer/camera-move.ts`,
+  `src/renderer/viewport/SceneManager.ts`, `src/renderer/control/handler.ts`, `src/renderer/panels/Inspector.tsx`,
+  `mcp/tools.json`, `tests/unit/camera-move-names.test.ts` (new), `tests/unit/camera-moves.test.ts`): the 42 move ids
+  and names of Ebook's table are Blockout's, so Ebook's brief `camera.movement` passes straight into
+  `apply_camera_move`. A preset that is a shared move takes its id and name (`slow-push-in` is `dolly-in`, "Dolly in");
+  the other presets keep theirs and declare `move`, the shared move they are a variant of; categories are the
+  table's. Upstream's ids still work as aliases (`PRESET_ALIASES`, `findPreset`) and lay the same marks.
+  `list_camera_moves` lists every shared move in the table's order, its variants after it, with `move` and
+  `blockout`. Directions follow the shared sentences, in the camera's own left and right: upstream's Orbit 90° Left
+  (counter-clockwise from above, the camera moving to its right) is `arc-right`, Orbit 90° Right is `arc-left`, and
+  Static Pan Across (a pan to the left) is a variant of `pan-left`. Upstream's side tracks rode the wrong flanks (Side-Track
+  Left on the subject's right, moving the camera right); they now ride the flank they name.
+
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
 distribution review, and the ordinary complete third-party compliance review.

@@ -1,4 +1,5 @@
-// Modified in this fork (2026): the presets sized for a vehicle (street-kit); see MODIFICATIONS.md.
+// Modified in this fork (2026): the presets sized for a vehicle (street-kit), and the move ids and names shared with
+// Ebook Studio (shared-camera-moves); see MODIFICATIONS.md.
 /**
  * Camera-move preset library for Blockout — one-click classic camera moves.
  *
@@ -18,10 +19,12 @@
  *   - "Behind" a subject = pos − forward(heading)×d; "in front" = pos + …×d.
  *   - Positions stay ≥0.2m above y=0 unless the subject is airborne.
  *
- * Pure module: imports only heading math from './path' and types from './types'.
+ * Pure module: imports only heading math from './path', types from './types'
+ * and the shared move table (camera-move-names.ts).
  * No DOM/three/Electron, no Math.random / Date.now.
  */
 
+import { SHARED_MOVES, sharedMoveSentence, type BlockoutSupport } from './camera-move-names'
 import { headingOf } from './path'
 
 export interface SubjectSample {
@@ -59,19 +62,28 @@ export interface CameraMarkSpec {
   hold: number
 }
 
+/** Fork (shared-camera-moves): the categories of the camera-move table shared with Ebook Studio (camera-move-names.ts). */
 export type CameraMoveCategory =
-  | 'push & pull'
-  | 'orbit & arc'
-  | 'crane & boom'
+  | 'tripod'
+  | 'dolly'
+  | 'slider'
+  | 'orbit'
+  | 'vertical'
+  | 'optical'
+  | 'focus'
+  | 'obstacle'
+  | 'scale'
   | 'aerial'
-  | 'follow'
-  | 'pan & scan'
   | 'stylized'
+  | 'tracking'
 
 export interface CameraMovePreset {
+  /** A shared move's id when the preset is that move (`dolly-in`); its own id when it is a variant of one (`creep-in-low`). */
   id: string
   name: string
   category: CameraMoveCategory
+  /** Fork (shared-camera-moves): the shared move (camera-moves.json) this preset is, or is a variant of. */
+  move: string
   /** One line, filmmaker language: what the move is and when to use it. */
   description: string
   /**
@@ -194,9 +206,10 @@ function isAirborne(ctx: CameraMoveContext): boolean {
 // ---------------------------------------------------------------------------
 
 const slowPushIn: CameraMovePreset = {
-  id: 'slow-push-in',
-  name: 'Slow Push-In',
-  category: 'push & pull',
+  id: 'dolly-in',
+  name: 'Dolly in',
+  category: 'dolly',
+  move: 'dolly-in',
   description: 'A gentle dolly drift from where the camera sits to about 2m off the subject — builds quiet intensity.',
   track: true,
   generate(ctx) {
@@ -231,8 +244,9 @@ const slowPushIn: CameraMovePreset = {
 
 const crashIn: CameraMovePreset = {
   id: 'crash-in',
-  name: 'Crash-In',
-  category: 'push & pull',
+  name: 'Crash in',
+  category: 'dolly',
+  move: 'crash-in',
   description: 'A fast push where most of the travel happens in the last third — a sudden lunge into the subject.',
   track: true,
   generate(ctx) {
@@ -268,7 +282,8 @@ const crashIn: CameraMovePreset = {
 const pullBackReveal: CameraMovePreset = {
   id: 'pull-back-reveal',
   name: 'Pull-Back Reveal',
-  category: 'push & pull',
+  category: 'dolly',
+  move: 'dolly-out',
   description: 'Recede from the subject while rising slightly to reveal the surrounding context — a classic opener or closer.',
   track: true,
   generate(ctx) {
@@ -303,7 +318,8 @@ const pullBackReveal: CameraMovePreset = {
 const creepInLow: CameraMovePreset = {
   id: 'creep-in-low',
   name: 'Creep-In Low',
-  category: 'push & pull',
+  category: 'dolly',
+  move: 'dolly-in',
   description: 'A slow push at knee height that makes the subject loom — menacing, low-angle approach.',
   track: true,
   generate(ctx) {
@@ -381,22 +397,24 @@ function orbit(
   )
 }
 
-const orbit90Left: CameraMovePreset = {
-  id: 'orbit-90-left',
-  name: 'Orbit 90° Left',
-  category: 'orbit & arc',
-  description: 'A quarter circle counter-clockwise around the subject at the current radius — reveals a new profile.',
+const arcRight: CameraMovePreset = {
+  id: 'arc-right',
+  name: 'Arc right',
+  category: 'orbit',
+  move: 'arc-right',
+  description: 'A quarter circle counter-clockwise (seen from above) around the subject at the current radius, the camera moving to its right — reveals a new profile.',
   track: true,
   generate(ctx) {
     return orbit(ctx, Math.PI / 2, 6)
   }
 }
 
-const orbit90Right: CameraMovePreset = {
-  id: 'orbit-90-right',
-  name: 'Orbit 90° Right',
-  category: 'orbit & arc',
-  description: 'A quarter circle clockwise around the subject at the current radius — reveals the other profile.',
+const arcLeft: CameraMovePreset = {
+  id: 'arc-left',
+  name: 'Arc left',
+  category: 'orbit',
+  move: 'arc-left',
+  description: 'A quarter circle clockwise (seen from above) around the subject at the current radius, the camera moving to its left — reveals the other profile.',
   track: true,
   generate(ctx) {
     return orbit(ctx, -Math.PI / 2, 6)
@@ -404,9 +422,10 @@ const orbit90Right: CameraMovePreset = {
 }
 
 const orbit180: CameraMovePreset = {
-  id: 'orbit-180',
-  name: 'Orbit 180°',
-  category: 'orbit & arc',
+  id: 'orbit',
+  name: 'Orbit 180',
+  category: 'orbit',
+  move: 'orbit',
   description: 'A half circle around the subject, ending on the far side — a sweeping change of vantage.',
   track: true,
   generate(ctx) {
@@ -416,8 +435,9 @@ const orbit180: CameraMovePreset = {
 
 const orbit360: CameraMovePreset = {
   id: 'orbit-360',
-  name: 'Orbit 360°',
-  category: 'orbit & arc',
+  name: 'Orbit 360',
+  category: 'orbit',
+  move: 'orbit-360',
   description: 'A full circle around the subject, returning to the start azimuth — the hero-reveal spin.',
   track: true,
   generate(ctx) {
@@ -428,7 +448,8 @@ const orbit360: CameraMovePreset = {
 const arcAndPush: CameraMovePreset = {
   id: 'arc-and-push',
   name: 'Arc & Push',
-  category: 'orbit & arc',
+  category: 'orbit',
+  move: 'arc-right',
   description: 'A quarter arc around the subject while the radius shrinks ~40% — orbits in and tightens at once.',
   track: true,
   generate(ctx) {
@@ -441,9 +462,10 @@ const arcAndPush: CameraMovePreset = {
 // ---------------------------------------------------------------------------
 
 const craneUpReveal: CameraMovePreset = {
-  id: 'crane-up-reveal',
-  name: 'Crane-Up Reveal',
-  category: 'crane & boom',
+  id: 'crane-up',
+  name: 'Crane up',
+  category: 'vertical',
+  move: 'crane-up',
   description: 'Start at eye level, boom straight up to ~8m looking down as the world opens beneath the subject.',
   track: true,
   generate(ctx) {
@@ -474,9 +496,10 @@ const craneUpReveal: CameraMovePreset = {
 }
 
 const craneDownIntro: CameraMovePreset = {
-  id: 'crane-down-intro',
-  name: 'Crane-Down Intro',
-  category: 'crane & boom',
+  id: 'crane-down',
+  name: 'Crane down',
+  category: 'vertical',
+  move: 'crane-down',
   description: 'Descend from ~8m looking down to the subject at eye level — a graceful drop into the scene.',
   track: true,
   generate(ctx) {
@@ -508,8 +531,9 @@ const craneDownIntro: CameraMovePreset = {
 
 const pedestalUp: CameraMovePreset = {
   id: 'pedestal-up',
-  name: 'Pedestal Up',
-  category: 'crane & boom',
+  name: 'Pedestal up',
+  category: 'vertical',
+  move: 'pedestal-up',
   description: 'A straight vertical rise of ~3m holding aim on the subject — reframes head-to-toe without dolly.',
   track: true,
   generate(ctx) {
@@ -542,7 +566,8 @@ const pedestalUp: CameraMovePreset = {
 const boomOver: CameraMovePreset = {
   id: 'boom-over',
   name: 'Boom Over',
-  category: 'crane & boom',
+  category: 'vertical',
+  move: 'crane-up',
   description: 'Rise and pass directly overhead to the far side of the subject — a dramatic vault across.',
   track: true,
   generate(ctx) {
@@ -584,9 +609,10 @@ const boomOver: CameraMovePreset = {
 // ---------------------------------------------------------------------------
 
 const droneRisePullback: CameraMovePreset = {
-  id: 'drone-rise-pullback',
-  name: 'Drone Rise & Pull-Back',
+  id: 'drone-reveal',
+  name: 'Drone reveal',
   category: 'aerial',
+  move: 'drone-reveal',
   description: 'Climb to ~15m while receding ~20m — the classic drone ending that lifts away from the subject.',
   track: true,
   generate(ctx) {
@@ -619,9 +645,10 @@ const droneRisePullback: CameraMovePreset = {
 }
 
 const flyover: CameraMovePreset = {
-  id: 'flyover',
-  name: 'Flyover',
+  id: 'drone-flyover',
+  name: 'Drone flyover',
   category: 'aerial',
+  move: 'drone-flyover',
   description: 'Pass directly over the subject from front to behind at ~12m — a sweeping aerial transit.',
   track: true,
   generate(ctx) {
@@ -653,9 +680,10 @@ const flyover: CameraMovePreset = {
 }
 
 const droneOrbitHigh: CameraMovePreset = {
-  id: 'drone-orbit-high',
-  name: 'Drone Orbit High',
+  id: 'drone-orbit',
+  name: 'Drone orbit',
   category: 'aerial',
+  move: 'drone-orbit',
   description: 'A wide 270° orbit at ~10m altitude looking down — a soaring survey around the subject.',
   track: true,
   generate(ctx) {
@@ -688,9 +716,10 @@ const droneOrbitHigh: CameraMovePreset = {
 }
 
 const topDownDescend: CameraMovePreset = {
-  id: 'top-down-descend',
-  name: 'Top-Down Descend',
+  id: 'top-down',
+  name: 'Top-down',
   category: 'aerial',
+  move: 'top-down',
   description: 'A straight vertical drop from ~20m to ~6m looking straight down — a god’s-eye descent.',
   track: true,
   generate(ctx) {
@@ -731,9 +760,10 @@ function floorClampSpec(pos: P3, airborne: boolean): P3 {
 // ---------------------------------------------------------------------------
 
 const followBehind: CameraMovePreset = {
-  id: 'follow-behind',
-  name: 'Follow Behind',
-  category: 'follow',
+  id: 'follow',
+  name: 'Following shot',
+  category: 'tracking',
+  move: 'follow',
   description: 'Ride ~4m behind the subject at ~1.8m, glued to its heading — the drone-chasing-a-plane shot.',
   track: true,
   generate(ctx) {
@@ -760,9 +790,10 @@ const followBehind: CameraMovePreset = {
 }
 
 const leadTheSubject: CameraMovePreset = {
-  id: 'lead-the-subject',
-  name: 'Lead the Subject',
-  category: 'follow',
+  id: 'lead',
+  name: 'Leading shot',
+  category: 'tracking',
+  move: 'lead',
   description: 'Travel ~4m in front of the subject aiming back at it — leads the move and reads the face.',
   track: true,
   generate(ctx) {
@@ -797,8 +828,9 @@ function sideTrack(ctx: CameraMoveContext, sign: number): CameraMarkSpec[] {
   return build(
     ts.map((t) => {
       const s = ctx.subjectAt(t)
-      // Right of heading = forward(heading − π/2); left = +π/2.
-      const side = forward(s.heading - (sign * Math.PI) / 2)
+      // Right of heading = forward(heading − π/2); left = +π/2. Fork (shared-camera-moves): the sign was
+      // flipped, which put side-track-left on the right flank, moving the camera right.
+      const side = forward(s.heading + (sign * Math.PI) / 2)
       const target = aimPoint(s, ctx.subjectHeight)
       return {
         t,
@@ -813,8 +845,9 @@ function sideTrack(ctx: CameraMoveContext, sign: number): CameraMarkSpec[] {
 
 const sideTrackLeft: CameraMovePreset = {
   id: 'side-track-left',
-  name: 'Side-Track Left',
-  category: 'follow',
+  name: 'Side track left',
+  category: 'tracking',
+  move: 'side-track-left',
   description: 'Travel alongside the subject ~4m off its left flank — a lateral tracking shot.',
   track: true,
   generate(ctx) {
@@ -824,8 +857,9 @@ const sideTrackLeft: CameraMovePreset = {
 
 const sideTrackRight: CameraMovePreset = {
   id: 'side-track-right',
-  name: 'Side-Track Right',
-  category: 'follow',
+  name: 'Side track right',
+  category: 'tracking',
+  move: 'side-track-right',
   description: 'Travel alongside the subject ~4m off its right flank — a lateral tracking shot.',
   track: true,
   generate(ctx) {
@@ -840,8 +874,9 @@ const sideTrackRight: CameraMovePreset = {
 const staticPanAcross: CameraMovePreset = {
   id: 'static-pan-across',
   name: 'Static Pan Across',
-  category: 'pan & scan',
-  description: 'Camera holds position and pans from 25° left of the subject to 25° right — surveys a line of action.',
+  category: 'tripod',
+  move: 'pan-left',
+  description: 'Camera holds position and pans left, from 25° right of the subject to 25° left — surveys a line of action.',
   track: false,
   generate(ctx) {
     const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
@@ -873,8 +908,9 @@ const staticPanAcross: CameraMovePreset = {
 
 const whipPan: CameraMovePreset = {
   id: 'whip-pan',
-  name: 'Whip Pan',
-  category: 'pan & scan',
+  name: 'Whip pan',
+  category: 'stylized',
+  move: 'whip-pan',
   description: 'Hold on the subject, then a violent 90° pan in ~0.4s mid-shot, then settle — a snappy scene cut.',
   track: false,
   generate(ctx) {
@@ -920,9 +956,10 @@ const whipPan: CameraMovePreset = {
 }
 
 const slowTiltReveal: CameraMovePreset = {
-  id: 'slow-tilt-reveal',
-  name: 'Slow Tilt Reveal',
-  category: 'pan & scan',
+  id: 'tilt-up',
+  name: 'Tilt up',
+  category: 'tripod',
+  move: 'tilt-up',
   description: 'Start tilted down at the ground before the subject, tilt up to meet their eyes — a reveal from the feet.',
   track: false,
   generate(ctx) {
@@ -965,9 +1002,10 @@ function clampFocal(fl: number, lo = 12, hi = 135): number {
 }
 
 const vertigoDollyZoom: CameraMovePreset = {
-  id: 'vertigo-dolly-zoom',
-  name: 'Vertigo Dolly-Zoom',
-  category: 'stylized',
+  id: 'dolly-zoom',
+  name: 'Dolly zoom',
+  category: 'dolly',
+  move: 'dolly-zoom',
   description: 'Push in while the lens widens so the subject stays the same size — the disorienting Vertigo effect.',
   track: true,
   generate(ctx) {
@@ -1006,6 +1044,7 @@ const dutchOrbit: CameraMovePreset = {
   id: 'dutch-orbit',
   name: 'Dutch Orbit',
   category: 'stylized',
+  move: 'dutch-roll',
   description: 'A 90° orbit with the horizon rolling to a ±0.3rad dutch tilt — unsettling, stylized motion.',
   track: true,
   generate(ctx) {
@@ -1014,9 +1053,10 @@ const dutchOrbit: CameraMovePreset = {
 }
 
 const snapZoomPunch: CameraMovePreset = {
-  id: 'snap-zoom-punch',
-  name: 'Snap-Zoom Punch',
-  category: 'stylized',
+  id: 'snap-zoom',
+  name: 'Snap zoom',
+  category: 'optical',
+  move: 'snap-zoom',
   description: 'Static frame; the lens snaps 35→85mm over three tight marks mid-shot — a punch-in zoom accent.',
   track: false,
   generate(ctx) {
@@ -1066,7 +1106,8 @@ const snapZoomPunch: CameraMovePreset = {
 const leadFollowFront: CameraMovePreset = {
   id: 'lead-follow-front',
   name: 'Lead-Follow Front',
-  category: 'follow',
+  category: 'tracking',
+  move: 'lead',
   description: 'Travel ~4m directly in front of the subject facing back at it — a front-lead tracking shot that reads the face while leading the move.',
   track: true,
   generate(ctx) {
@@ -1095,7 +1136,8 @@ const leadFollowFront: CameraMovePreset = {
 const lowLeadTiltUp: CameraMovePreset = {
   id: 'low-lead-tilt-up',
   name: 'Low Lead Tilt-Up',
-  category: 'follow',
+  category: 'tracking',
+  move: 'lead',
   description: 'Lead the subject low to the ground (~0.4m) tilting up to meet it as it approaches — a heroic low-angle lead.',
   track: true,
   generate(ctx) {
@@ -1123,7 +1165,8 @@ const lowLeadTiltUp: CameraMovePreset = {
 const sideDollyPast: CameraMovePreset = {
   id: 'side-dolly-past',
   name: 'Side-Dolly Past',
-  category: 'follow',
+  category: 'tracking',
+  move: 'side-track-right',
   description: 'A lateral dolly ~4m off the subject’s flank that overtakes it — starts slightly behind, ends slightly ahead, aiming at it throughout.',
   track: true,
   generate(ctx) {
@@ -1198,7 +1241,8 @@ function orbitAt(
 const orbit45Low: CameraMovePreset = {
   id: 'orbit-45-low',
   name: 'Orbit 45° Low',
-  category: 'orbit & arc',
+  category: 'orbit',
+  move: 'arc-right',
   description: 'A 45° arc around the subject at a low camera height (~0.5m) — a ground-level profile change looking up.',
   track: true,
   generate(ctx) {
@@ -1209,7 +1253,8 @@ const orbit45Low: CameraMovePreset = {
 const orbit45High: CameraMovePreset = {
   id: 'orbit-45-high',
   name: 'Orbit 45° High',
-  category: 'orbit & arc',
+  category: 'orbit',
+  move: 'arc-right',
   description: 'A 45° arc around the subject raised ~4m above the start height, looking down — the high companion to Orbit 45° Low.',
   track: true,
   generate(ctx) {
@@ -1261,7 +1306,8 @@ function spiral(
 const spiralInDescend: CameraMovePreset = {
   id: 'spiral-in-descend',
   name: 'Spiral-In Descend',
-  category: 'crane & boom',
+  category: 'vertical',
+  move: 'crane-down',
   description: 'Orbit ~180° while the radius tightens ~45% and the camera descends toward the subject’s eyeline — a closing spiral onto the face.',
   track: true,
   generate(ctx) {
@@ -1273,7 +1319,8 @@ const spiralInDescend: CameraMovePreset = {
 const spiralOutAscend: CameraMovePreset = {
   id: 'spiral-out-ascend',
   name: 'Spiral-Out Ascend',
-  category: 'crane & boom',
+  category: 'vertical',
+  move: 'crane-up',
   description: 'Orbit ~180° while the radius blooms ~1.8× and the camera rises ~4m — an opening spiral that reveals the surroundings.',
   track: true,
   generate(ctx) {
@@ -1284,7 +1331,8 @@ const spiralOutAscend: CameraMovePreset = {
 const pedestalUpSlow: CameraMovePreset = {
   id: 'pedestal-up-slow',
   name: 'Pedestal Up (Slow)',
-  category: 'crane & boom',
+  category: 'vertical',
+  move: 'pedestal-up',
   description: 'A gentle ~2m vertical rise holding aim on the subject — a softer, shorter boom than the standard pedestal.',
   track: true,
   generate(ctx) {
@@ -1320,6 +1368,7 @@ const overheadTrackFollow: CameraMovePreset = {
   id: 'overhead-track-follow',
   name: 'Overhead Track-Follow',
   category: 'aerial',
+  move: 'top-down',
   description: 'Ride ~8m directly above the subject looking straight down and moving with it — a top-down following shot.',
   track: true,
   generate(ctx) {
@@ -1354,6 +1403,7 @@ const droneStrafeReveal: CameraMovePreset = {
   id: 'drone-strafe-reveal',
   name: 'Drone Strafe Reveal',
   category: 'aerial',
+  move: 'drone-reveal',
   description: 'At ~10m altitude, strafe laterally ~20m across the subject’s flank while aiming at it — a sideways drone reveal.',
   track: true,
   generate(ctx) {
@@ -1386,9 +1436,10 @@ const droneStrafeReveal: CameraMovePreset = {
 // --- stylized -------------------------------------------------------------
 
 const crashZoomOut: CameraMovePreset = {
-  id: 'crash-zoom-out',
-  name: 'Crash-Zoom Out',
-  category: 'stylized',
+  id: 'snap-zoom-out',
+  name: 'Snap zoom out',
+  category: 'optical',
+  move: 'snap-zoom-out',
   description: 'Static frame; the lens snaps 85→35mm over three tight marks mid-shot — a jarring pull-back zoom accent.',
   track: false,
   generate(ctx) {
@@ -1430,9 +1481,10 @@ const crashZoomOut: CameraMovePreset = {
 }
 
 const pushInDutchRoll: CameraMovePreset = {
-  id: 'push-in-dutch-roll',
-  name: 'Push-In Dutch Roll',
+  id: 'dutch-roll',
+  name: 'Dutch roll',
   category: 'stylized',
+  move: 'dutch-roll',
   description: 'A slow push toward the subject while the horizon rolls into a ±0.3rad dutch tilt — mounting unease.',
   track: true,
   generate(ctx) {
@@ -1469,51 +1521,127 @@ const pushInDutchRoll: CameraMovePreset = {
 // Registry
 // ---------------------------------------------------------------------------
 
+/**
+ * Fork (shared-camera-moves): in the shared table's order, each shared move
+ * first and its variants after it, so a shared id's first preset is the move
+ * itself.
+ */
 export const CAMERA_MOVE_PRESETS: CameraMovePreset[] = [
-  // push & pull
+  // tripod
+  staticPanAcross,
+  slowTiltReveal,
+  // dolly
   slowPushIn,
-  crashIn,
-  pullBackReveal,
   creepInLow,
-  // orbit & arc
-  orbit90Left,
-  orbit90Right,
+  pullBackReveal,
+  crashIn,
+  vertigoDollyZoom,
+  // orbit
   orbit180,
   orbit360,
+  arcLeft,
+  arcRight,
   arcAndPush,
   orbit45Low,
   orbit45High,
-  // crane & boom
-  craneUpReveal,
-  craneDownIntro,
+  // vertical
   pedestalUp,
-  boomOver,
-  spiralInDescend,
-  spiralOutAscend,
   pedestalUpSlow,
+  craneUpReveal,
+  boomOver,
+  spiralOutAscend,
+  craneDownIntro,
+  spiralInDescend,
+  // optical
+  snapZoomPunch,
+  crashZoomOut,
   // aerial
-  droneRisePullback,
   flyover,
+  droneRisePullback,
+  droneStrafeReveal,
   droneOrbitHigh,
   topDownDescend,
   overheadTrackFollow,
-  droneStrafeReveal,
-  // follow
-  followBehind,
+  // stylized
+  whipPan,
+  pushInDutchRoll,
+  dutchOrbit,
+  // tracking
   leadTheSubject,
-  sideTrackLeft,
-  sideTrackRight,
   leadFollowFront,
   lowLeadTiltUp,
-  sideDollyPast,
-  // pan & scan
-  staticPanAcross,
-  whipPan,
-  slowTiltReveal,
-  // stylized
-  vertigoDollyZoom,
-  dutchOrbit,
-  snapZoomPunch,
-  crashZoomOut,
-  pushInDutchRoll
+  followBehind,
+  sideTrackLeft,
+  sideTrackRight,
+  sideDollyPast
 ]
+
+/**
+ * Fork (shared-camera-moves): the preset ids Blockout used before it shared
+ * Ebook Studio's move names, kept so older MCP clients, scripts and Clara
+ * still lay the same marks. Each resolves to the shared move it became.
+ */
+export const PRESET_ALIASES: Readonly<Record<string, string>> = {
+  'slow-push-in': 'dolly-in',
+  'vertigo-dolly-zoom': 'dolly-zoom',
+  'orbit-180': 'orbit',
+  'orbit-90-left': 'arc-right',
+  'orbit-90-right': 'arc-left',
+  'crane-up-reveal': 'crane-up',
+  'crane-down-intro': 'crane-down',
+  'snap-zoom-punch': 'snap-zoom',
+  'crash-zoom-out': 'snap-zoom-out',
+  flyover: 'drone-flyover',
+  'drone-rise-pullback': 'drone-reveal',
+  'drone-orbit-high': 'drone-orbit',
+  'top-down-descend': 'top-down',
+  'push-in-dutch-roll': 'dutch-roll',
+  'lead-the-subject': 'lead',
+  'follow-behind': 'follow',
+  'slow-tilt-reveal': 'tilt-up'
+}
+
+/** Fork (shared-camera-moves): the preset for a preset id, an old id (PRESET_ALIASES) or a shared move id (its first preset). */
+export function findPreset(id: string): CameraMovePreset | undefined {
+  const key = Object.hasOwn(PRESET_ALIASES, id) ? PRESET_ALIASES[id]! : id
+  return CAMERA_MOVE_PRESETS.find((p) => p.id === key) ?? CAMERA_MOVE_PRESETS.find((p) => p.move === key)
+}
+
+/** Fork (shared-camera-moves): a row of list_camera_moves and of the Inspector's move menu. */
+export interface CameraMoveListing {
+  id: string
+  name: string
+  category: CameraMoveCategory
+  move: string
+  blockout: BlockoutSupport
+  description: string
+  track: boolean
+}
+
+/**
+ * Fork (shared-camera-moves): every shared move in the table's order, as its
+ * own preset when it has one (else its table row, with its sentence as the
+ * description), each followed by the presets that are variants of it.
+ */
+export function cameraMoveListing(): CameraMoveListing[] {
+  const out: CameraMoveListing[] = []
+  const row = (p: CameraMovePreset): CameraMoveListing => ({
+    id: p.id,
+    name: p.name,
+    category: p.category,
+    move: p.move,
+    blockout: 'preset',
+    description: p.description,
+    track: p.track
+  })
+  for (const m of SHARED_MOVES) {
+    const own = CAMERA_MOVE_PRESETS.find((p) => p.id === m.id)
+    out.push(
+      own
+        ? row(own)
+        : { id: m.id, name: m.name, category: m.category as CameraMoveCategory, move: m.id, blockout: m.blockout, description: sharedMoveSentence(m.id), track: false }
+    )
+    for (const p of CAMERA_MOVE_PRESETS) if (p.move === m.id && p !== own) out.push(row(p))
+  }
+  return out
+}

@@ -153,8 +153,8 @@ when Blockout's tools aren't available (for example, port 17480 is taken).
 | `spawn_choreography` | `kind, performers, durationS?, style?, bpm?, formation?, canon?, mirror?, formationChange?, ending?, seed?, x?, z?, headingDeg?, bodies?` | Stage a full routine — a dance number, a paired / one-vs-many fight, or a foot chase — spawning fresh performers *and* their per-beat blocking. A fight of exactly two is solved by the Fight Director (blows land; returns `fightId`); for a scripted fight use `stage_fight`. `bodies: ["person.mocapMale", "person.mocapFemale"]` casts the men and the women as those bodies (the mocap bots play their motions as clips; a fight of two hands them to the Fight Director). |
 | `choreograph_entities` | `entityIds, kind, style?, durationS?, bpm?, formation?, canon?, mirror?, formationChange?, ending?, seed?` | Retarget existing people into a routine: keeps their assets/labels, replaces their timeline. Centers on the group. A fight of exactly two is solved by the Fight Director (blows land; returns `fightId`); for a scripted fight use `stage_fight`. |
 | `list_motion_presets` | `category?` | The single-performer motion library (fight / dance / gesture / everyday / sport / stunt) as `{ id, name, category, duration }`. |
-| `list_camera_moves` | — | The 27 classic camera-move presets (orbits, cranes, drone follows, vertigo dolly-zoom, whip pan…). Call before `apply_camera_move`. |
-| `apply_camera_move` | `presetId, entityId?` | Generate a full set of camera marks for a preset, built around a subject and riding along if it moves. Track moves enable aim-lock. Replaces camera marks. |
+| `list_camera_moves` | — | The camera moves: the 42 move ids and names shared with Ebook Studio, each followed by Blockout's variants of it (orbits, cranes, drone follows, dolly zoom, whip pan…). Call before `apply_camera_move`. |
+| `apply_camera_move` | `presetId, entityId?` | Generate a full set of camera marks for a move (a shared id such as `dolly-in`, a variant, or an old id such as `slow-push-in`), built around a subject and riding along if it moves. Track moves enable aim-lock. Replaces camera marks. |
 | `set_track_subject` | `entityId?` | Aim-lock the shot camera onto an entity (omit `entityId` to turn tracking off). |
 | `snap_to_ground` | `entityId` | Rest an entity on the ground plane. |
 | `set_time` | `t` | Scrub the playhead to `t` seconds. |
@@ -217,7 +217,7 @@ spawn_sequence { "type": "carChase", "count": 5, "style": "weaving", "z": -10 }
 
 // 4. Give the shot camera a move built around the lead car.
 list_camera_moves {}                         // find a preset id
-apply_camera_move { "presetId": "follow-behind" }
+apply_camera_move { "presetId": "follow" }
 
 // 5. Scrub to mid-shot and look at the result.
 set_time { "t": 2.5 }

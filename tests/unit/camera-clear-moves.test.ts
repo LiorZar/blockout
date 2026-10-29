@@ -123,7 +123,7 @@ describe('apply_framing 2S keeps a clear view', () => {
 })
 
 describe('people-follow camera moves keep the runner in view', () => {
-  for (const presetId of ['follow-behind', 'lead-the-subject']) {
+  for (const presetId of ['follow', 'lead']) {
     it(`a downtown chase, ${presetId}: never inside a wall or body, the runner seen ≥ 90 % of the time`, () => {
       load('env.downtown')
       st().spawnChoreography({ kind: 'chase', performers: 3, durationS: 5, seed: 7, ending: 'caught' }, { x: 0, z: 8, heading: 0 })
@@ -148,7 +148,7 @@ describe('people-follow camera moves keep the runner in view', () => {
       sc.entities.push(walker)
       sc.blocking[0]!.tracks.push({ entityId: walker.id, marks: [createActorMark({ x: 0, y: 0, z: 0 }, 0, 'walk'), createActorMark({ x: 0, y: 0, z: -6 }, 5, 'walk')] })
     })
-    const specs = generate('follow-behind', walker.id)
+    const specs = generate('follow', walker.id)
     const r = clearFollowMarks(scene(), shot(), specs, walker.id)
     expect(r.marks).toEqual(specs)
     expect(r.note).toBeUndefined()

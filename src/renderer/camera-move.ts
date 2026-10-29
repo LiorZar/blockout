@@ -13,7 +13,7 @@
  */
 
 import { entityHeight } from '@engine/assets'
-import { CAMERA_MOVE_PRESETS, type CameraMarkSpec, type CameraMoveCategory } from '@engine/camera-moves'
+import { findPreset, type CameraMarkSpec, type CameraMoveCategory } from '@engine/camera-moves'
 import { ShotEvaluator } from '@engine/evaluate'
 import { newId } from '@engine/ids'
 import { vehicleBox } from '@engine/vehicles'
@@ -31,11 +31,11 @@ export interface LaidMove {
 }
 
 /** The move a staged car chase lays on its lead car: a camera car leading it, the pursuers behind it in frame. */
-export const CHASE_CAMERA_MOVE = 'lead-the-subject'
+export const CHASE_CAMERA_MOVE = 'lead'
 
-/** The camera marks preset `presetId` lays round `subjectId` in this shot; null for an unknown preset or subject. */
+/** The camera marks preset `presetId` (a preset, old or shared move id: findPreset) lays round `subjectId` in this shot; null for an unknown preset or subject. */
 export function layCameraMove(scene: Scene, shot: Shot, presetId: string, subjectId: string): LaidMove | null {
-  const preset = CAMERA_MOVE_PRESETS.find((p) => p.id === presetId)
+  const preset = findPreset(presetId)
   const entity = scene.entities.find((e) => e.id === subjectId)
   if (!preset || !entity) return null
   const evaluator = new ShotEvaluator(scene, shot)
@@ -56,7 +56,7 @@ export function layCameraMove(scene: Scene, shot: Shot, presetId: string, subjec
     ...(box ? { subjectBox: { length: box.front + box.back, width: 2 * box.hw, height: box.h } } : {})
   })
   const cleared =
-    preset.category === 'follow' && entity.assetId.startsWith('person.')
+    preset.category === 'tracking' && entity.assetId.startsWith('person.')
       ? clearFollowMarks(scene, shot, specs, subjectId)
       : clearMoveMarks(scene, shot, specs, subjectId, preset.track, preset.name)
   const rig = rideRig(preset.category, entity.assetId, shot.camera.rig, subjectAt, duration)
@@ -75,7 +75,7 @@ export function layCameraMove(scene: Scene, shot: Shot, presetId: string, subjec
  * default Sticks: a rig set by hand stays (and its speed warning with it).
  */
 function rideRig(category: CameraMoveCategory, assetId: string, rig: RigId, at: (t: number) => V3, duration: number): RigId | undefined {
-  if (rig !== 'sticks' || !assetId.startsWith('vehicle.') || (category !== 'follow' && category !== 'aerial')) return undefined
+  if (rig !== 'sticks' || !assetId.startsWith('vehicle.') || (category !== 'tracking' && category !== 'aerial')) return undefined
   const start = at(0)
   const moves = Array.from({ length: 8 }, (_, k) => at((duration * (k + 1)) / 8)).some((p) => Math.hypot(p.x - start.x, p.y - start.y, p.z - start.z) > 1)
   if (!moves) return undefined
