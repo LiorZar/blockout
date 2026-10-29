@@ -33,13 +33,17 @@ describe('camera-move presets — universal contract', () => {
     describe(preset.id, () => {
       const marks = preset.generate(makeCtx())
 
-      it('returns ≥5 marks', () => {
-        expect(marks.length).toBeGreaterThanOrEqual(5)
+      // Fork (shared-camera-moves): Static is one mark, held for the whole shot.
+      const held = preset.id === 'static'
+
+      it(held ? 'returns one mark' : 'returns ≥5 marks', () => {
+        if (held) expect(marks.length).toBe(1)
+        else expect(marks.length).toBeGreaterThanOrEqual(5)
       })
 
-      it('first mark at time 0, last at duration', () => {
+      it(held ? 'its mark at time 0' : 'first mark at time 0, last at duration', () => {
         expect(marks[0]!.time).toBeCloseTo(0, 6)
-        expect(marks[marks.length - 1]!.time).toBeCloseTo(DUR, 6)
+        if (!held) expect(marks[marks.length - 1]!.time).toBeCloseTo(DUR, 6)
       })
 
       it('times strictly increasing', () => {
@@ -100,8 +104,8 @@ describe('camera-move presets — targeted behavior', () => {
     expect(CAMERA_MOVE_PRESETS.length).toBeGreaterThanOrEqual(22)
   })
 
-  it('has 39 presets', () => {
-    expect(CAMERA_MOVE_PRESETS.length).toBe(39)
+  it('has 51 presets', () => {
+    expect(CAMERA_MOVE_PRESETS.length).toBe(51)
   })
 
   it('all preset ids are unique', () => {
@@ -265,9 +269,6 @@ describe('camera-move presets — shared move ids', () => {
     'push-in-dutch-roll': '326a63c5'
   }
 
-  // The shared moves Task 3 adds presets for.
-  const TASK3 = new Set(['static', 'pan-left', 'pan-right', 'tilt-down', 'dolly-out', 'truck-left', 'truck-right', 'pedestal-down', 'zoom-in', 'zoom-out', 'fpv-dive', 'pov-walk'])
-
   /** The camera's sideways step over its first leg, in the first mark's frame (+ = to its right, as prompt-scene words it). */
   function lateral(marks: CameraMarkSpec[]): number {
     const a = marks[0]!
@@ -285,13 +286,9 @@ describe('camera-move presets — shared move ids', () => {
     }
   })
 
-  for (const m of SHARED_MOVES.filter((x) => x.blockout === 'preset')) {
-    if (TASK3.has(m.id)) it.todo(`${m.id} resolves to its own preset`)
-    else
-      it(`${m.id} resolves to its own preset`, () => {
-        expect(findPreset(m.id)?.id).toBe(m.id)
-      })
-  }
+  it('every shared move Blockout stages as a path resolves to its own preset', () => {
+    for (const m of SHARED_MOVES.filter((x) => x.blockout === 'preset')) expect(findPreset(m.id)?.id, m.id).toBe(m.id)
+  })
 
   it('old ids resolve through PRESET_ALIASES to the shared move they became', () => {
     expect(findPreset('slow-push-in')?.id).toBe('dolly-in')
@@ -333,5 +330,159 @@ describe('camera-move presets — shared move ids', () => {
       expect(r.name, r.id).toBe(r.id === r.move ? sharedMove(r.id)!.name : findPreset(r.id)!.name)
       if (r.id !== r.move) expect(list.findIndex((x) => x.id === r.move), r.id).toBeLessThan(list.indexOf(r))
     }
+  })
+})
+
+// Fork (shared-camera-moves T3): presets for the shared moves upstream had none for, each to the plan's table.
+describe('camera-move presets — the shared moves added', () => {
+  const H = 1.75
+  /** A subject standing at the origin facing −Z, the camera 6 m in front and 2 m to the side. */
+  function stillCtx(camY = 1.6): CameraMoveContext {
+    return {
+      subjectAt: (): SubjectSample => ({ x: 0, y: 0, z: 0, heading: 0 }),
+      subjectHeight: H,
+      camera: { x: 2, y: camY, z: 6, pan: 0, tilt: 0, focalLength: 35 },
+      duration: DUR
+    }
+  }
+  const ADDED = ['static', 'pan-left', 'pan-right', 'tilt-down', 'dolly-out', 'truck-left', 'truck-right', 'pedestal-down', 'zoom-in', 'zoom-out', 'fpv-dive', 'pov-walk']
+  const gen = (id: string, ctx: CameraMoveContext = stillCtx()): CameraMarkSpec[] => findPreset(id)!.generate(ctx)
+  const first = (m: CameraMarkSpec[]): CameraMarkSpec => m[0]!
+  const last = (m: CameraMarkSpec[]): CameraMarkSpec => m[m.length - 1]!
+  const eyes = { x: 0, y: H * 0.8, z: 0 }
+  const panTo = (c: { x: number; z: number }, t: { x: number; z: number }): number => Math.atan2(-(t.x - c.x), -(t.z - c.z))
+  const tiltTo = (c: { x: number; y: number; z: number }, t: { x: number; y: number; z: number }): number => Math.atan2(t.y - c.y, Math.hypot(t.x - c.x, t.z - c.z))
+  const close = (a: number, b: number): void => expect(a).toBeCloseTo(b, 6)
+  const at = (m: CameraMarkSpec, p: { x: number; y: number; z: number }): void => {
+    close(m.position.x, p.x)
+    close(m.position.y, p.y)
+    close(m.position.z, p.z)
+  }
+
+  it('are registered under their shared ids, in the table order of their category', () => {
+    for (const id of ADDED) expect(CAMERA_MOVE_PRESETS.filter((p) => p.id === id).map((p) => p.move), id).toEqual([id])
+    const order = SHARED_MOVES.map((m) => m.id)
+    const own = CAMERA_MOVE_PRESETS.filter((p) => p.id === p.move).map((p) => order.indexOf(p.id))
+    expect(own).toEqual([...own].sort((a, b) => a - b))
+  })
+
+  it('static: one mark where the camera stands, on the subject', () => {
+    const m = gen('static')
+    expect(m).toHaveLength(1)
+    at(first(m), { x: 2, y: 1.6, z: 6 })
+    close(first(m).pan, panTo({ x: 2, z: 6 }, eyes))
+    close(first(m).tilt, tiltTo({ x: 2, y: 1.6, z: 6 }, eyes))
+  })
+
+  it('pan-left / pan-right: the camera stays, starts on the subject and turns 40°', () => {
+    for (const [id, sign] of [['pan-left', 1], ['pan-right', -1]] as const) {
+      const m = gen(id)
+      for (const k of m) at(k, { x: 2, y: 1.6, z: 6 })
+      close(first(m).pan, panTo({ x: 2, z: 6 }, eyes))
+      close(last(m).pan - first(m).pan, (sign * 40 * Math.PI) / 180)
+      close(last(m).tilt, first(m).tilt)
+    }
+  })
+
+  it("tilt-down: the camera stays and tilts from the subject's eyes to its feet", () => {
+    const m = gen('tilt-down')
+    for (const k of m) at(k, { x: 2, y: 1.6, z: 6 })
+    close(first(m).tilt, tiltTo({ x: 2, y: 1.6, z: 6 }, eyes))
+    close(last(m).tilt, tiltTo({ x: 2, y: 1.6, z: 6 }, { x: 0, y: 0, z: 0 }))
+  })
+
+  it('dolly-out: straight back along its line from the current distance to 2.5×, at the same height', () => {
+    const m = gen('dolly-out')
+    const d0 = Math.hypot(2, 6)
+    at(first(m), { x: 2, y: 1.6, z: 6 })
+    at(last(m), { x: 2 * 2.5, y: 1.6, z: 6 * 2.5 })
+    for (const k of m) close(Math.atan2(k.position.x, k.position.z), Math.atan2(2, 6))
+    expect(Math.hypot(last(m).position.x, last(m).position.z) / d0).toBeCloseTo(2.5, 6)
+    expect(findPreset('dolly-out')!.track).toBe(true)
+  })
+
+  it('truck-left / truck-right: 4 m square to the start view, without turning', () => {
+    for (const [id, sign] of [['truck-left', -1], ['truck-right', 1]] as const) {
+      const m = gen(id)
+      const pan = first(m).pan
+      close(pan, panTo({ x: 2, z: 6 }, eyes))
+      at(first(m), { x: 2, y: 1.6, z: 6 })
+      // The camera's right is (cos pan, 0, −sin pan).
+      at(last(m), { x: 2 + sign * 4 * Math.cos(pan), y: 1.6, z: 6 - sign * 4 * Math.sin(pan) })
+      for (const k of m) {
+        close(k.pan, pan)
+        close(k.tilt, first(m).tilt)
+      }
+    }
+  })
+
+  it("truck-left on a moving vehicle slides its 4 m from where it starts and doesn't follow", () => {
+    const car = (speed: number): CameraMoveContext => ({
+      subjectAt: (t: number): SubjectSample => ({ x: 0, y: 0, z: -speed * t, heading: 0 }),
+      subjectHeight: 1.5,
+      camera: { x: 8, y: 1.6, z: 4, pan: 0, tilt: 0, focalLength: 35 },
+      duration: DUR,
+      subjectBox: { length: 4.6, width: 1.9, height: 1.5 }
+    })
+    const fast = gen('truck-left', car(15))
+    expect(fast).toEqual(gen('truck-left', car(0)))
+    const slide = Math.hypot(last(fast).position.x - first(fast).position.x, last(fast).position.z - first(fast).position.z)
+    close(slide, 4)
+    expect(findPreset('truck-left')!.track).toBe(false)
+  })
+
+  it('pedestal-down: 1.2 m straight down, the tilt held, never under 0.2 m', () => {
+    const m = gen('pedestal-down')
+    at(first(m), { x: 2, y: 1.6, z: 6 })
+    at(last(m), { x: 2, y: 0.4, z: 6 })
+    for (const k of m) close(k.tilt, first(m).tilt)
+    close(first(m).tilt, tiltTo({ x: 2, y: 1.6, z: 6 }, eyes))
+    const low = gen('pedestal-down', stillCtx(0.9))
+    close(last(low).position.y, 0.2)
+  })
+
+  it('zoom-in / zoom-out: the camera stays while the lens goes 35 ↔ 85 mm', () => {
+    for (const [id, a, b] of [['zoom-in', 35, 85], ['zoom-out', 85, 35]] as const) {
+      const m = gen(id)
+      for (const k of m) at(k, { x: 2, y: 1.6, z: 6 })
+      close(first(m).focalLength, a)
+      close(last(m).focalLength, b)
+    }
+  })
+
+  it('fpv-dive: 15 m up and out to 1 m up, 2 m in front, banking ±0.25 rad, on 16 mm', () => {
+    const m = gen('fpv-dive')
+    // In front of a subject facing −Z is −Z.
+    at(first(m), { x: 0, y: 15, z: -15 })
+    at(last(m), { x: 0, y: 1, z: -2 })
+    for (const k of m) expect(k.focalLength).toBe(16)
+    close(Math.max(...m.map((k) => k.roll)), 0.25)
+    close(Math.min(...m.map((k) => k.roll)), -0.25)
+    // Steep early: more than half the drop is done by the middle of the shot.
+    expect(m[4]!.position.y).toBeLessThan(8)
+  })
+
+  it('pov-walk: eye height, 6 m to 1.5 m in front, a 2 Hz bob of 3 cm and a slight sway, on 24 mm', () => {
+    const m = gen('pov-walk')
+    at(first(m), { x: 0, y: 1.6, z: -6 })
+    at(last(m), { x: 0, y: 1.6, z: -1.5 })
+    close(first(m).roll, 0)
+    close(last(m).roll, 0)
+    for (const k of m) expect(k.focalLength).toBe(24)
+    const inner = m.slice(1, -1)
+    close(Math.max(...inner.map((k) => k.position.y)), 1.63)
+    close(Math.min(...inner.map((k) => k.position.y)), 1.57)
+    expect(Math.max(...inner.map((k) => Math.abs(k.roll)))).toBeLessThanOrEqual(0.01 + 1e-9)
+    // A mark on every peak and trough: 0.25 s apart.
+    for (let i = 2; i < m.length - 1; i++) close(m[i]!.time - m[i - 1]!.time, 0.25)
+  })
+
+  it('keep every mark 0.2 m or more above the ground, and give the same marks every run', () => {
+    for (const id of ADDED)
+      for (const ctx of [stillCtx(), stillCtx(0.3), makeCtx()]) {
+        const m = gen(id, ctx)
+        for (const k of m) expect(k.position.y, id).toBeGreaterThanOrEqual(0.2 - 1e-9)
+        expect(gen(id, ctx), id).toEqual(m)
+      }
   })
 })

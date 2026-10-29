@@ -1518,6 +1518,278 @@ const pushInDutchRoll: CameraMovePreset = {
 }
 
 // ---------------------------------------------------------------------------
+// Fork (shared-camera-moves): the moves of the table shared with Ebook Studio
+// that upstream had no preset for.
+// ---------------------------------------------------------------------------
+
+/** A mark with an explicit pan / tilt (a framed move that doesn't aim through `build`). */
+function framedMark(t: number, pos: P3, pan: number, tilt: number, focalLength: number, edge: boolean, airborne: boolean): CameraMarkSpec {
+  return {
+    time: t,
+    position: floorClampSpec(pos, airborne),
+    pan,
+    tilt,
+    roll: 0,
+    focalLength,
+    easeIn: edge ? 0.25 : 0,
+    easeOut: edge ? 0.25 : 0,
+    hold: 0
+  }
+}
+
+const lockedOff: CameraMovePreset = {
+  id: 'static',
+  name: 'Static',
+  category: 'tripod',
+  move: 'static',
+  description: 'One mark where the camera stands, aimed at the subject and held for the whole shot — a locked-off frame.',
+  track: false,
+  generate(ctx) {
+    const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
+    return build([{ t: 0, pos: cam, aimAt: aimPoint(ctx.subjectAt(0), ctx.subjectHeight), focalLength: ctx.camera.focalLength }], isAirborne(ctx))
+  }
+}
+
+/** Camera fixed, aimed at the subject at t = 0, then panned by `sweep` (rad, + = to the left) across the shot. */
+function panAcross(ctx: CameraMoveContext, sweep: number): CameraMarkSpec[] {
+  const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
+  const base = aim(cam, aimPoint(ctx.subjectAt(0), ctx.subjectHeight))
+  const ts = times(7, ctx.duration)
+  const airborne = isAirborne(ctx)
+  return ts.map((t, i) => framedMark(t, cam, base.pan + sweep * (t / ctx.duration), base.tilt, ctx.camera.focalLength, i === 0 || i === ts.length - 1, airborne))
+}
+
+const panLeft: CameraMovePreset = {
+  id: 'pan-left',
+  name: 'Pan left',
+  category: 'tripod',
+  move: 'pan-left',
+  description: 'Camera holds position, starts on the subject and pans 40° to the left across the shot.',
+  track: false,
+  generate(ctx) {
+    return panAcross(ctx, (40 * Math.PI) / 180)
+  }
+}
+
+const panRight: CameraMovePreset = {
+  id: 'pan-right',
+  name: 'Pan right',
+  category: 'tripod',
+  move: 'pan-right',
+  description: 'Camera holds position, starts on the subject and pans 40° to the right across the shot.',
+  track: false,
+  generate(ctx) {
+    return panAcross(ctx, (-40 * Math.PI) / 180)
+  }
+}
+
+const tiltDown: CameraMovePreset = {
+  id: 'tilt-down',
+  name: 'Tilt down',
+  category: 'tripod',
+  move: 'tilt-down',
+  description: 'Camera holds position and tilts from the subject’s eyes down to its feet.',
+  track: false,
+  generate(ctx) {
+    const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
+    const ts = times(7, ctx.duration)
+    const airborne = isAirborne(ctx)
+    return ts.map((t, i) => {
+      const s = ctx.subjectAt(t)
+      const eyes = aim(cam, aimPoint(s, ctx.subjectHeight))
+      const feet = aim(cam, { x: s.x, y: s.y, z: s.z })
+      return framedMark(t, cam, eyes.pan, eyes.tilt + (feet.tilt - eyes.tilt) * (t / ctx.duration), ctx.camera.focalLength, i === 0 || i === ts.length - 1, airborne)
+    })
+  }
+}
+
+const dollyOut: CameraMovePreset = {
+  id: 'dolly-out',
+  name: 'Dolly out',
+  category: 'dolly',
+  move: 'dolly-out',
+  description: 'Straight back along the camera’s line to the subject, from where it stands to 2.5× the distance, at the same height.',
+  track: true,
+  generate(ctx) {
+    const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
+    const startAim = aimPoint(ctx.subjectAt(0), ctx.subjectHeight)
+    const startDist = Math.max(planarDist(cam, startAim), reach(ctx))
+    const dir = forward(headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z }))
+    return build(
+      times(7, ctx.duration).map((t) => {
+        const target = aimPoint(ctx.subjectAt(t), ctx.subjectHeight)
+        const d = startDist * (1 + 1.5 * (t / ctx.duration))
+        return { t, pos: { x: target.x + dir.x * d, y: ctx.camera.y, z: target.z + dir.z * d }, aimAt: target, focalLength: ctx.camera.focalLength }
+      }),
+      isAirborne(ctx)
+    )
+  }
+}
+
+/** Slide 4 m to the camera's left (`sign` 1) or right (−1), square to where it looks at t = 0; neither aim nor path follows the subject. */
+function truck(ctx: CameraMoveContext, sign: number): CameraMarkSpec[] {
+  const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
+  const base = aim(cam, aimPoint(ctx.subjectAt(0), ctx.subjectHeight))
+  // The camera's right is (cos pan, 0, −sin pan).
+  const side = { x: -sign * Math.cos(base.pan), z: sign * Math.sin(base.pan) }
+  const ts = times(7, ctx.duration)
+  const airborne = isAirborne(ctx)
+  return ts.map((t, i) => {
+    const d = 4 * (t / ctx.duration)
+    return framedMark(t, { x: cam.x + side.x * d, y: cam.y, z: cam.z + side.z * d }, base.pan, base.tilt, ctx.camera.focalLength, i === 0 || i === ts.length - 1, airborne)
+  })
+}
+
+const truckLeft: CameraMovePreset = {
+  id: 'truck-left',
+  name: 'Truck left',
+  category: 'slider',
+  move: 'truck-left',
+  description: 'Slide 4 m to the camera’s left on a track, without turning — the subject is not followed.',
+  track: false,
+  generate(ctx) {
+    return truck(ctx, 1)
+  }
+}
+
+const truckRight: CameraMovePreset = {
+  id: 'truck-right',
+  name: 'Truck right',
+  category: 'slider',
+  move: 'truck-right',
+  description: 'Slide 4 m to the camera’s right on a track, without turning — the subject is not followed.',
+  track: false,
+  generate(ctx) {
+    return truck(ctx, -1)
+  }
+}
+
+const pedestalDown: CameraMovePreset = {
+  id: 'pedestal-down',
+  name: 'Pedestal down',
+  category: 'vertical',
+  move: 'pedestal-down',
+  description: 'A straight 1.2 m drop, eye level to waist level, holding the tilt it starts with — the subject rises in frame.',
+  // Not aim-locked: the lock would tilt the camera up at the subject as it drops.
+  track: false,
+  generate(ctx) {
+    const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
+    const startAim = aimPoint(ctx.subjectAt(0), ctx.subjectHeight)
+    const dir = forward(headingOf({ x: cam.x - startAim.x, y: 0, z: cam.z - startAim.z }))
+    const radius = Math.max(planarDist(cam, startAim), 2 * reach(ctx))
+    const tilt = aim({ x: startAim.x + dir.x * radius, y: cam.y, z: startAim.z + dir.z * radius }, startAim).tilt
+    const ts = times(6, ctx.duration)
+    const airborne = isAirborne(ctx)
+    return ts.map((t, i) => {
+      const target = aimPoint(ctx.subjectAt(t), ctx.subjectHeight)
+      const pos = { x: target.x + dir.x * radius, y: Math.max(0.2, cam.y - 1.2 * reach(ctx) * (t / ctx.duration)), z: target.z + dir.z * radius }
+      return framedMark(t, pos, aim(pos, target).pan, tilt, ctx.camera.focalLength, i === 0 || i === ts.length - 1, airborne)
+    })
+  }
+}
+
+/** Camera fixed, aimed at the subject, the lens going from `from` to `to` mm over the whole shot. */
+function zoom(ctx: CameraMoveContext, from: number, to: number): CameraMarkSpec[] {
+  const cam: P3 = { x: ctx.camera.x, y: ctx.camera.y, z: ctx.camera.z }
+  const ts = times(7, ctx.duration)
+  const airborne = isAirborne(ctx)
+  return ts.map((t, i) => {
+    const a = aim(cam, aimPoint(ctx.subjectAt(t), ctx.subjectHeight))
+    return framedMark(t, cam, a.pan, a.tilt, from + (to - from) * (t / ctx.duration), i === 0 || i === ts.length - 1, airborne)
+  })
+}
+
+const zoomIn: CameraMovePreset = {
+  id: 'zoom-in',
+  name: 'Zoom in',
+  category: 'optical',
+  move: 'zoom-in',
+  description: 'Camera holds position on the subject while the lens eases from 35 mm to 85 mm across the shot.',
+  track: false,
+  generate(ctx) {
+    return zoom(ctx, 35, 85)
+  }
+}
+
+const zoomOut: CameraMovePreset = {
+  id: 'zoom-out',
+  name: 'Zoom out',
+  category: 'optical',
+  move: 'zoom-out',
+  description: 'Camera holds position on the subject while the lens eases from 85 mm to 35 mm across the shot.',
+  track: false,
+  generate(ctx) {
+    return zoom(ctx, 85, 35)
+  }
+}
+
+const fpvDive: CameraMovePreset = {
+  id: 'fpv-dive',
+  name: 'FPV dive',
+  category: 'aerial',
+  move: 'fpv-dive',
+  description: 'An FPV drone 15 m up and 15 m out in front of the subject dives steeply on a banking S-curve to 1 m up and 2 m in front of it, on a 16 mm lens.',
+  track: true,
+  generate(ctx) {
+    const k = reach(ctx)
+    return build(
+      times(9, ctx.duration).map((t) => {
+        const u = t / ctx.duration
+        const s = ctx.subjectAt(t)
+        const fwd = forward(s.heading)
+        const side = forward(s.heading - Math.PI / 2)
+        // Steep early: most of the drop lands in the first half, while the S-curve swings out and back, banking.
+        const along = (2 + 13 * (1 - u)) * k
+        const up = (1 + 14 * (1 - u) * (1 - u)) * k
+        const sway = 2 * k * Math.sin(2 * Math.PI * u)
+        return {
+          t,
+          pos: { x: s.x + fwd.x * along + side.x * sway, y: s.y + up, z: s.z + fwd.z * along + side.z * sway },
+          aimAt: aimPoint(s, ctx.subjectHeight),
+          focalLength: 16,
+          roll: 0.25 * Math.sin(2 * Math.PI * u)
+        }
+      }),
+      isAirborne(ctx)
+    )
+  }
+}
+
+const povWalk: CameraMovePreset = {
+  id: 'pov-walk',
+  name: 'POV walk',
+  category: 'tracking',
+  move: 'pov-walk',
+  description: 'First person at 1.6 m eye height, walking from 6 m to 1.5 m in front of the subject with a 2 Hz step bob and a slight sway, on a 24 mm lens.',
+  track: true,
+  generate(ctx) {
+    const k = reach(ctx)
+    const dur = ctx.duration
+    // A mark on every bob peak and trough (every 0.25 s) so the 2 Hz bob survives the spline; the walk starts and stops level.
+    const ts = [0]
+    for (let t = 0.125; t < dur - 1e-6; t += 0.25) ts.push(t)
+    ts.push(dur)
+    const last = ts.length - 1
+    return build(
+      ts.map((t, i) => {
+        const s = ctx.subjectAt(t)
+        const fwd = forward(s.heading)
+        const d = (6 - 4.5 * (t / dur)) * k
+        const step = i === 0 || i === last ? 0 : 1
+        return {
+          t,
+          pos: { x: s.x + fwd.x * d, y: s.y + 1.6 + step * 0.03 * Math.sin(2 * Math.PI * 2 * t), z: s.z + fwd.z * d },
+          aimAt: aimPoint(s, ctx.subjectHeight),
+          focalLength: 24,
+          roll: step * 0.01 * Math.sin(2 * Math.PI * t)
+        }
+      }),
+      isAirborne(ctx)
+    )
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -1528,14 +1800,22 @@ const pushInDutchRoll: CameraMovePreset = {
  */
 export const CAMERA_MOVE_PRESETS: CameraMovePreset[] = [
   // tripod
+  lockedOff,
+  panLeft,
   staticPanAcross,
+  panRight,
   slowTiltReveal,
+  tiltDown,
   // dolly
   slowPushIn,
   creepInLow,
+  dollyOut,
   pullBackReveal,
   crashIn,
   vertigoDollyZoom,
+  // slider
+  truckLeft,
+  truckRight,
   // orbit
   orbit180,
   orbit360,
@@ -1547,12 +1827,15 @@ export const CAMERA_MOVE_PRESETS: CameraMovePreset[] = [
   // vertical
   pedestalUp,
   pedestalUpSlow,
+  pedestalDown,
   craneUpReveal,
   boomOver,
   spiralOutAscend,
   craneDownIntro,
   spiralInDescend,
   // optical
+  zoomIn,
+  zoomOut,
   snapZoomPunch,
   crashZoomOut,
   // aerial
@@ -1562,6 +1845,7 @@ export const CAMERA_MOVE_PRESETS: CameraMovePreset[] = [
   droneOrbitHigh,
   topDownDescend,
   overheadTrackFollow,
+  fpvDive,
   // stylized
   whipPan,
   pushInDutchRoll,
@@ -1573,7 +1857,8 @@ export const CAMERA_MOVE_PRESETS: CameraMovePreset[] = [
   followBehind,
   sideTrackLeft,
   sideTrackRight,
-  sideDollyPast
+  sideDollyPast,
+  povWalk
 ]
 
 /**

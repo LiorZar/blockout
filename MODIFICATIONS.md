@@ -1684,6 +1684,11 @@ Changes in this fork (2026):
   (counter-clockwise from above, the camera moving to its right) is `arc-right`, Orbit 90° Right is `arc-left`, and
   Static Pan Across (a pan to the left) is a variant of `pan-left`. Upstream's side tracks rode the wrong flanks (Side-Track
   Left on the subject's right, moving the camera right); they now ride the flank they name.
+  New presets for the 12 shared moves upstream had none for: Static (one mark, held), Pan left / right (40°), Tilt
+  down, Dolly out (straight back to 2.5× the distance), Truck left / right (4 m square to the view, not following),
+  Pedestal down (1.2 m, the tilt held, so not aim-locked), Zoom in / out (35 ↔ 85 mm), FPV dive (15 m up and out to
+  1 m up, 2 m in front, banking, 16 mm) and POV walk (1.6 m eye height, 6 m to 1.5 m, a 2 Hz bob on a mark every
+  0.25 s, 24 mm); every shared move Blockout stages as a path now has its own preset.
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
