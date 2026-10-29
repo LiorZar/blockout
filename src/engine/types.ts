@@ -281,6 +281,13 @@ export interface ShotCamera {
    * subject when no mark sets a focusDistance.
    */
   trackEntityId?: string
+  /**
+   * Fork (shared-camera-moves): the move last applied, an id of the table
+   * shared with Ebook Studio (camera-move-names.ts); the prompt's camera line
+   * names it first. Cleared when the camera's marks are added, deleted or
+   * replaced; retiming a mark keeps it. Undefined in older files.
+   */
+  move?: string
   marks: CameraMark[]
 }
 

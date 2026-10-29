@@ -21,6 +21,7 @@
  */
 
 import { assetSpec } from './assets'
+import { sharedMove, sharedMoveSentence } from './camera-move-names'
 import { mirrorJoints } from './choreography'
 import { ShotEvaluator } from './evaluate'
 import { SHOT_MOVES, strikeImpacts } from './fight/moves'
@@ -770,8 +771,11 @@ function shotWords(spec: ShotSpec, scene: Scene): string {
 const DEG = Math.PI / 180
 
 function cameraLines(scene: Scene, shot: Shot, ev: ShotEvaluator): string[] {
+  // Fork (shared-camera-moves): the move applied, by its shared name and sentence, before the motion measured.
+  const move = shot.camera.move ? sharedMove(shot.camera.move) : undefined
+  const named = move ? [`Camera move: ${move.name}. ${sharedMoveSentence(move.id)}`] : []
   const marks = [...shot.camera.marks].sort((a, b) => a.time - b.time)
-  if (marks.length === 0) return []
+  if (marks.length === 0) return named
   const parts: string[] = []
   const mount = shot.camera.mountEntityId ? scene.entities.find((e) => e.id === shot.camera.mountEntityId) : undefined
   if (mount) parts.push(`mounted on ${nameOf(mount)}`)
@@ -826,7 +830,7 @@ function cameraLines(scene: Scene, shot: Shot, ev: ShotEvaluator): string[] {
   }
   const tracked = shot.camera.trackEntityId ? scene.entities.find((e) => e.id === shot.camera.trackEntityId) : undefined
   if (tracked) parts.push(`keeping ${nameOf(tracked)} in frame`)
-  return [`Camera: ${parts.join('; ')}.`]
+  return [...named, `Camera: ${parts.join('; ')}.`]
 }
 
 /* --------------------------------- assembly -------------------------------- */

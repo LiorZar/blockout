@@ -34,7 +34,8 @@ import { findPreset } from '@engine/camera-moves'
 import { groupShotPose, pickFramingSubjectIds } from '@engine/framing'
 import type { ViewOutcome } from '@engine/camera-clear'
 import { clearFramingPose } from '../camera-view'
-import { layCameraMove } from '../camera-move' // fork (street-kit)
+import { layCameraMove, putSharedMove } from '../camera-move' // fork (street-kit; shared-camera-moves)
+import { sharedMove } from '@engine/camera-move-names'
 import type { Entity, EntityState, LightingPresetId, Scene as DocScene, Shot } from '@engine/types'
 import { useStore, selectedEntityIds, releaseHeldBy } from '../store'
 import { on } from '../bus'
@@ -1814,9 +1815,11 @@ export class SceneManager {
   applyCameraMove(presetId: string, subjectId?: string): ViewOutcome | undefined {
     const s = this.currentState()
     const preset = findPreset(presetId) // fork (shared-camera-moves): an old id or a shared move id
-    if (!preset || !this.shot || !this.evaluator || !this.docScene) return
+    if (!preset && !sharedMove(presetId)) return
+    if (!this.shot || !this.evaluator || !this.docScene) return
     const subjects = subjectId ? this.framingSubjects(1, [subjectId]) : this.framingSubjects(1)
     const subject = subjects[0]
+    if (!preset) return this.applySharedMove(presetId, subject?.id) // fork (shared-camera-moves): the handheld rig or a prompt move
     if (!subject) {
       s.toast('Place a subject first — camera moves are built around one.', 'info')
       return
@@ -1851,6 +1854,7 @@ export class SceneManager {
         if (preset.track) shot.camera.trackEntityId = subject.id
         else delete shot.camera.trackEntityId
         if (cleared.rig) shot.camera.rig = cleared.rig // fork (street-kit T5): a rig that keeps up with a moving vehicle
+        shot.camera.move = cleared.move // fork (shared-camera-moves): the prompt names it
       }
     })
     s.setSelection({ kind: 'camera' })
@@ -1860,6 +1864,28 @@ export class SceneManager {
       cleared?.warning ? 'error' : 'success'
     )
     return { ...(cleared?.note ? { note: cleared.note } : {}), ...(cleared?.warning ? { warning: cleared.warning } : {}) }
+  }
+
+  /**
+   * Fork (shared-camera-moves): a shared move Blockout stages no path for
+   * (renderer/camera-move.ts putSharedMove), on the active shot in one undo
+   * step: the marks stay, the move is recorded for the prompt.
+   */
+  private applySharedMove(moveId: string, subjectId: string | undefined): ViewOutcome | undefined {
+    const s = this.currentState()
+    const move = sharedMove(moveId)
+    if (!move || !this.shot) return
+    const shotId = this.shot.id
+    let note = ''
+    s.mutate(`camera move: ${move.name}`, (doc) => {
+      for (const scene of doc.scenes) {
+        const shot = scene.shots.find((x) => x.id === shotId) ?? scene.drafts?.find((x) => x.id === shotId)
+        if (shot) note = putSharedMove(scene, shot, moveId, subjectId)?.note ?? ''
+      }
+    })
+    s.setSelection({ kind: 'camera' })
+    s.toast(note, 'success')
+    return note ? { note } : {}
   }
 
   /**
@@ -2004,6 +2030,7 @@ export class SceneManager {
           scene.shots.find((x) => x.id === shotId) ?? scene.drafts?.find((x) => x.id === shotId)
         if (shot) {
           shot.camera.marks = marks
+          delete shot.camera.move // fork (shared-camera-moves): a recorded path replaces the move's
           if (!this.recPlaybackSynced) shot.duration = Math.round(length * 10) / 10
         }
       }

@@ -132,5 +132,5 @@ describe('camera moves on a person', () => {
       expect(now.marks, preset.id).toEqual(was.marks)
       expect(now.warning, preset.id).toBe(was.warning)
     }
-  })
+  }, 20_000) // fork (shared-camera-moves): 51 presets now, each laid twice
 })

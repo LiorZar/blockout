@@ -8,9 +8,12 @@ import { describe, expect, it } from 'vitest'
 import { generatePrompt } from '@engine/prompt'
 import { describeShot } from '@engine/prompt-scene'
 import { getProfile } from '@engine/profiles'
-import { createActorMark, createCameraMark, createEntity, createProject } from '@engine/schema'
+import { createActorMark, createCameraMark, createEntity, createProject, parseProject, serializeProject } from '@engine/schema'
+import { entityHeight } from '@engine/assets'
+import { sharedMove } from '@engine/camera-move-names'
+import { putCameraMove, putSharedMove } from '@renderer/camera-move'
 import { choreographMotion } from '@engine/sequences'
-import type { Entity, FightDoc, Scene, Shot } from '@engine/types'
+import type { CameraMark, Entity, FightDoc, Scene, Shot } from '@engine/types'
 
 function fixture(duration = 8): { scene: Scene; shot: Shot } {
   const doc = createProject('Prompt scene')
@@ -275,5 +278,101 @@ describe('generatePrompt with scene sections', () => {
     expect(prompt).toContain('The rest of the action follows the reference video.')
     expect(prompt).toContain('Camera: locked off.')
     expect(prompt.endsWith(h3.adherenceClause)).toBe(true)
+  })
+})
+
+// Fork (shared-camera-moves T4, docs/plans/2026-10-29-shared-camera-moves.md): the shot camera keeps the shared move
+// applied, and the prompt's camera line names it first.
+describe('the camera move applied, named', () => {
+  const DOLLY_IN = 'Camera move: Dolly in. The camera dollies forward toward the subject on a smooth track; the subject and the background stay in place.'
+  // The camera line of this fixture before moves were named.
+  const MEASURED = 'Camera: moves forward; keeping JO in frame.'
+
+  function dollied(): { scene: Scene; shot: Shot; jo: Entity } {
+    const { scene, shot } = fixture(6)
+    const jo = person(scene, 'person.man', 'JO', '#e5484d', 0, 0)
+    shot.camera.marks.push(createCameraMark({ x: 0, y: 1.6, z: 6 }, 0, 0, 0, 35))
+    putCameraMove(scene, shot, 'dolly-in', jo.id)
+    return { scene, shot, jo }
+  }
+
+  it('opens with the move and its sentence, then the motion measured as before', () => {
+    const { scene, shot } = dollied()
+    expect(shot.camera.move).toBe('dolly-in')
+    expect(describeShot(scene, shot).camera).toEqual([DOLLY_IN, MEASURED])
+  })
+
+  it('an old preset id records the shared move', () => {
+    const { scene, shot } = fixture(6)
+    const jo = person(scene, 'person.man', 'JO', '#e5484d', 0, 0)
+    shot.camera.marks.push(createCameraMark({ x: 0, y: 1.6, z: 6 }, 0, 0, 0, 35))
+    putCameraMove(scene, shot, 'slow-push-in', jo.id)
+    expect(shot.camera.move).toBe('dolly-in')
+    expect(describeShot(scene, shot).camera[0]).toBe(DOLLY_IN)
+  })
+
+  it('a shot with no move, or a file from before moves were kept, reads exactly as before', () => {
+    const { scene, shot } = dollied()
+    delete shot.camera.move
+    expect(describeShot(scene, shot).camera).toEqual([MEASURED])
+    const doc = createProject('Old')
+    const old = doc.scenes[0]!
+    old.shots[0]!.duration = 6
+    const jo = person(old, 'person.man', 'JO', '#e5484d', 0, 0)
+    old.shots[0]!.camera.marks.push(createCameraMark({ x: 0, y: 1.6, z: 6 }, 0, 0, 0, 35))
+    putCameraMove(old, old.shots[0]!, 'dolly-in', jo.id)
+    delete old.shots[0]!.camera.move
+    const loaded = parseProject(serializeProject(doc)).doc!
+    expect(loaded.scenes[0]!.shots[0]!.camera.move).toBeUndefined()
+    expect(describeShot(loaded.scenes[0]!, loaded.scenes[0]!.shots[0]!).camera).toEqual([MEASURED])
+  })
+
+  it('a prompt move keeps the marks, records the move and says the video model makes it', () => {
+    const { scene, shot, jo } = dollied()
+    const marks = structuredClone(shot.camera.marks)
+    const r = putSharedMove(scene, shot, 'macro-zoom', jo.id)
+    expect(r?.note).toBe('Macro zoom is made by the video model from the prompt; Blockout records it but stages no path.')
+    expect(shot.camera.marks).toEqual(marks)
+    expect(shot.camera.move).toBe('macro-zoom')
+    expect(describeShot(scene, shot).camera).toEqual([
+      `Camera move: Macro zoom. ${sharedMove('macro-zoom')!.prompt}`,
+      MEASURED
+    ])
+  })
+
+  it('a prompt move on a camera with no marks is named on its own', () => {
+    const { scene, shot } = fixture(6)
+    expect(putSharedMove(scene, shot, 'cosmic-zoom', undefined)?.note).toMatch(/^Cosmic zoom is made by the video model/)
+    expect(describeShot(scene, shot).camera).toEqual([`Camera move: Cosmic zoom. ${sharedMove('cosmic-zoom')!.prompt}`])
+  })
+
+  it('rack focus and the reveal from blur set the first and last marks’ focus round the subject', () => {
+    const { scene, shot, jo } = dollied()
+    const sorted = (): CameraMark[] => [...shot.camera.marks].sort((a, b) => a.time - b.time)
+    const dist = (m: CameraMark): number => Math.hypot(m.position.x, m.position.y - entityHeight(jo.assetId, 1, jo.params) * 0.8, m.position.z)
+    putSharedMove(scene, shot, 'rack-focus', jo.id)
+    expect(sorted()[0]!.focusDistance).toBeCloseTo(dist(sorted()[0]!), 3)
+    expect(sorted().at(-1)!.focusDistance).toBeCloseTo(3 * dist(sorted().at(-1)!), 3)
+    expect(sorted().slice(1, -1).every((m) => m.focusDistance === undefined)).toBe(true)
+    putSharedMove(scene, shot, 'focus-reveal', jo.id)
+    expect(sorted()[0]!.focusDistance).toBe(0.3)
+    expect(sorted().at(-1)!.focusDistance).toBeCloseTo(dist(sorted().at(-1)!), 3)
+    expect(shot.camera.move).toBe('focus-reveal')
+  })
+
+  it('handheld sets the handheld rig and keeps the marks', () => {
+    const { scene, shot, jo } = dollied()
+    const marks = structuredClone(shot.camera.marks)
+    expect(putSharedMove(scene, shot, 'handheld', jo.id)).not.toBeNull()
+    expect(shot.camera.rig).toBe('handheld')
+    expect(shot.camera.rigIntensity).toBe(0.5)
+    expect(shot.camera.marks).toEqual(marks)
+    expect(describeShot(scene, shot).camera[0]).toMatch(/^Camera move: Handheld\. A handheld camera, documentary style/)
+  })
+
+  it('a path move is not a shared move without a path', () => {
+    const { scene, shot, jo } = dollied()
+    expect(putSharedMove(scene, shot, 'dolly-in', jo.id)).toBeNull()
+    expect(putSharedMove(scene, shot, 'slow-push-in', jo.id)).toBeNull()
   })
 })

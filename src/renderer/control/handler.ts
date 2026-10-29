@@ -483,6 +483,7 @@ function summary(): unknown {
           rig: shot.camera.rig,
           rigIntensity: shot.camera.rigIntensity,
           trackEntityId: shot.camera.trackEntityId ?? null,
+          move: shot.camera.move ?? null, // fork (shared-camera-moves): the shared move the prompt names
           cameraMarks: shot.camera.marks.map((m, i) => ({
             index: i + 1,
             id: m.id,
@@ -779,6 +780,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         const scene = doc.scenes.find((sc) => sc.id === useStore.getState().sceneId)
         const shot = scene?.shots.find((sh) => sh.id === useStore.getState().shotId)
         shot?.camera.marks.push(mark)
+        delete shot?.camera.move // fork (shared-camera-moves): the path is no longer the move's
       })
       return { added: true }
     }
@@ -986,21 +988,18 @@ async function execute(action: string, params: Params): Promise<unknown> {
       if (subjectId && !s.scene()?.entities.some((e) => e.id === subjectId)) {
         throw new Error(`No entity "${subjectId}" in the current scene — call get_state for ids.`)
       }
-      // Fork (shared-camera-moves): a preset id, an old id (PRESET_ALIASES) or a shared move id.
+      // Fork (shared-camera-moves): a preset id, an old id (PRESET_ALIASES) or a shared move id; a shared move with no
+      // path (handheld, the prompt moves) keeps the marks and is recorded for the prompt (camera-move.ts putSharedMove).
       const { cameraMoveListing, findPreset } = await import('@engine/camera-moves')
-      const preset = findPreset(presetId)
-      if (!preset) {
-        const shared = cameraMoveListing().find((m) => m.id === presetId)
-        throw new Error(
-          shared
-            ? `${shared.name} ("${presetId}") has no Blockout preset yet.`
-            : `Unknown presetId "${presetId}". Valid: ${cameraMoveListing().map((m) => m.id).join(', ')}`
-        )
+      const { sharedMove } = await import('@engine/camera-move-names')
+      const move = findPreset(presetId)?.move ?? sharedMove(presetId)?.id
+      if (!move) {
+        throw new Error(`Unknown presetId "${presetId}". Valid: ${cameraMoveListing().map((m) => m.id).join(', ')}`)
       }
       const rigBefore = s.shot()?.camera.rig // fork (street-kit T5)
       const view = requireManager().applyCameraMove(presetId, subjectId) // fork (fix-camera-set): note / warning
       const rig = useStore.getState().shot()?.camera.rig
-      return { applied: presetId, move: preset.move, ...view, ...(rig && rig !== rigBefore ? { rig } : {}) }
+      return { applied: presetId, move, ...view, ...(rig && rig !== rigBefore ? { rig } : {}) }
     }
 
     case 'list_camera_moves': {
@@ -1565,6 +1564,7 @@ async function execute(action: string, params: Params): Promise<unknown> {
         for (let i = live.marks.length - 1; i >= 0; i--) {
           if (markIds.includes(live.marks[i]!.id)) live.marks.splice(i, 1)
         }
+        if (shot && live.kind === 'camera') delete shot.camera.move // fork (shared-camera-moves): the path is no longer the move's
       })
       return { deleted: markIds.length }
     }

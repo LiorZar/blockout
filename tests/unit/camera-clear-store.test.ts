@@ -6,7 +6,9 @@ import { assetSpec } from '@engine/assets'
 import { cameraBoxes } from '@renderer/fight-obstacles'
 import { checkView, insideOf, shotSubjects, viewNote, type SetBox } from '@engine/camera-clear'
 import { ShotEvaluator } from '@engine/evaluate'
-import { createEntity, createProject } from '@engine/schema'
+import { createCameraMark, createEntity, createProject } from '@engine/schema'
+import { describeShot } from '@engine/prompt-scene'
+import { putCameraMove } from '@renderer/camera-move'
 import { parseFightScript } from '@engine/fight/script'
 import type { ShotSpec } from '@engine/shot'
 import type { Entity, FightBeat, ProjectDoc, Scene, Shot, V3 } from '@engine/types'
@@ -130,5 +132,64 @@ describe('fight coverage keeps a clear view', () => {
     const { fightId } = st().stageFight({ beats: beats('A jab cross to head -> block, hit'), at: { x: 0, z: -4, heading: 0 } })
     st().coverFight(fightId, 'master', 'left')
     expect(shot().camera.marks.every((m) => !m.shot?.view)).toBe(true)
+  })
+})
+
+// Fork (shared-camera-moves T4, docs/plans/2026-10-29-shared-camera-moves.md): the prompt never names a move the
+// camera's path no longer makes; retiming keeps it.
+describe('the camera move applied, after hand edits', () => {
+  function dollied(): string {
+    const jo = person('JO', 0, 0, 0)
+    load(null, [jo], 6)
+    st().mutate('camera move', (doc) => {
+      const sc = doc.scenes[0]!
+      const sh = sc.shots[0]!
+      sh.camera.marks.push(createCameraMark({ x: 0, y: 1.6, z: 6 }, 0, 0, 0, 35))
+      putCameraMove(sc, sh, 'dolly-in', jo.id)
+    })
+    expect(shot().camera.move).toBe('dolly-in')
+    expect(describeShot(scene(), shot()).camera[0]).toMatch(/^Camera move: Dolly in\. /)
+    return jo.id
+  }
+  const named = (): boolean => describeShot(scene(), shot()).camera.some((l) => l.startsWith('Camera move:'))
+
+  it('dropping a camera mark clears it', () => {
+    dollied()
+    st().dropCameraMark({ x: 2, y: 1.6, z: 4 }, 0, 0, 35)
+    expect(shot().camera.move).toBeUndefined()
+    expect(named()).toBe(false)
+  })
+
+  it('deleting a camera mark clears it', () => {
+    dollied()
+    st().setSelection({ kind: 'mark', entityId: 'camera', markId: shot().camera.marks[2]!.id })
+    st().deleteSelectedMarks()
+    expect(shot().camera.move).toBeUndefined()
+    expect(named()).toBe(false)
+  })
+
+  it('clearing the camera clears it, and undo brings it back', () => {
+    dollied()
+    st().clearCameraMarks()
+    expect(shot().camera.move).toBeUndefined()
+    st().undo()
+    expect(shot().camera.move).toBe('dolly-in')
+  })
+
+  it('framing a shot clears it', () => {
+    const jo = dollied()
+    st().setShotAtTime({ size: 'MS', subjectIds: [jo] }, 3)
+    expect(shot().camera.move).toBeUndefined()
+    expect(named()).toBe(false)
+  })
+
+  it('retiming a mark keeps it', () => {
+    dollied()
+    const id = shot().camera.marks[3]!.id
+    st().mutate('retime', (doc) => {
+      doc.scenes[0]!.shots[0]!.camera.marks.find((m) => m.id === id)!.time += 0.2
+    })
+    expect(shot().camera.move).toBe('dolly-in')
+    expect(named()).toBe(true)
   })
 })

@@ -248,6 +248,7 @@ export function Timeline(): JSX.Element {
       if (!sc || !sh) return
       if (entityId === 'camera') {
         sh.camera.marks = sh.camera.marks.filter((m) => m.id !== markId)
+        delete sh.camera.move // fork (shared-camera-moves): the path is no longer the move's
       } else {
         const tk = sc.blocking.find((b) => b.id === sh.blockingTakeId)
         const tr = tk?.tracks.find((t) => t.entityId === entityId)

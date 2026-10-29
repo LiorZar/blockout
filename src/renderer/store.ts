@@ -509,6 +509,7 @@ function writeCoverage(scene: Scene, shot: Shot, fight: FightDoc, report: FightS
     return mark
   })
   delete cam.trackEntityId
+  delete cam.move // fork (shared-camera-moves): coverage replaces the move's path
   if (mode === 'follow') {
     cam.rig = 'handheld'
     cam.rigIntensity = 0.4
@@ -897,7 +898,9 @@ export const useStore = create<BlockoutState>((set, get) => ({
     get().mutate(n > 1 ? `delete ${n} marks` : 'delete mark', (doc) => {
       for (const scene of doc.scenes) {
         for (const shot of [...scene.shots, ...(scene.drafts ?? [])]) {
-          shot.camera.marks = shot.camera.marks.filter((m) => !ids.has(m.id))
+          const kept = shot.camera.marks.filter((m) => !ids.has(m.id))
+          if (kept.length < shot.camera.marks.length) delete shot.camera.move // fork (shared-camera-moves): the path is no longer the move's
+          shot.camera.marks = kept
         }
         for (const take of scene.blocking) {
           for (const track of take.tracks) {
@@ -1093,6 +1096,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
       const lastTime = marks.reduce((m, k) => Math.max(m, k.time + k.hold), -1)
       const t = marks.length === 0 ? 0 : Math.max(time, lastTime + 2)
       marks.push(createCameraMark(position, Math.min(t, shot.duration), pan, tilt, focalLength))
+      delete shot.camera.move // fork (shared-camera-moves): the path is no longer the move's
     })
   },
 
@@ -1338,7 +1342,9 @@ export const useStore = create<BlockoutState>((set, get) => ({
       const scene = doc.scenes.find((s) => s.id === sceneId)
       const shot =
         scene?.shots.find((s) => s.id === shotId) ?? scene?.drafts?.find((s) => s.id === shotId)
-      if (shot) shot.camera.marks = []
+      if (!shot) return
+      shot.camera.marks = []
+      delete shot.camera.move // fork (shared-camera-moves)
     })
     get().toast('Camera move cleared — record or drop new marks.', 'info')
   },
@@ -1371,6 +1377,7 @@ export const useStore = create<BlockoutState>((set, get) => ({
         sh.camera.marks.push(m)
       }
       markId = m.id
+      delete sh.camera.move // fork (shared-camera-moves): a framing replaces the move's path
       m.position = { ...solved.position }
       m.pan = solved.pan
       m.tilt = solved.tilt

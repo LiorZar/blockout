@@ -14,7 +14,7 @@ import { SENSORS, LENS_SET } from '@engine/camera'
 import { GAITS } from '@engine/gaits'
 import { RIGS } from '@engine/rigs'
 import { MOTION_PRESETS, type MotionPreset } from '@engine/motions'
-import { CAMERA_MOVE_PRESETS } from '@engine/camera-moves'
+import { cameraMoveListing } from '@engine/camera-moves'
 import { SHARED_MOVE_CATEGORIES } from '@engine/camera-move-names'
 import { pickFramingSubjectIds } from '@engine/framing'
 import { ACTION_PRESETS } from '@engine/action-presets'
@@ -1580,6 +1580,13 @@ function CameraPoseSection({ scene, shot }: { scene: Scene; shot: Shot }): JSX.E
 /* ----------------------- camera move presets ------------------------ */
 
 /**
+ * Fork (shared-camera-moves): every move of the table shared with Ebook
+ * Studio, grouped and named as there, with Blockout's variants; the same rows
+ * as list_camera_moves.
+ */
+const CAMERA_MOVES = cameraMoveListing()
+
+/**
  * Classic camera moves as one-click starting points: pick one, it lays down
  * a full set of marks built around your subject (riding along if the subject
  * moves), then every mark stays editable. Track-style moves also switch on
@@ -1588,10 +1595,9 @@ function CameraPoseSection({ scene, shot }: { scene: Scene; shot: Shot }): JSX.E
 function CameraMovesSection({ scene }: { scene: Scene }): JSX.Element {
   const [presetId, setPresetId] = useState('dolly-in')
   const selection = useStore((s) => s.selection)
-  const preset = CAMERA_MOVE_PRESETS.find((p) => p.id === presetId)
-
-  // Fork (shared-camera-moves): grouped and named as in the move table shared with Ebook Studio.
-  const categories = SHARED_MOVE_CATEGORIES.filter((c) => CAMERA_MOVE_PRESETS.some((p) => p.category === c.id))
+  const moves = CAMERA_MOVES
+  const preset = moves.find((p) => p.id === presetId)
+  const categories = SHARED_MOVE_CATEGORIES.filter((c) => moves.some((p) => p.category === c.id))
   // Fork: the same pick as SceneManager.applyCameraMove (a selected set kit is skipped while there is cast).
   const hintId = pickFramingSubjectIds(scene.entities, selectedEntityIds(selection), 1)[0]
   const subjectHint = scene.entities.find((e) => e.id === hintId)
@@ -1601,13 +1607,13 @@ function CameraMovesSection({ scene }: { scene: Scene }): JSX.Element {
       <div className="panel-title">Camera moves</div>
       <div className="field">
         <label>
-          {CAMERA_MOVE_PRESETS.length} classic moves — built around{' '}
+          {moves.length} moves — built around{' '}
           {subjectHint ? subjectHint.label?.text || subjectHint.name : 'your subject'}
         </label>
         <select value={presetId} onChange={(e) => setPresetId(e.target.value)}>
           {categories.map((cat) => (
             <optgroup key={cat.id} label={cat.name.toUpperCase()}>
-              {CAMERA_MOVE_PRESETS.filter((p) => p.category === cat.id).map((p) => (
+              {moves.filter((p) => p.category === cat.id).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -1620,6 +1626,8 @@ function CameraMovesSection({ scene }: { scene: Scene }): JSX.Element {
         <p style={{ color: 'var(--text-faint)', fontSize: 11, lineHeight: 1.4, marginBottom: 8 }}>
           {preset.description}
           {preset.track ? ' Aim-locks onto the subject.' : ''}
+          {preset.blockout === 'rig' ? ' Sets the handheld rig and keeps the marks.' : ''}
+          {preset.blockout === 'prompt' ? ' Made by the video model from the prompt: the marks stay, the move is named.' : ''}
         </p>
       )}
       <button
@@ -2110,6 +2118,7 @@ function MarkInspector({
               if (!sh) return
               if (isCamera) {
                 sh.camera.marks = sh.camera.marks.filter((m) => m.id !== markId)
+                delete sh.camera.move // fork (shared-camera-moves): the path is no longer the move's
               } else {
                 const sc = findScene(doc, scene.id)
                 const tk = sc?.blocking.find((b) => b.id === sh.blockingTakeId)

@@ -1689,6 +1689,16 @@ Changes in this fork (2026):
   Pedestal down (1.2 m, the tilt held, so not aim-locked), Zoom in / out (35 ↔ 85 mm), FPV dive (15 m up and out to
   1 m up, 2 m in front, banking, 16 mm) and POV walk (1.6 m eye height, 6 m to 1.5 m, a 2 Hz bob on a mark every
   0.25 s, 24 mm); every shared move Blockout stages as a path now has its own preset.
+  The shot camera keeps the shared move last applied (`ShotCamera.move`; `src/engine/types.ts`,
+  `src/engine/prompt-scene.ts`, `src/renderer/store.ts`, `src/renderer/panels/Timeline.tsx`, `tests/unit/prompt-scene.test.ts`,
+  `tests/unit/camera-clear-store.test.ts`), and the prompt's camera line opens with it: "Camera move: Dolly in. The
+  camera dollies forward toward the subject on a smooth track; …", then the motion measured as before. Adding,
+  deleting, clearing, recording or framing camera marks (MCP or UI) and fight coverage clear it; retiming keeps it; a
+  file without it reads as before. `apply_camera_move` takes all 42 ids: `handheld` sets the handheld rig at
+  intensity 0.5, and the six moves no grey-box clip can show (`focus-reveal`, `rack-focus`, `reveal-from-behind`,
+  `fly-through`, `macro-zoom`, `cosmic-zoom`) keep the marks, are recorded for the prompt and return a note saying
+  the video model makes them (`putSharedMove`; the focus moves also set the first and last marks' focus distance).
+  The Inspector's move menu lists the same rows as `list_camera_moves`; `get_state` reports the camera's `move`.
 
 A stable or commercial distribution remains gated on upstream/trademark
 permission, platform code signing/notarization, a final FFmpeg/H.264
