@@ -1,0 +1,354 @@
+{
+  "version": 1,
+  "speedWords": {
+    "slow": "slowly",
+    "medium": "steadily",
+    "fast": "rapidly"
+  },
+  "categories": [
+    {
+      "id": "tripod",
+      "name": "Tripod"
+    },
+    {
+      "id": "dolly",
+      "name": "Dolly"
+    },
+    {
+      "id": "slider",
+      "name": "Slider"
+    },
+    {
+      "id": "orbit",
+      "name": "Orbit"
+    },
+    {
+      "id": "vertical",
+      "name": "Vertical"
+    },
+    {
+      "id": "optical",
+      "name": "Optical zoom"
+    },
+    {
+      "id": "focus",
+      "name": "Focus"
+    },
+    {
+      "id": "obstacle",
+      "name": "Obstacle"
+    },
+    {
+      "id": "scale",
+      "name": "Infinite scale"
+    },
+    {
+      "id": "aerial",
+      "name": "Drone & aerial"
+    },
+    {
+      "id": "stylized",
+      "name": "Stylized"
+    },
+    {
+      "id": "tracking",
+      "name": "Subject tracking"
+    }
+  ],
+  "moves": [
+    {
+      "id": "static",
+      "name": "Static",
+      "category": "tripod",
+      "blockout": "preset",
+      "prompt": "The camera is locked off on a tripod and does not move."
+    },
+    {
+      "id": "pan-left",
+      "name": "Pan left",
+      "category": "tripod",
+      "blockout": "preset",
+      "prompt": "The camera stays in place and {speed} pans left."
+    },
+    {
+      "id": "pan-right",
+      "name": "Pan right",
+      "category": "tripod",
+      "blockout": "preset",
+      "prompt": "The camera stays in place and {speed} pans right."
+    },
+    {
+      "id": "tilt-up",
+      "name": "Tilt up",
+      "category": "tripod",
+      "blockout": "preset",
+      "prompt": "The camera stays in place and {speed} tilts up, revealing the subject from the ground to the eyes."
+    },
+    {
+      "id": "tilt-down",
+      "name": "Tilt down",
+      "category": "tripod",
+      "blockout": "preset",
+      "prompt": "The camera stays in place and {speed} tilts down, from the subject's face to the ground."
+    },
+    {
+      "id": "dolly-in",
+      "name": "Dolly in",
+      "category": "dolly",
+      "blockout": "preset",
+      "prompt": "The camera {speed} dollies forward toward the subject on a smooth track; the subject and the background stay in place."
+    },
+    {
+      "id": "dolly-out",
+      "name": "Dolly out",
+      "category": "dolly",
+      "blockout": "preset",
+      "prompt": "The camera {speed} dollies straight back away from the subject, revealing more of the surroundings."
+    },
+    {
+      "id": "crash-in",
+      "name": "Crash in",
+      "category": "dolly",
+      "blockout": "preset",
+      "prompt": "The camera rushes forward toward the subject's face in a sudden fast dolly, creating urgency."
+    },
+    {
+      "id": "dolly-zoom",
+      "name": "Dolly zoom",
+      "category": "dolly",
+      "blockout": "preset",
+      "prompt": "Dolly zoom (vertigo effect): the camera moves one way while the lens zooms the other, so the subject keeps the same size while the background stretches and warps."
+    },
+    {
+      "id": "truck-left",
+      "name": "Truck left",
+      "category": "slider",
+      "blockout": "preset",
+      "prompt": "The camera {speed} slides left on a track, parallel to the scene, without turning."
+    },
+    {
+      "id": "truck-right",
+      "name": "Truck right",
+      "category": "slider",
+      "blockout": "preset",
+      "prompt": "The camera {speed} slides right on a track, parallel to the scene, without turning."
+    },
+    {
+      "id": "orbit",
+      "name": "Orbit 180",
+      "category": "orbit",
+      "blockout": "preset",
+      "prompt": "The camera {speed} circles halfway around the subject, keeping them centred."
+    },
+    {
+      "id": "orbit-360",
+      "name": "Orbit 360",
+      "category": "orbit",
+      "blockout": "preset",
+      "prompt": "The camera {speed} circles all the way around the subject in a full 360-degree spin, keeping them centred."
+    },
+    {
+      "id": "arc-left",
+      "name": "Arc left",
+      "category": "orbit",
+      "blockout": "preset",
+      "prompt": "The camera {speed} moves in a gentle wide curve to the left around the subject, revealing their side profile."
+    },
+    {
+      "id": "arc-right",
+      "name": "Arc right",
+      "category": "orbit",
+      "blockout": "preset",
+      "prompt": "The camera {speed} moves in a gentle wide curve to the right around the subject, revealing their side profile."
+    },
+    {
+      "id": "pedestal-up",
+      "name": "Pedestal up",
+      "category": "vertical",
+      "blockout": "preset",
+      "prompt": "The whole camera {speed} rises straight up from waist level to eye level, without tilting."
+    },
+    {
+      "id": "pedestal-down",
+      "name": "Pedestal down",
+      "category": "vertical",
+      "blockout": "preset",
+      "prompt": "The whole camera {speed} lowers straight down from eye level to waist level, without tilting."
+    },
+    {
+      "id": "crane-up",
+      "name": "Crane up",
+      "category": "vertical",
+      "blockout": "preset",
+      "prompt": "The camera {speed} cranes up and back into a high angle, revealing the scene below."
+    },
+    {
+      "id": "crane-down",
+      "name": "Crane down",
+      "category": "vertical",
+      "blockout": "preset",
+      "prompt": "The camera {speed} cranes down from a high angle and lands at eye level with the subject."
+    },
+    {
+      "id": "zoom-in",
+      "name": "Zoom in",
+      "category": "optical",
+      "blockout": "preset",
+      "prompt": "The camera stays still while the lens {speed} zooms in on the subject."
+    },
+    {
+      "id": "zoom-out",
+      "name": "Zoom out",
+      "category": "optical",
+      "blockout": "preset",
+      "prompt": "The camera stays still while the lens {speed} zooms out from the subject."
+    },
+    {
+      "id": "snap-zoom",
+      "name": "Snap zoom",
+      "category": "optical",
+      "blockout": "preset",
+      "prompt": "A sudden, extremely fast optical zoom straight into the subject's eyes."
+    },
+    {
+      "id": "snap-zoom-out",
+      "name": "Snap zoom out",
+      "category": "optical",
+      "blockout": "preset",
+      "prompt": "A sudden, extremely fast optical zoom out from the subject to a wide view."
+    },
+    {
+      "id": "focus-reveal",
+      "name": "Reveal from blur",
+      "category": "focus",
+      "blockout": "prompt",
+      "prompt": "The shot starts completely out of focus; the lens {speed} pulls focus until the subject is razor sharp while the background stays soft."
+    },
+    {
+      "id": "rack-focus",
+      "name": "Rack focus",
+      "category": "focus",
+      "blockout": "prompt",
+      "prompt": "The subject starts sharp with the background blurred; halfway through, the focus {speed} shifts so the subject blurs and the background turns sharp."
+    },
+    {
+      "id": "reveal-from-behind",
+      "name": "Reveal from behind",
+      "category": "obstacle",
+      "blockout": "prompt",
+      "prompt": "The camera starts blocked by a dark foreground wall or pillar and {speed} slides sideways past it to reveal the subject."
+    },
+    {
+      "id": "fly-through",
+      "name": "Fly-through",
+      "category": "obstacle",
+      "blockout": "prompt",
+      "prompt": "The camera {speed} flies forward through an opening in the foreground, a window or doorway, and on toward the subject."
+    },
+    {
+      "id": "macro-zoom",
+      "name": "Macro zoom",
+      "category": "scale",
+      "blockout": "prompt",
+      "prompt": "One continuous zoom pushes from the subject's face into extreme macro detail of the skin and eye, without a cut."
+    },
+    {
+      "id": "cosmic-zoom",
+      "name": "Cosmic zoom",
+      "category": "scale",
+      "blockout": "prompt",
+      "prompt": "One continuous hyper-zoom from outer space down through the clouds to the street and the subject, without a cut."
+    },
+    {
+      "id": "drone-flyover",
+      "name": "Drone flyover",
+      "category": "aerial",
+      "blockout": "preset",
+      "prompt": "A drone {speed} flies high over the subject and on across the landscape beyond."
+    },
+    {
+      "id": "drone-reveal",
+      "name": "Drone reveal",
+      "category": "aerial",
+      "blockout": "preset",
+      "prompt": "A drone {speed} rises and pulls back from the subject to reveal the vast landscape around them."
+    },
+    {
+      "id": "drone-orbit",
+      "name": "Drone orbit",
+      "category": "aerial",
+      "blockout": "preset",
+      "prompt": "A drone {speed} circles high around the subject in a wide sweeping arc, showing the scale of the place."
+    },
+    {
+      "id": "top-down",
+      "name": "Top-down",
+      "category": "aerial",
+      "blockout": "preset",
+      "prompt": "The camera looks straight down from directly overhead, a god's-eye view, and {speed} descends toward the subject."
+    },
+    {
+      "id": "fpv-dive",
+      "name": "FPV dive",
+      "category": "aerial",
+      "blockout": "preset",
+      "prompt": "An FPV drone dives steeply and fast toward the ground, banking as it drops toward the subject."
+    },
+    {
+      "id": "handheld",
+      "name": "Handheld",
+      "category": "stylized",
+      "blockout": "rig",
+      "prompt": "A handheld camera, documentary style: the frame breathes and sways slightly as an operator follows the action."
+    },
+    {
+      "id": "whip-pan",
+      "name": "Whip pan",
+      "category": "stylized",
+      "blockout": "preset",
+      "prompt": "The camera whips sideways in a violent, very fast pan with strong directional motion blur."
+    },
+    {
+      "id": "dutch-roll",
+      "name": "Dutch roll",
+      "category": "stylized",
+      "blockout": "preset",
+      "prompt": "The camera {speed} rolls onto its side into a tilted dutch angle."
+    },
+    {
+      "id": "lead",
+      "name": "Leading shot",
+      "category": "tracking",
+      "blockout": "preset",
+      "prompt": "The subject walks toward the camera while the camera moves backward at the same speed, keeping them the same size in frame."
+    },
+    {
+      "id": "follow",
+      "name": "Following shot",
+      "category": "tracking",
+      "blockout": "preset",
+      "prompt": "The camera follows behind the subject at their pace as they move away from it."
+    },
+    {
+      "id": "side-track-left",
+      "name": "Side track left",
+      "category": "tracking",
+      "blockout": "preset",
+      "prompt": "The camera moves left alongside the subject at their pace, keeping their profile in frame."
+    },
+    {
+      "id": "side-track-right",
+      "name": "Side track right",
+      "category": "tracking",
+      "blockout": "preset",
+      "prompt": "The camera moves right alongside the subject at their pace, keeping their profile in frame."
+    },
+    {
+      "id": "pov-walk",
+      "name": "POV walk",
+      "category": "tracking",
+      "blockout": "preset",
+      "prompt": "First-person view: the camera walks forward at eye height with the slight bob and sway of a person's steps, approaching the subject."
+    }
+  ]
+}
