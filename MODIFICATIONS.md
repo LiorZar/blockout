@@ -128,9 +128,10 @@ Changes in this fork (2026):
   `127.0.0.1:17480` (`BLOCKOUT_MCP_PORT`), started from `src/main/index.ts`
   after the control server, whose `startControlServer` now returns `{ invoke }`.
   New dependencies `@modelcontextprotocol/sdk` and `zod` (`package.json`).
-- Packaged builds register that HTTP server with the installed `claude`,
-  `codex` and `copilot` CLIs (`src/main/cli-registration.ts`, wired in
-  `src/main/index.ts`).
+- Packaged builds no longer register that HTTP server with the `claude`,
+  `codex` and `copilot` CLIs: it was added at user scope, so every session in
+  every project loaded Blockout's tools. `src/main/cli-registration.ts` and its
+  test are gone; `mcp/README.md` gives the manual `mcp add` commands.
 - A titlebar **Clara** button (`src/renderer/panels/ClaraButton.tsx`, mounted
   in `App.tsx`, `.clara-pulse` in `styles.css`) docks the separately installed
   Clara assistant via `@2dl/clara-client` 0.1.0 (vendored as

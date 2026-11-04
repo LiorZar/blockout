@@ -161,7 +161,7 @@ Fork additions (2026; the catalog is `mcp/tools.json`, shared by both transports
 | `fight_coverage` | `fightId, mode, side?` | Camera coverage of a fight: `master` / `punch-in` / `over-shoulder` / `follow`, on one side of the fight line |
 | `list_weapons` / `hold_weapon` / `drop_weapon` | — / `entityId, assetId` or `weaponId, hand?` / `weaponId` | Held weapons: the catalog and current holds; put one in a hand (spawned or picked up); set it down |
 
-**HTTP transport.** The main process also serves these tools over MCP Streamable HTTP (`src/main/mcp-http.ts`) at `http://127.0.0.1:17480/mcp` (`BLOCKOUT_MCP_PORT` overrides; `0` = any free port), relaying through the same `invoke` as the control server. It is localhost-only and refuses foreign `Host` and any `Origin`. `claude mcp add --transport http --scope user blockout http://127.0.0.1:17480/mcp`. e2e specs must set `BLOCKOUT_MCP_PORT` to a free port.
+**HTTP transport.** The main process also serves these tools over MCP Streamable HTTP (`src/main/mcp-http.ts`) at `http://127.0.0.1:17480/mcp` (`BLOCKOUT_MCP_PORT` overrides; `0` = any free port), relaying through the same `invoke` as the control server. It is localhost-only and refuses foreign `Host` and any `Origin`. `claude mcp add --transport http blockout http://127.0.0.1:17480/mcp` (local scope; the app never registers itself). e2e specs must set `BLOCKOUT_MCP_PORT` to a free port.
 
 **Example (Claude Code):**
 

@@ -14,7 +14,6 @@ import { registerMocapIpc } from './mocap'
 import { startControlServer } from './control'
 import { createMcpHttpServer, resolveMcpPort, type McpHttpServer, type McpHttpStatus, type McpToolDef } from './mcp-http'
 import MCP_TOOLS from '../../mcp/tools.json'
-import { createFileLog, registerWithClis } from './cli-registration'
 import { AttachClara } from '@2dl/clara-client'
 import { createClaraController } from './clara'
 import { friendlyFfmpegError, resolveFfmpeg, terminateProcessTree } from './ffmpeg'
@@ -58,17 +57,6 @@ async function startAgentServers(): Promise<void> {
     return
   }
   console.log(`[blockout] MCP server on ${status.url}`)
-  // Installed copies point the customer's claude / codex / copilot at it.
-  if (app.isPackaged) {
-    const userData = app.getPath('userData')
-    void registerWithClis({
-      name: 'blockout',
-      url: status.url,
-      version: APP_VERSION,
-      markerPath: join(userData, 'mcp-registration.json'),
-      log: createFileLog(join(userData, 'logs', 'mcp-registration.log'), 200)
-    })
-  }
 }
 
 function createWindow(): void {

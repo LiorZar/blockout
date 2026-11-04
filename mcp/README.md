@@ -88,7 +88,7 @@ Both transports read one catalog, `mcp/tools.json`, and relay through the same
 control path, so every edit is undoable and shows live.
 
 ```bash
-claude mcp add --transport http --scope user blockout http://127.0.0.1:17480/mcp
+claude mcp add --transport http blockout http://127.0.0.1:17480/mcp
 codex mcp add blockout --url http://127.0.0.1:17480/mcp
 copilot mcp add --transport http blockout http://127.0.0.1:17480/mcp
 ```
@@ -101,12 +101,8 @@ copilot mcp add --transport http blockout http://127.0.0.1:17480/mcp
 - If the port is taken (say, by a second copy of Blockout), that copy runs without
   the HTTP tools; the first copy's server is untouched. The stdio bridge keeps
   working either way.
-- **Installed copies register themselves.** On launch, a packaged Blockout
-  adds this URL as `blockout` to each of `claude`, `codex` and `copilot` that
-  is installed (user scope), and remembers it in `mcp-registration.json` in
-  its user-data folder so later launches skip the work; problems go to
-  `logs/mcp-registration.log` there. An earlier stdio registration named
-  `blockout` is replaced by the HTTP one, which has the same tools.
+- Blockout never registers itself with any CLI. Add it yourself with the
+  commands above, in the project where you want the tools.
 
 ### Clara (Windows)
 
